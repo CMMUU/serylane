@@ -13,6 +13,8 @@ import type {
   SubscriptionMetadata, SubscriptionOverview, SubscriptionStatus, NetworkMode, OpenAiPolicyTask,
 } from "../../src/types";
 import type { ThemePreference } from "../../src/theme";
+import type { ProxyMap } from "../../src/node-selection";
+import type { CostSnapshot } from "../../src/openai-costs";
 
 const STORAGE_KEY = "routedeck:test-fixture:theme-preview:v1";
 const RULES_STORAGE_KEY = "routedeck:test-fixture:user-rules:v1";
@@ -63,7 +65,7 @@ let fixtureUpdate: AppUpdateStatus = { phase: "idle", info: null, downloadedByte
 let updateScenario = "available";
 let cancelUpdateDownload = false;
 let updateInstallCount = 0;
-let appearanceSettings = { launchAtLogin: false, silentStartup: false, restoreLastSession: true, showGlobalTraffic: true, diagnosticsRetentionDays: 7, appLogRetentionDays: 3 };
+let appearanceSettings = { launchAtLogin: false, silentStartup: true, restoreLastSession: true, showGlobalTraffic: true, diagnosticsRetentionDays: 7, appLogRetentionDays: 3 };
 let fixtureResumeStatus = { phase: "idle", message: "合成状态：上次核心已停止，保持停止。未读取真实应用数据。" };
 window.addEventListener("routedeck-fixture-resume", event => {
   const detail = (event as CustomEvent).detail;
@@ -276,6 +278,7 @@ function report(message: string): void {
 // __TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener. No hand-rolled native IPC.
 const stamp = "2026-09-03T00:00:00.000Z";
 const policy = {
+  stabilityEnabled: ["stable", "costs"].includes(previewQuery.get("nodeScenario") ?? ""),
   enabled: true,
   autoMaintain: false,
   maxNodes: 10,
@@ -288,6 +291,26 @@ const policy = {
   lastBenchmarkedAt: stamp,
   benchmarkVersion: 1,
 };
+const nodeScenario = previewQuery.get("nodeScenario");
+const fixtureNodes: ProxyMap = {
+  "演示节点选择": { type: "Selector", all: policy.selectedNodes.map(node => node.name), now: policy.selectedNodes[0].name, udp: true },
+  "演示自动测速": { type: "URLTest", all: policy.selectedNodes.map(node => node.name), now: policy.selectedNodes[0].name, fixed: "", udp: true },
+  "GLOBAL": { type: "Selector", all: ["演示节点选择", ...policy.selectedNodes.map(node => node.name)], now: "演示节点选择" },
+  "🤖 OpenAI 自动灾备": { type: policy.stabilityEnabled ? "Selector" : "Fallback", all: policy.selectedNodes.map(node => node.name), now: policy.selectedNodes[0].name, udp: true, fixed: "", manualNode: null },
+  ...Object.fromEntries(policy.selectedNodes.map((node, index) => [node.name, { type: index === 0 ? "Trojan" : "Shadowsocks", alive: index === 0 ? true : undefined, udp: true, trafficMultiplier: 1 }])),
+};
+if (nodeScenario === "ordinary") { policy.enabled = false; delete fixtureNodes["🤖 OpenAI 自动灾备"]; }
+const nodeCalls: { command: string; group: string; proxy?: string }[] = [];
+let fixtureCosts: CostSnapshot | null = null;
+let costFailure = false;
+const costCalls: CostSnapshot[] = [];
+window.addEventListener("serylane-fixture-costs", ((event: CustomEvent) => { if (nodeScenario === "costs") costFailure = Boolean(event.detail?.fail); }) as EventListener);
+let failNodeChoice = false, failNodeRead = false;
+window.addEventListener("serylane-fixture-nodes", ((event: CustomEvent) => {
+  if (!nodeScenario) return;
+  failNodeChoice = Boolean(event.detail?.failChoice);
+  failNodeRead = Boolean(event.detail?.failRead);
+}) as EventListener);
 const summary = {
   format: "Clash / Mihomo",
   nodeCount: 2,
@@ -522,8 +545,8 @@ function makeProfile(id: string, displayName: string, enabled: boolean): Profile
     id,
     displayName,
     source: { type: "remote_subscription", host: "subscription.example.invalid", userAgent: "fixture-only" },
-    routingMode: "rule",
-    openaiPolicy: { ...policy, enabled },
+    routingMode: nodeScenario === "global" ? "global" : nodeScenario === "direct" ? "direct" : "rule",
+    openaiPolicy: { ...policy, enabled: nodeScenario === "ordinary" ? false : enabled },
     activeRevisionId: `${id}-revision`,
     lastKnownGoodRevisionId: null,
     createdAt: stamp,
@@ -705,10 +728,10 @@ const readonlyReplies: Record<string, () => unknown> = {
   list_subscriptions: () => { subscriptionCalls.reads++; reportSubscriptions(); return subscriptions(); },
   get_active_profile: () => activeProfileId ? profileDetails(activeProfileId) : null,
   get_openai_policy_task: () => structuredClone(subscriptionImportOpenAiTask),
-  get_proxies: () => ({ proxies: {
-    "演示节点选择": { type: "Selector", all: policy.selectedNodes.map((node) => node.name), now: policy.selectedNodes[0].name, udp: true },
-    "🤖 OpenAI 自动灾备": { type: "Fallback", all: policy.selectedNodes.map((node) => node.name), now: policy.selectedNodes[0].name, udp: true, fixed: false },
-  } }),
+  get_proxies: () => {
+    if (failNodeRead) throw new Error("合成读取失败");
+    return { profileId: activeProfileId, revisionId: activeProfileId ? profileDetails(activeProfileId).profile.activeRevisionId : null, costMode: fixtureCosts?.mode ?? "quality", proxies: structuredClone(fixtureNodes) };
+  },
   get_rules: () => ({ rules: [
     ...rulesPersisted.rules.filter((rule) => rule.enabled).map((rule) => {
       const [type, payload, target] = ruleFields(rule.rule);
@@ -744,6 +767,40 @@ function payloadRecord(payload: InvokeArgs | undefined): Record<string, unknown>
 
 mockIPC(async (command, payload) => {
   const args = payloadRecord(payload);
+  if (command === "get_openai_costs") {
+    const p = profileDetails(String(args.profileId)).profile;
+    return structuredClone(fixtureCosts ?? { profileId: p.id, profileRevision: p.activeRevisionId, revision: 0, mode: "quality", maxMultiplier: null, allowUnknown: false,
+      nodes: policy.selectedNodes.map((n,i) => ({ name: n.name, multiplier: i ? 5 : 1 })) });
+  }
+  if (command === "save_openai_costs" && nodeScenario === "costs") {
+    const input = args.input as CostSnapshot;
+    if (!args.confirmed || input.profileId !== activeProfileId || input.revision !== (fixtureCosts?.revision ?? 0)) throw new Error("合成成本版本冲突");
+    if (costFailure) { costFailure = false; throw new Error("合成成本保存失败"); }
+    fixtureCosts = structuredClone({ ...input, revision: input.revision + 1 });
+    costCalls.push(structuredClone(input));
+    document.documentElement.dataset.fixtureCostCalls = JSON.stringify(costCalls);
+    for (const row of fixtureCosts.nodes) {
+      fixtureNodes[row.name].trafficMultiplier = row.multiplier;
+      fixtureNodes[row.name].withinCostBudget = input.mode === "quality" || (row.multiplier == null ? input.allowUnknown : input.maxMultiplier == null || row.multiplier <= input.maxMultiplier);
+    }
+    return structuredClone(fixtureCosts);
+  }
+  if (nodeScenario && ["select_proxy", "clear_proxy_selection"].includes(command)) {
+    const group = String(args.group), node = fixtureNodes[group];
+    if (!node || args.profileId !== activeProfileId || args.revisionId !== profileDetails(activeProfileId!).profile.activeRevisionId) throw new Error("合成配置状态冲突");
+    nodeCalls.push({ command, group, ...(command === "select_proxy" ? { proxy: String(args.proxy) } : {}) });
+    document.documentElement.dataset.fixtureNodeCalls = JSON.stringify(nodeCalls);
+    if (failNodeChoice) { failNodeChoice = false; throw new Error("合成节点切换失败"); }
+    if (command === "select_proxy") {
+      if (!node.all?.includes(String(args.proxy))) throw new Error("合成节点不在组内");
+      node.now = String(args.proxy);
+      if (group === "🤖 OpenAI 自动灾备" && node.type === "Selector") node.manualNode = node.now;
+      else if (node.type !== "Selector") node.fixed = node.now;
+    } else if (group === "🤖 OpenAI 自动灾备" && node.type === "Selector") node.manualNode = null;
+    else if (node.type === "Selector") throw new Error("Selector 不支持 DELETE");
+    else node.fixed = "";
+    return;
+  }
   if (command === "create_subscription_profile" && subscriptionImportScenario !== null) {
     if (subscriptionImportBusy) throw ruleError("STATE_CONFLICT", "合成订阅正在导入，请等待当前操作完成。");
     if (typeof args.displayName !== "string" || !args.displayName.trim() || args.displayName.trim().length > 128
@@ -1077,9 +1134,12 @@ mockIPC(async (command, payload) => {
   }
   if (command === "get_profile_details") return profileDetails(String(args.profileId));
   if (command === "get_current_node_details") {
+    const chain = [String(args.group)];
+    for (let count = 0; count < 16 && fixtureNodes[chain[chain.length - 1]]?.now; count++) chain.push(fixtureNodes[chain[chain.length - 1]].now!);
+    const name = chain[chain.length - 1];
     return {
-      group: String(args.group), nodeName: policy.selectedNodes[0].name,
-      routeChain: [String(args.group), policy.selectedNodes[0].name], nodeType: "Trojan", alive: true,
+      group: String(args.group), nodeName: name,
+      routeChain: chain, nodeType: fixtureNodes[name]?.type ?? "Unknown", alive: fixtureNodes[name]?.alive ?? null,
       udp: true, uot: false, xudp: false, tfo: false, mptcp: false, smux: false,
       providerName: "合成 Provider", maskedServer: "*.example.invalid", port: 443,
       network: "tcp", tls: "TLS", dialerProxy: null, interface: null,

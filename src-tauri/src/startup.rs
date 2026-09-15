@@ -359,6 +359,12 @@ pub fn show_initial_window(settings: &AppSettings, args: &[String]) -> bool {
     !(settings.silent_startup && args.iter().any(|arg| arg == AUTOSTART_ARG))
 }
 
+pub fn show_existing_window(args: &[String]) -> bool {
+    // A duplicate OS login invocation is never a user request to bring the
+    // application to the foreground, regardless of the initial-window option.
+    !args.iter().any(|arg| arg == AUTOSTART_ARG)
+}
+
 // Migrate only our own existing login entry. Never enable a missing/externally
 // disabled entry at startup, or delete an entry pointing at a different copy.
 #[cfg(windows)]
@@ -651,14 +657,43 @@ mod tests {
     #[test]
     fn silent_login_does_not_hide_manual_launch() {
         let mut settings = AppSettings::default();
-        assert!(show_initial_window(&settings, &[AUTOSTART_ARG.into()]));
-        settings.silent_startup = true;
         assert!(!show_initial_window(&settings, &[AUTOSTART_ARG.into()]));
         assert!(show_initial_window(&settings, &[]));
         assert!(show_initial_window(
             &settings,
             &["--autostart-unknown".into()]
         ));
+        settings.silent_startup = false;
+        assert!(show_initial_window(&settings, &[AUTOSTART_ARG.into()]));
+    }
+    #[test]
+    fn duplicate_login_never_reveals_window_but_explicit_open_does() {
+        assert!(!show_existing_window(&[
+            "serylane.exe".into(),
+            AUTOSTART_ARG.into()
+        ]));
+        assert!(show_existing_window(&["serylane.exe".into()]));
+        assert!(show_existing_window(&[]));
+    }
+    #[test]
+    fn legacy_missing_silent_setting_defaults_to_tray_only_without_replacing_preferences() {
+        let original = AppSettings {
+            launch_at_login: true,
+            ..Default::default()
+        };
+        let mut old = serde_json::to_value(&original).unwrap();
+        old.as_object_mut().unwrap().remove("silentStartup");
+        let restored: AppSettings = serde_json::from_value(old.clone()).unwrap();
+        assert!(!show_initial_window(&restored, &[AUTOSTART_ARG.into()]));
+        assert!(show_initial_window(&restored, &[]));
+        assert_eq!(restored.network_mode, original.network_mode);
+        assert_eq!(restored.controller_secret, original.controller_secret);
+        assert!(restored.launch_at_login);
+        let public: crate::models::PublicAppSettings = serde_json::from_value(old.clone()).unwrap();
+        assert!(public.silent_startup);
+        old["silentStartup"] = serde_json::json!(false);
+        let explicit: AppSettings = serde_json::from_value(old).unwrap();
+        assert!(show_initial_window(&explicit, &[AUTOSTART_ARG.into()]));
     }
     #[test]
     fn migration_matches_exact_owned_executable_not_prefixes_or_other_copies() {

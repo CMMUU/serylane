@@ -10,6 +10,8 @@ mod mihomo_api;
 mod models;
 mod network_safety;
 mod node_details;
+mod node_selection;
+mod openai_cost;
 mod openai_policy;
 mod openai_stability;
 mod platform;
@@ -746,7 +748,7 @@ async fn set_profile_routing_mode(
 
 #[tauri::command]
 async fn get_proxies(app: AppHandle) -> Result<Value, AppErrorDto> {
-    api_client(&app)?.proxies().await.map_err(dto)
+    node_selection::proxies(&app).await.map_err(dto)
 }
 
 #[tauri::command]
@@ -770,27 +772,26 @@ async fn get_connections(app: AppHandle) -> Result<Value, AppErrorDto> {
 }
 
 #[tauri::command]
-async fn select_proxy(app: AppHandle, group: String, proxy: String) -> Result<(), AppErrorDto> {
-    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
-    if group == openai_stability::GROUP {
-        app.state::<openai_stability::StabilityManager>()
-            .invalidate_observations();
-    }
-    api_client(&app)?
-        .select_proxy(&group, &proxy)
+async fn select_proxy(
+    app: AppHandle,
+    group: String,
+    proxy: String,
+    profile_id: Uuid,
+    revision_id: Uuid,
+) -> Result<(), AppErrorDto> {
+    node_selection::select(&app, &group, Some(&proxy), profile_id, revision_id)
         .await
         .map_err(dto)
 }
 
 #[tauri::command]
-async fn clear_proxy_selection(app: AppHandle, group: String) -> Result<(), AppErrorDto> {
-    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
-    if group == openai_stability::GROUP {
-        app.state::<openai_stability::StabilityManager>()
-            .invalidate_observations();
-    }
-    api_client(&app)?
-        .clear_proxy_selection(&group)
+async fn clear_proxy_selection(
+    app: AppHandle,
+    group: String,
+    profile_id: Uuid,
+    revision_id: Uuid,
+) -> Result<(), AppErrorDto> {
+    node_selection::select(&app, &group, None, profile_id, revision_id)
         .await
         .map_err(dto)
 }
@@ -955,7 +956,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if !args.iter().any(|arg| arg == startup::AUTOSTART_ARG) {
+            if startup::show_existing_window(&args) {
                 show_home_window(app);
             }
         }))
@@ -1155,6 +1156,8 @@ pub fn run() {
             get_openai_policy_task,
             cancel_openai_policy_generation,
             disable_openai_policy,
+            openai_cost::get_openai_costs,
+            openai_cost::save_openai_costs,
             close_connection,
             run_connectivity_diagnostics,
             run_network_safety_check,

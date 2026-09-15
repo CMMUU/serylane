@@ -59,7 +59,9 @@ jobs:
     # Only trusted GitHub-hosted images already exercised by Serylane CI.
     # A macOS route is available if cross-region attachment uploads stall.
     runs-on: ${{ inputs.runner == 'macos-14' && 'macos-14' || inputs.runner == 'ubuntu-24.04' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
-    timeout-minutes: 180
+    # Three bounded uploads may share a slow cross-region route. Leave room for
+    # verification of the complete release; no hash/signature checks are skipped.
+    timeout-minutes: 300
     steps:
       - name: Check out trusted default-branch synchronizer
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0

@@ -411,13 +411,68 @@ impl StabilityManager {
             return Err(AppError::Conflict("核心尚未加载稳定策略".into()));
         }
         let current = group["now"].as_str().unwrap_or("REJECT").to_string();
+        if let Some(node) = active
+            .map(|id| storage.openai_manual_node(id))
+            .transpose()?
+            .flatten()
+        {
+            let _permit = crate::user_rules::acquire_configuration(app)?;
+            let latest = active.map(|id| storage.load_profile(id)).transpose()?;
+            if storage.state()?.active_profile_id != active
+                || latest.as_ref().and_then(|p| p.active_revision_id) != revision
+                || !latest
+                    .as_ref()
+                    .is_some_and(|p| p.openai_policy.enabled && p.openai_policy.stability_enabled)
+                || active
+                    .map(|id| storage.openai_manual_node(id))
+                    .transpose()?
+                    .flatten()
+                    .as_deref()
+                    != Some(&node)
+                || app.state::<MihomoRuntime>().status(Some(app)).phase != RuntimePhase::Running
+            {
+                return Ok(());
+            }
+            let live = api.proxies().await?;
+            let valid = live["proxies"][GROUP]["type"] == "Selector"
+                && policy.selected_nodes.iter().any(|n| n.name == node)
+                && crate::node_selection::validate_choice(&live["proxies"][GROUP], &node).is_ok();
+            if valid && live["proxies"][GROUP]["now"].as_str() != Some(&node) {
+                api.select_proxy(GROUP, &node).await?;
+            }
+            let mut s = self
+                .inner
+                .lock()
+                .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?;
+            s.epoch += 1;
+            s.current = if valid {
+                Some(node)
+            } else {
+                live["proxies"][GROUP]["now"].as_str().map(str::to_string)
+            };
+            s.snapshot.running = false;
+            s.snapshot.message = if valid {
+                "手动选点中，稳定策略已暂停自动切换；可在代理页恢复自动"
+            } else {
+                "手动节点已不在候选中，未恢复自动；请重新选点或恢复自动"
+            }
+            .into();
+            return Ok(());
+        }
+        let cost_preferences =
+            storage.openai_costs(active.ok_or_else(|| AppError::Conflict("无活动配置".into()))?)?;
+        let costs = cost_preferences.resolve(&storage.load_revision_source(
+            active.unwrap(),
+            revision.ok_or_else(|| AppError::Conflict("无配置版本".into()))?,
+        )?)?;
         let allowed: Vec<String> = policy
             .selected_nodes
             .iter()
             .filter(|n| {
-                group["all"]
-                    .as_array()
-                    .is_some_and(|all| all.iter().any(|x| x.as_str() == Some(&n.name)))
+                costs.allowed(&n.name)
+                    && group["all"]
+                        .as_array()
+                        .is_some_and(|all| all.iter().any(|x| x.as_str() == Some(&n.name)))
             })
             .take(10)
             .map(|n| n.name.clone())
@@ -469,11 +524,23 @@ impl StabilityManager {
             return Ok(());
         }
         let latest = active.map(|id| storage.load_profile(id)).transpose()?;
+        // A manual choice made while probes were in flight wins, even when it
+        // selected the same node and therefore did not change `now`.
+        if active
+            .map(|id| storage.openai_manual_node(id))
+            .transpose()?
+            .flatten()
+            .is_some()
+        {
+            self.invalidate_observations();
+            return Ok(());
+        }
         if latest.as_ref().and_then(|p| p.active_revision_id)
             != profile.as_ref().and_then(|p| p.active_revision_id)
             || !latest
                 .as_ref()
                 .is_some_and(|p| p.openai_policy.stability_enabled)
+            || storage.openai_costs(active.unwrap())?.revision != cost_preferences.revision
         {
             self.invalidate_observations();
             return Ok(());
@@ -496,25 +563,38 @@ impl StabilityManager {
                     .or_default()
                     .record(now(), Evidence::Probe(ok));
             }
-            choose(&s.nodes, &current, &allowed, now())
+            choose_with_costs(&s.nodes, &current, &allowed, now(), &costs)
         };
         if candidate == current {
+            if candidate == "REJECT" && costs.value_mode() {
+                if let Ok(mut s) = self.inner.lock() {
+                    s.snapshot.message =
+                        "没有符合预算的健康节点，后续新请求仍被拒绝；请调整倍率或预算".into();
+                }
+            }
             return Ok(());
         }
         api.select_proxy(GROUP, &candidate).await?;
         crate::app_log::record(
             1,
             crate::app_log::Area::Stability,
-            "原节点连续失败，已为后续新连接切换出口；不主动关闭现有连接，也不重放模型请求",
+            "依据健康状态与自动选点预算为后续新连接更新出口；未关闭现有连接或重放请求",
         );
         let mut s = self
             .inner
             .lock()
             .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?;
         s.epoch += 1;
+        s.snapshot.message = if candidate == "REJECT" && costs.value_mode() {
+            "没有符合预算的健康节点，拒绝后续新请求；未使用超预算或未获允许的未知倍率节点"
+        } else if costs.value_mode() {
+            "已按健康状态与倍率更新后续新连接出口；未主动关闭现有连接"
+        } else {
+            "原节点持续失败，已为后续新连接切换出口；原有连接未被主动关闭"
+        }
+        .into();
         s.current = Some(candidate);
         s.snapshot.last_switch = Some(now());
-        s.snapshot.message = "原节点持续失败，已为后续新连接切换出口；原有连接未被主动关闭".into();
         Ok(())
     }
 }
@@ -544,6 +624,53 @@ fn choose(
         .cloned()
         .unwrap_or_else(|| "REJECT".into())
 }
+
+fn choose_with_costs(
+    nodes: &BTreeMap<String, NodeHealth>,
+    current: &str,
+    allowed: &[String],
+    time: u64,
+    costs: &crate::openai_cost::ResolvedCosts,
+) -> String {
+    if !costs.value_mode() {
+        return choose(nodes, current, allowed, time);
+    }
+    let allowed: Vec<String> = allowed
+        .iter()
+        .filter(|name| costs.allowed(name))
+        .cloned()
+        .collect();
+    // Preserve an already healthy, within-budget selection. Saving costs is
+    // not a reason to flap working streams simply for a small price saving.
+    if allowed.iter().any(|name| name == current)
+        && nodes
+            .get(current)
+            .is_some_and(|n| n.consecutive_failures < 2 && n.cooldown_until <= time)
+    {
+        return current.into();
+    }
+    let best = allowed
+        .iter()
+        .filter_map(|name| nodes.get(name))
+        .filter(|n| n.usable(time))
+        .map(NodeHealth::score)
+        .fold(0.0_f64, f64::max);
+    allowed
+        .iter()
+        .filter(|name| {
+            nodes
+                .get(*name)
+                .is_some_and(|n| n.usable(time) && n.score() >= (best - 0.1).max(0.7))
+        })
+        .max_by(|a, b| {
+            costs
+                .utility(a, nodes[*a].score() * 100.0)
+                .total_cmp(&costs.utility(b, nodes[*b].score() * 100.0))
+                .then_with(|| b.cmp(a))
+        })
+        .cloned()
+        .unwrap_or_else(|| "REJECT".into())
+}
 #[tauri::command]
 pub async fn set_openai_stability(
     app: AppHandle,
@@ -565,6 +692,12 @@ pub async fn set_openai_stability(
             return Err(AppError::Conflict("配置版本已变化，请刷新".into()));
         }
         let mut policy = profile.openai_policy;
+        if !enabled && storage.openai_costs(profile_id)?.mode == crate::openai_cost::CostMode::Value
+        {
+            return Err(AppError::Conflict(
+                "请先将成本策略改为质量优先；性价比策略需要稳定优先执行预算限制".into(),
+            ));
+        }
         if !policy.enabled || policy.selected_nodes.len() < 2 {
             return Err(AppError::InvalidInput(
                 "请先在代理页生成 OpenAI 灾备".into(),
@@ -637,6 +770,66 @@ mod tests {
             .unwrap()
             .record(120, Evidence::Probe(false));
         assert_eq!(choose(&nodes, "a", &["a".into(), "b".into()], 120), "b");
+    }
+    #[test]
+    fn cost_aware_failover_keeps_quality_budget_and_stickiness() {
+        use crate::openai_cost::{CostMode, CostPreferences, ResolvedCosts};
+        let mut costs = ResolvedCosts {
+            preferences: CostPreferences {
+                mode: CostMode::Value,
+                ..Default::default()
+            },
+            multipliers: [
+                ("cheap".into(), Some(1.0)),
+                ("premium".into(), Some(5.0)),
+                ("unknown".into(), None),
+            ]
+            .into(),
+        };
+        let mut healthy = NodeHealth::default();
+        healthy.record(100, Evidence::Probe(true));
+        let mut nodes = BTreeMap::from([
+            ("cheap".into(), healthy.clone()),
+            ("premium".into(), healthy.clone()),
+            ("unknown".into(), healthy),
+        ]);
+        let allowed = ["cheap".into(), "premium".into(), "unknown".into()];
+        assert_eq!(
+            choose_with_costs(&nodes, "REJECT", &allowed, 100, &costs),
+            "cheap"
+        );
+        assert_eq!(
+            choose_with_costs(&nodes, "premium", &allowed, 100, &costs),
+            "premium"
+        );
+        costs.preferences.max_multiplier = Some(2.0);
+        assert_eq!(
+            choose_with_costs(&nodes, "premium", &allowed, 100, &costs),
+            "cheap"
+        );
+        nodes
+            .get_mut("cheap")
+            .unwrap()
+            .record(101, Evidence::ModelInterrupted);
+        nodes
+            .get_mut("cheap")
+            .unwrap()
+            .record(102, Evidence::ModelInterrupted);
+        assert_eq!(
+            choose_with_costs(&nodes, "cheap", &allowed, 102, &costs),
+            "REJECT"
+        );
+        costs.preferences.max_multiplier = None;
+        assert_eq!(
+            choose_with_costs(&nodes, "cheap", &allowed, 102, &costs),
+            "premium"
+        );
+        costs.preferences.max_multiplier = Some(2.0);
+        costs.preferences.allow_unknown = true;
+        assert_eq!(
+            choose_with_costs(&nodes, "cheap", &allowed, 102, &costs),
+            "unknown"
+        );
     }
     #[test]
     fn failed_nodes_need_cooldown_and_three_recovery_probes() {

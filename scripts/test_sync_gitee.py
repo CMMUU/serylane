@@ -2,6 +2,7 @@
 import hashlib
 import http.client
 import json
+import os
 from io import BytesIO, StringIO
 from pathlib import Path
 import tempfile
@@ -665,7 +666,11 @@ class CurlUploadTests(unittest.TestCase):
             for forbidden in ("location", "retry", "insecure", "verbose", "trace"):
                 self.assertNotIn(forbidden, options)
             response = Path(options["output"])
-            self.assertEqual(response.stat().st_mode & 0o777, 0o600)
+            # POSIX mode bits do not represent Windows ACLs. Production mirror
+            # runners are Linux/macOS and must still enforce the 0600 check.
+            if os.name != "nt":
+                self.assertEqual(response.stat().st_mode & 0o777, 0o600)
+            self.assertTrue(response.is_file())
             if syntax:
                 # --version parses the real config but performs no request.
                 parsed = original_run(command + ["--version"], input=config, text=True,

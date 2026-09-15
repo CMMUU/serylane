@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.10 - 2026-09-15
+
+- Default missing legacy silent-startup preferences to tray-only login, while preserving explicit window-mode choices and manual opening. Test legacy settings, duplicate autostart and explicit single-instance reopening on disposable Windows runners.
+- Add independent manual selection for ordinary proxy groups and OpenAI failover, with persistent manual intent and explicit restore-auto. Show actual selected node details on Overview without treating failed/stale reads as a current connection.
+- Add per-profile traffic multipliers, opt-in value-based OpenAI ranking, an optional multiplier cap and explicit unknown-cost fallback. Preserve healthy in-budget nodes, prioritize manual choice, warn before unknown/over-budget manual selection and skip large bandwidth downloads in value mode.
+- Preserve current signing/upgrade identities, default-off Codex routing, all six download architectures and existing macOS native tray rendering. Physical login/reboot and live model-stream reliability remain separate acceptance checks.
+- Allow bounded Gitee uploads enough time for verified large packages on slow cross-region routes; retain low-speed detection, uncertain-write inspection and full checksum/signature requirements.
+
 ## 0.7.9 - 2026-09-11
 
 - Render macOS two-row traffic rates as native attributed text with 9.5pt medium tabular digits, smaller arrows/units, fixed columns and a stable status-item width.

@@ -290,16 +290,26 @@ async fn generate_and_apply(
         .active_revision_id
         .ok_or_else(|| AppError::NotFound("配置没有活动版本".to_string()))?;
     let source = storage.load_revision_source(profile_id, revision_id)?;
-    let candidates = extract_candidates(&source)?;
+    let cost_preferences = storage.openai_costs(profile_id)?;
+    let costs = cost_preferences.resolve(&source)?;
+    let candidates: Vec<_> = extract_candidates(&source)?
+        .into_iter()
+        .filter(|node| costs.allowed(&node.name))
+        .collect();
     if candidates.len() < MIN_HEALTHY_NODES {
         return Err(AppError::Config(
-            "订阅中少于 2 个可检测的显式代理节点".to_string(),
+            if costs.value_mode() {
+                "符合当前成本策略的显式节点少于 2 个；请填写倍率、调整上限或明确允许未知倍率"
+            } else {
+                "可用于 OpenAI 灾备的显式节点少于 2 个；请检查当前订阅"
+            }
+            .to_string(),
         ));
     }
     check_cancelled(app)?;
 
-    let mut policy = benchmark_nodes(app, &source, candidates, auto_maintain).await?;
-    if profile.openai_policy.last_benchmarked_at.is_some() {
+    let mut policy = benchmark_nodes(app, &source, candidates, auto_maintain, &costs).await?;
+    if !costs.value_mode() && profile.openai_policy.last_benchmarked_at.is_some() {
         policy.stability_enabled = profile.openai_policy.stability_enabled;
     }
     check_cancelled(app)?;
@@ -310,7 +320,13 @@ async fn generate_and_apply(
         1,
         "正在生成配置版本并执行 Mihomo 原生校验".to_string(),
     )?;
-    apply_policy_revision(app, profile_id, &policy).await?;
+    apply_policy_revision_checked(
+        app,
+        profile_id,
+        &policy,
+        Some((revision_id, cost_preferences.revision)),
+    )
+    .await?;
     update_progress(
         app,
         OpenAiTaskPhase::Applying,
@@ -326,12 +342,38 @@ pub(crate) async fn apply_policy_revision(
     profile_id: Uuid,
     policy: &OpenAiPolicy,
 ) -> AppResult<()> {
+    apply_policy_revision_checked(app, profile_id, policy, None).await
+}
+
+async fn apply_policy_revision_checked(
+    app: &AppHandle,
+    profile_id: Uuid,
+    policy: &OpenAiPolicy,
+    expected: Option<(Uuid, u64)>,
+) -> AppResult<()> {
     let permit = crate::user_rules::acquire_configuration(app)?;
     let storage = AppStorage::from_app(app)?;
     let profile = storage.load_profile(profile_id)?;
     let previous_revision_id = profile
         .active_revision_id
         .ok_or_else(|| AppError::NotFound("配置没有活动版本".to_string()))?;
+    if let Some((revision, costs)) = expected {
+        if previous_revision_id != revision || storage.openai_costs(profile_id)?.revision != costs {
+            return Err(AppError::Conflict(
+                "筛选期间配置或成本策略已变化，请重新生成".into(),
+            ));
+        }
+    }
+    // Recheck under the configuration permit: a concurrent cost save must not
+    // leave value mode backed by a core-managed Fallback without budget checks.
+    if policy.enabled
+        && !policy.stability_enabled
+        && storage.openai_costs(profile_id)?.mode == crate::openai_cost::CostMode::Value
+    {
+        return Err(AppError::Conflict(
+            "性价比策略需要稳定优先；请先将成本策略改为质量优先".into(),
+        ));
+    }
     let previous_revision = storage.load_revision(profile_id, previous_revision_id)?;
     let source = storage.load_revision_source(profile_id, previous_revision_id)?;
     let settings = storage.settings()?;
@@ -392,6 +434,7 @@ async fn benchmark_nodes(
     source: &str,
     candidates: Vec<CandidateNode>,
     auto_maintain: bool,
+    costs: &crate::openai_cost::ResolvedCosts,
 ) -> AppResult<OpenAiPolicy> {
     let candidate_count = candidates.len();
     update_progress(
@@ -458,7 +501,9 @@ async fn benchmark_nodes(
     }
     let healthy_count = reachable.len();
     reachable.sort_by_key(|node| node.first_delay_ms);
-    reachable.truncate(BANDWIDTH_CANDIDATES);
+    if !costs.value_mode() {
+        reachable.truncate(BANDWIDTH_CANDIDATES);
+    }
 
     let bandwidth_total = reachable.len();
     update_progress(
@@ -466,11 +511,21 @@ async fn benchmark_nodes(
         OpenAiTaskPhase::Bandwidth,
         0,
         bandwidth_total,
-        format!("正在创建 {bandwidth_total} 个隔离带宽测试入口"),
+        if costs.value_mode() {
+            format!("省流检测：复测 {bandwidth_total} 个节点延迟，不下载带宽测试文件")
+        } else {
+            format!("正在创建 {bandwidth_total} 个隔离带宽测试入口")
+        },
     )?;
-    let listener_ports = core
-        .configure_bandwidth_listeners(app, source, &all_candidates, &reachable)
-        .await?;
+    let listener_ports: Vec<Option<u16>> = if costs.value_mode() {
+        vec![None; reachable.len()]
+    } else {
+        core.configure_bandwidth_listeners(app, source, &all_candidates, &reachable)
+            .await?
+            .into_iter()
+            .map(Some)
+            .collect()
+    };
     let mut ranked = Vec::with_capacity(bandwidth_total);
     let api = core.api.clone();
     let mut bandwidth_checks = stream::iter(reachable.into_iter().zip(listener_ports).map(
@@ -484,7 +539,12 @@ async fn benchmark_nodes(
                         8_000,
                         Some(OPENAI_EXPECTED_STATUS),
                     ),
-                    measure_bandwidth(port),
+                    async {
+                        match port {
+                            Some(port) => measure_bandwidth(port).await.ok(),
+                            None => None,
+                        }
+                    },
                 );
                 (node, delay_result, bandwidth_result)
             }
@@ -500,7 +560,7 @@ async fn benchmark_nodes(
             bandwidth_completed,
             bandwidth_total,
             format!(
-                "正在评估候选节点带宽与抖动 {}/{}",
+                "正在评估候选节点质量 {}/{}",
                 bandwidth_completed + 1,
                 bandwidth_total
             ),
@@ -509,11 +569,20 @@ async fn benchmark_nodes(
             .ok()
             .and_then(|payload| payload.get("delay").and_then(serde_json::Value::as_u64))
             .and_then(|delay| u32::try_from(delay).ok())
-            .unwrap_or(node.first_delay_ms.saturating_add(1_000));
-        let bandwidth_mbps = bandwidth_result.ok();
+            .filter(|delay| *delay > 0);
+        if costs.value_mode() && second_delay.is_none() {
+            bandwidth_completed += 1;
+            continue;
+        }
+        let second_delay = second_delay.unwrap_or(node.first_delay_ms.saturating_add(1_000));
+        let bandwidth_mbps = bandwidth_result;
         let latency_ms = (node.first_delay_ms.saturating_add(second_delay)) / 2;
         let jitter_ms = node.first_delay_ms.abs_diff(second_delay);
-        let score = node_score(latency_ms, jitter_ms, bandwidth_mbps);
+        let score = if costs.value_mode() {
+            node_score(latency_ms, jitter_ms, None) / 0.65
+        } else {
+            node_score(latency_ms, jitter_ms, bandwidth_mbps)
+        };
         let candidate = node.candidate;
         let name = candidate.name.clone();
         ranked.push((
@@ -534,17 +603,20 @@ async fn benchmark_nodes(
             bandwidth_completed,
             bandwidth_total,
             format!(
-                "带宽评估 {}/{}，准备选出最多 10 个节点",
+                "质量评估 {}/{}，准备选出最多 10 个节点",
                 bandwidth_completed, bandwidth_total
             ),
         )?;
     }
 
+    if costs.value_mode() {
+        let best = ranked.iter().map(|(_, n)| n.score).fold(0.0_f64, f64::max);
+        ranked.retain(|(_, n)| n.score >= (best - 15.0).max(50.0));
+    }
     ranked.sort_by(|left, right| {
-        right
-            .1
-            .score
-            .total_cmp(&left.1.score)
+        costs
+            .utility(&right.1.name, right.1.score)
+            .total_cmp(&costs.utility(&left.1.name, left.1.score))
             .then_with(|| left.1.latency_ms.cmp(&right.1.latency_ms))
     });
     let selected_nodes = select_diverse_nodes(ranked, SELECTED_NODES);
@@ -778,6 +850,13 @@ fn build_benchmark_config_with_listeners(
         insert(root, "listeners", Value::Sequence(listeners));
     }
     serde_yaml::to_string(&document).map_err(|error| AppError::Config(error.to_string()))
+}
+
+pub(crate) fn candidate_names(source: &str) -> AppResult<Vec<String>> {
+    Ok(extract_candidates(source)?
+        .into_iter()
+        .map(|node| node.name)
+        .collect())
 }
 
 fn extract_candidates(source: &str) -> AppResult<Vec<CandidateNode>> {

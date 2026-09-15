@@ -123,16 +123,22 @@ function Uninstall-Package([string]$file, [string]$directory) {
     if (Test-Path -LiteralPath (Join-Path $resolved 'serylane.exe')) { throw 'Uninstall left the main executable behind.' }
     Start-Sleep -Seconds 1
 }
-function Write-Fixture([bool]$login) {
+function Write-Fixture([bool]$login, [bool]$legacySettings) {
     New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
-    @{
+    $fixtureSettings = @{
         schemaVersion=1; locale='zh-CN'; theme='system'; launchAtLogin=$login;
         silentStartup=$true; restoreLastSession=$true; showGlobalTraffic=$false;
         networkMode='system_proxy'; mixedPort=17890; controllerPort=19090;
         controllerSecret='isolated-installer-fixture'; updateChannel='stable';
         autoCheckUpdates=$false; autoDownloadUpdates=$false; updateSource='auto';
         diagnosticsRetentionDays=7; appLogRetentionDays=3
-    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dataRoot 'settings.json') -Encoding utf8
+    }
+    if ($legacySettings) {
+        # Real pre-0.7.7 preferences never contained either of these fields.
+        $fixtureSettings.Remove('silentStartup')
+        $fixtureSettings.Remove('restoreLastSession')
+    }
+    $fixtureSettings | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dataRoot 'settings.json') -Encoding utf8
     @{
         schemaVersion=1; activeProfileId=$null; activeRevisionId=$null;
         systemProxySnapshotPresent=$false; cleanShutdown=$true; desiredRunning=$false; updatedAt=$null
@@ -160,7 +166,8 @@ function Reset-FixtureInstallLocations {
 }
 function Assert-Application([string]$executable, [bool]$login, [bool]$osDisabled) {
     $settings = Get-Content -LiteralPath (Join-Path $dataRoot 'settings.json') -Raw | ConvertFrom-Json
-    if ($settings.networkMode -ne 'system_proxy' -or !$settings.silentStartup -or $settings.appLogRetentionDays -ne 3) {
+    $quietPreference = if ($settings.PSObject.Properties['silentStartup']) { $settings.silentStartup } else { $true }
+    if ($settings.networkMode -ne 'system_proxy' -or !$quietPreference -or $settings.appLogRetentionDays -ne 3) {
         throw 'Installer failed to preserve the saved settings.'
     }
     foreach ($quiet in @($true, $false)) {
@@ -174,6 +181,9 @@ function Assert-Application([string]$executable, [bool]$login, [bool]$osDisabled
                 Start-Sleep -Milliseconds 500
                 $process.Refresh()
                 if ($process.HasExited) { throw 'Installed application exited during startup.' }
+                if ($quiet -and @([InstallerWindows]::ForProcess($process.Id) | Where-Object { $_.Title -eq 'Serylane' -and $_.Visible }).Count) {
+                    throw 'Silent login briefly revealed the main window during initialization.'
+                }
                 $ready = Test-JournalReady $journal $process.StartTime
             } until ($ready -or [DateTime]::UtcNow -gt $deadline)
             if (!$ready) { throw 'Installed application did not reach initialized logging.' }
@@ -185,6 +195,22 @@ function Assert-Application([string]$executable, [bool]$login, [bool]$osDisabled
             if ($main.Count -ne 1) { throw 'Installed application must have exactly one Serylane main window.' }
             if ($quiet -and $main[0].Visible) { throw 'Silent login unexpectedly showed the Serylane main window.' }
             if (!$quiet -and !$main[0].Visible) { throw 'Manual launch failed to show the Serylane main window.' }
+            if ($quiet) {
+                $duplicate = Start-Process -FilePath $executable -ArgumentList '--autostart' -PassThru -WindowStyle Hidden
+                if (!$duplicate.WaitForExit(10000)) { throw 'Duplicate login failed to exit through the single-instance handler.' }
+                Start-Sleep -Seconds 1
+                if (@([InstallerWindows]::ForProcess($process.Id) | Where-Object { $_.Title -eq 'Serylane' -and $_.Visible }).Count) {
+                    throw 'Duplicate OS login raised the hidden main window.'
+                }
+                $manual = Start-Process -FilePath $executable -PassThru -WindowStyle Hidden
+                if (!$manual.WaitForExit(10000)) { throw 'Explicit open failed to reach the running instance.' }
+                $openDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                do {
+                    Start-Sleep -Milliseconds 200
+                    $opened = @([InstallerWindows]::ForProcess($process.Id) | Where-Object { $_.Title -eq 'Serylane' -and $_.Visible }).Count -eq 1
+                } until ($opened -or [DateTime]::UtcNow -gt $openDeadline)
+                if (!$opened) { throw 'Explicit open did not reveal the tray-only application.' }
+            }
             if ($login) {
                 $entry = Read-Run 'Serylane'
                 if ($entry -ne "`"$executable`" --autostart" -or (Read-Run 'RouteDeck')) {
@@ -234,7 +260,7 @@ foreach ($kind in @('nsis','msi')) {
     }
     $current = Join-Path $repo "src-tauri/target/release/bundle/$kind/Serylane_${version}_$suffix"
     if (!(Test-Path -LiteralPath $current)) { throw 'Expected signed build installer is missing.' }
-    foreach ($scenario in @('fresh','upgrade','upgrade-login','upgrade-login-disabled')) {
+    foreach ($scenario in @('fresh','upgrade','upgrade-login','upgrade-login-disabled','upgrade-login-legacy-settings')) {
         Reset-FixtureInstallLocations
         $approval = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', $true)
         if ($approval) {
@@ -244,7 +270,7 @@ foreach ($kind in @('nsis','msi')) {
         $directory = Join-Path $testRoot "$kind-$scenario"
         $login = $scenario.StartsWith('upgrade-login')
         $osDisabled = $scenario -eq 'upgrade-login-disabled'
-        Write-Fixture $login
+        Write-Fixture $login ($scenario -eq 'upgrade-login-legacy-settings')
         $settingsBefore = (Get-FileHash -LiteralPath (Join-Path $dataRoot 'settings.json')).Hash
         if ($scenario -ne 'fresh') {
             Install-Package $legacy $directory

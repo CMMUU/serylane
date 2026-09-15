@@ -105,7 +105,7 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
   let calls = 0;
   const noop = () => {};
   const context = {
-    baseReadSequence: 0, runtimeMutationRevision: 0,
+    baseReadSequence: 0, runtimeMutationRevision: 0, proxyReadSequence: 0, overviewNodeDetails: {}, refreshProxies: async () => {}, openAiCosts: { refresh: async () => {} },
     runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false,
     sessionResumeReadBusy: true,
     themeController: { mutationRevision: 0, sync: () => true },

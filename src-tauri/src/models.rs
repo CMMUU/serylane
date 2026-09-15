@@ -102,7 +102,9 @@ pub struct AppSettings {
     pub locale: String,
     pub theme: String,
     pub launch_at_login: bool,
-    #[serde(default)]
+    // Older installs have no field: login should be tray-only without requiring
+    // users to open Settings and save once. An explicit false remains respected.
+    #[serde(default = "default_true")]
     pub silent_startup: bool,
     #[serde(default = "default_true")]
     pub restore_last_session: bool,
@@ -140,7 +142,7 @@ impl Default for AppSettings {
             locale: "zh-CN".to_string(),
             theme: "system".to_string(),
             launch_at_login: false,
-            silent_startup: false,
+            silent_startup: true,
             restore_last_session: true,
             show_global_traffic: true,
             network_mode: NetworkMode::Manual,
@@ -165,7 +167,7 @@ pub struct PublicAppSettings {
     pub locale: String,
     pub theme: String,
     pub launch_at_login: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub silent_startup: bool,
     #[serde(default = "default_true")]
     pub restore_last_session: bool,

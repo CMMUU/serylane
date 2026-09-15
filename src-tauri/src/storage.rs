@@ -177,6 +177,57 @@ impl AppStorage {
         write_json_atomic(&self.profile_dir(profile.id).join("metadata.json"), profile)
     }
 
+    // User intent is separate from generated/immutable policy revisions. A
+    // subscription refresh must not silently turn a manual choice back to auto.
+    pub fn openai_manual_node(&self, profile_id: Uuid) -> AppResult<Option<String>> {
+        let path = self.profile_dir(profile_id).join("openai-selection.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        if fs::metadata(&path)?.len() > 4096 {
+            return Err(AppError::Io("OpenAI 手动选择记录超过大小限制".into()));
+        }
+        read_json(&path)
+    }
+
+    pub fn openai_costs(&self, profile_id: Uuid) -> AppResult<crate::openai_cost::CostPreferences> {
+        let path = self.profile_dir(profile_id).join("openai-costs.json");
+        if !path.exists() {
+            return Ok(Default::default());
+        }
+        if fs::metadata(&path)?.len() > 1024 * 1024 {
+            return Err(AppError::Io("节点成本清单过大".into()));
+        }
+        let prefs: crate::openai_cost::CostPreferences = read_json(&path)?;
+        prefs.validate()?;
+        Ok(prefs)
+    }
+    pub fn save_openai_costs(
+        &self,
+        profile_id: Uuid,
+        prefs: &crate::openai_cost::CostPreferences,
+    ) -> AppResult<()> {
+        self.load_profile(profile_id)?;
+        prefs.validate()?;
+        write_json_atomic(
+            &self.profile_dir(profile_id).join("openai-costs.json"),
+            prefs,
+        )
+    }
+
+    pub fn save_openai_manual_node(&self, profile_id: Uuid, node: Option<&str>) -> AppResult<()> {
+        self.load_profile(profile_id)?;
+        if node.is_some_and(|name| {
+            name.is_empty() || name.len() > 2048 || name.chars().any(char::is_control)
+        }) {
+            return Err(AppError::InvalidInput("节点名称无效".into()));
+        }
+        write_json_atomic(
+            &self.profile_dir(profile_id).join("openai-selection.json"),
+            &node,
+        )
+    }
+
     pub fn subscription_status(&self, profile_id: Uuid) -> Option<SubscriptionStatus> {
         let path = self
             .profile_dir(profile_id)

@@ -3690,7 +3690,7 @@ dependencies = [
 
 [[package]]
 name = "serylane"
-version = "0.7.9"
+version = "0.7.10"
 dependencies = [
  "block2",
  "bytes",

@@ -2,6 +2,9 @@ import "./styles.css";
 import "./desktop-theme.css";
 import "./local-routing.css";
 import "./subscription-cards.css";
+import "./node-selection.css";
+import { generalGroups, currentNodeMarkup, nodeSelectionMarkup, type ProxyMap } from "./node-selection";
+import { mountOpenAiCosts, openAiCostsMarkup } from "./openai-costs";
 import { subscriptionCardMarkup } from "./subscription-cards";
 import { subscriptionImportMarkup, describeSubscriptionImport } from "./subscription-import";
 import { NAV_ITEMS, navigationMarkup, type ViewName } from "./ui";
@@ -130,6 +133,13 @@ let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
 let runtimeActionInFlight = false;
 let stabilityActionInFlight = false;
+let nodeSelectionBusy = false;
+let proxyReadSequence = 0;
+let proxyPolling = false;
+let overviewGroup = "";
+let overviewProfile = "";
+let overviewNodeDetails: Record<string, CurrentNodeDetails> = {};
+let proxyReadError = "";
 let runtimeMutationRevision = 0;
 let runtimeReadSequence = 0;
 let baseReadSequence = 0;
@@ -261,6 +271,10 @@ app.innerHTML = `
           </div>
           <p class="control-hint" id="control-hint">系统代理和 TUN 互斥；切换时应用会自动停止、应用设置并恢复运行。</p>
         </article>
+        <article class="panel" id="overview-nodes-panel">
+          <div class="panel-heading"><div><h2>当前选用节点</h2><p class="node-choice-help">按策略组展示所选出口；规则模式下，不同请求可能使用不同节点。</p></div><button class="button button-quiet" id="overview-nodes-refresh">刷新节点</button></div>
+          <div id="overview-nodes-content"><p class="node-choice-help">启动核心后读取节点信息。</p></div>
+        </article>
         <div class="metrics-grid">
           <article class="metric-card"><span>配置档案</span><strong id="metric-profiles">0</strong><small>profiles</small></article>
           <article class="metric-card"><span>节点</span><strong id="metric-nodes">—</strong><small>active profile</small></article>
@@ -336,6 +350,7 @@ app.innerHTML = `
         <article class="panel proxy-groups-panel">
           <div class="panel-heading"><div><div class="section-label">PROXY GROUPS</div><h2>代理组与节点</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
           <div id="openai-policy-card" class="openai-policy-card"></div>
+          ${openAiCostsMarkup}
           <div id="proxy-groups" class="card-list empty-state">启动 Mihomo 后查看代理组。</div>
         </article>
       </section>
@@ -653,6 +668,11 @@ async function refreshBase() {
     if (!themeController.sync(settings.theme, requestedThemeRevision)) {
       settings.theme = themeController.snapshot.preference;
     }
+    if (activeProfile?.profile.id !== store.activeProfile?.profile.id || activeProfile?.profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || runtime?.phase !== "running") {
+      proxyReadSequence++;
+      store.proxies = null;
+      overviewNodeDetails = {};
+    }
     Object.assign(store, {
       appInfo,
       settings,
@@ -676,8 +696,10 @@ async function refreshBase() {
   renderSettings();
   renderOpenAiPolicy();
   renderGlobalTraffic();
+  void openAiCosts.refresh();
   scheduleAutomaticUpdateCheck();
   void refreshSessionResume();
+  void refreshProxies(true);
   return true;
 }
 
@@ -816,6 +838,7 @@ function renderOverview() {
     ? String(store.activeProfile.summary.ruleCount + store.activeProfile.summary.ruleProviderCount)
     : "—";
   $("#metric-phase")!.textContent = phaseLabel(runtime?.phase);
+  renderOverviewNodes();
 }
 
 function profileSourceLabel(profile: ProfileRecord): string {
@@ -1289,7 +1312,13 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
   store.runtime = runtime;
   store.systemProxy = systemProxy;
   store.tunHelper = tunHelper;
-  if (runtime.phase !== "running") store.networkSafety = null;
+  if (runtime.phase !== "running") {
+    store.networkSafety = null;
+    store.proxies = null;
+    overviewNodeDetails = {};
+    proxyReadSequence++;
+    renderProxies();
+  }
   renderTunHelper();
   renderHeader();
   renderOverview();
@@ -1706,7 +1735,7 @@ function openAiTaskPhaseLabel(task: OpenAiPolicyTask): string {
     idle: "等待创建",
     preparing: "准备独立检测环境",
     checking: "检测 OpenAI 可达性",
-    bandwidth: "评估带宽与抖动",
+    bandwidth: "评估节点质量",
     applying: "校验并应用配置",
     completed: "配置已生成",
     failed: "生成失败",
@@ -1718,6 +1747,7 @@ function openAiTaskPhaseLabel(task: OpenAiPolicyTask): string {
 function renderOpenAiPolicy() {
   const container = $("#openai-policy-card");
   if (!container) return;
+  if (store.proxies && (nodeSelectionBusy || container.contains(document.activeElement) && document.activeElement?.tagName === "SELECT")) return;
   const active = store.activeProfile;
   if (!active) {
     container.innerHTML = `
@@ -1738,7 +1768,7 @@ function renderOpenAiPolicy() {
         ?.profile.displayName ?? "其他订阅"
     : null;
   const proxyMap = (store.proxies?.proxies ?? {}) as Record<string, any>;
-  const runtimeGroup = proxyMap[OPENAI_GROUP_NAME];
+  const runtimeGroup = store.runtime?.phase === "running" ? proxyMap[OPENAI_GROUP_NAME] : undefined;
   const currentNode = runtimeGroup?.now ?? policy.selectedNodes[0]?.name ?? "—";
   const progress = task?.total
     ? Math.min(100, Math.round((task.completed / task.total) * 100))
@@ -1762,13 +1792,12 @@ function renderOpenAiPolicy() {
         </div>
       </div>
       <div class="openai-policy-actions">
-        <button class="button button-quiet" data-openai-action="stability" aria-pressed="${Boolean(policy.stabilityEnabled)}" ${!policy.enabled || policy.selectedNodes.length < 2 || task?.running || stabilityActionInFlight ? "disabled" : ""}>${policy.stabilityEnabled ? "稳定优先：已开启" : "启用稳定优先"}</button>
+        <button class="button button-quiet" data-openai-action="stability" aria-pressed="${Boolean(policy.stabilityEnabled)}" ${!policy.enabled || policy.selectedNodes.length < 2 || task?.running || stabilityActionInFlight ? "disabled" : ""}>${policy.stabilityEnabled ? runtimeGroup?.manualNode ? "稳定优先：手动暂停" : "稳定优先：已开启" : "启用稳定优先"}</button>
         ${running
           ? '<button class="button button-danger" data-openai-action="cancel">停止检测</button>'
           : `<button class="button button-primary" data-openai-action="generate" ${anotherTaskRunning ? "disabled" : ""}>${anotherTaskRunning ? "其他订阅生成中" : policy.enabled ? "重新筛选 10 个" : "生成 10 个节点"}</button>`}
         <button class="button button-quiet" data-openai-action="health" ${!policy.enabled || Boolean(task?.running) || store.runtime?.phase !== "running" ? "disabled" : ""}>立即健康检查</button>
         <button class="button button-quiet" data-openai-action="details" ${!policy.enabled || store.runtime?.phase !== "running" ? "disabled" : ""}>节点详情</button>
-        ${runtimeGroup?.fixed ? '<button class="button button-quiet" data-openai-action="auto">恢复自动</button>' : ""}
         ${policy.enabled && !task?.running ? '<button class="button button-danger" data-openai-action="disable">停用</button>' : ""}
       </div>
     </div>
@@ -1779,11 +1808,12 @@ function renderOpenAiPolicy() {
       <p class="openai-progress-copy">${escapeHtml(task!.message)}</p>
     ` : ""}
     ${taskForActive && task?.phase === "failed" && task.error ? `<div class="openai-error">${escapeHtml(task.error)}</div>` : ""}
+    ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, nodeSelectionBusy || Boolean(task?.running), policy.selectedNodes.map(node => node.name).filter(name => runtimeGroup.all?.includes(name)), proxyMap) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，直接使用下方普通代理组。</p>'}
     <div class="openai-policy-stats">
       <div><span>${runtimeGroup?.now ? "当前节点" : "候选首选（非运行状态）"}</span><strong>${escapeHtml(currentNode)}</strong></div>
       <div><span>自动维护</span><strong>${policy.autoMaintain ? "订阅更新后执行" : "仅手动执行"}</strong></div>
       <div><span>上次筛选</span><strong>${formatPolicyDate(policy.lastBenchmarkedAt)}</strong></div>
-      <div><span>故障策略</span><strong>${policy.stabilityEnabled ? "稳定优先 · 保持节点与故障冷却" : "基础 Fallback · 可能自动回切"}</strong></div>
+      <div><span>故障策略</span><strong>${runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : policy.stabilityEnabled ? "稳定优先 · 保持节点与故障冷却" : "基础 Fallback · 可能自动回切"}</strong></div>
     </div>
     <p class="hint">稳定优先可独立用于系统代理或 TUN，无需开启本地路由或接入 Codex。基础探测不是模型请求验证；已断开的流无法无缝续接。</p>
   `;
@@ -1853,42 +1883,124 @@ async function refreshOpenAiTask() {
   }
 }
 
-async function refreshProxies() {
-  const result = await action("", () => api.proxies());
-  if (!result) return;
-  store.proxies = result;
-  renderProxies();
+async function refreshProxies(quiet = false) {
+  const profile = store.activeProfile?.profile;
+  const sequence = ++proxyReadSequence;
+  const runtimeRevision = runtimeMutationRevision;
+  const runtimePid = store.runtime?.pid;
+  const contextCurrent = () => sequence === proxyReadSequence && runtimeRevision === runtimeMutationRevision && store.runtime?.pid === runtimePid
+    && profile?.id === store.activeProfile?.profile.id && profile?.activeRevisionId === store.activeProfile?.profile.activeRevisionId;
+  if (store.runtime?.phase !== "running" || !profile) {
+    store.proxies = null;
+    overviewNodeDetails = {};
+    renderProxies();
+    renderOverviewNodes();
+    return;
+  }
+  try {
+    const result = await api.proxies();
+    if (!contextCurrent() || store.runtime?.phase !== "running") return;
+    if (result.profileId !== profile.id || result.revisionId !== profile.activeRevisionId) throw new Error("节点信息与当前配置不一致，请刷新重试");
+    store.proxies = result;
+    proxyReadError = "";
+    renderProxies();
+    renderOverviewNodes();
+    if (store.view !== "overview") return;
+    const map = (result.proxies ?? {}) as ProxyMap;
+    const groups = generalGroups(map, profile.routingMode);
+    const general = groups.includes(overviewGroup) ? overviewGroup : groups[0];
+    const targets = [general, profile.routingMode === "rule" && profile.openaiPolicy.enabled && map[OPENAI_GROUP_NAME] ? OPENAI_GROUP_NAME : null].filter((value): value is string => Boolean(value));
+    const details = await Promise.all(targets.map(async group => {
+      try { return [group, await api.currentNodeDetails(group)] as const; }
+      catch { return [group, undefined] as const; }
+    }));
+    if (!contextCurrent() || store.runtime?.phase !== "running") return;
+    overviewNodeDetails = Object.fromEntries(details.filter((entry): entry is readonly [string, CurrentNodeDetails] => Boolean(entry[1])));
+    renderOverviewNodes();
+  } catch (error) {
+    if (!contextCurrent()) return;
+    store.proxies = null;
+    overviewNodeDetails = {};
+    proxyReadError = errorMessage(error);
+    renderProxies();
+    renderOverviewNodes();
+    if (!quiet) toast(proxyReadError, "error");
+  }
+}
+
+function renderOverviewNodes() {
+  const container = $("#overview-nodes-content");
+  if (!container) return;
+  const profile = store.activeProfile?.profile;
+  if (overviewProfile !== profile?.id) { overviewProfile = profile?.id ?? ""; overviewGroup = ""; overviewNodeDetails = {}; }
+  const running = store.runtime?.phase === "running";
+  if (!running || !profile || !store.proxies || profile.routingMode === "direct") {
+    container.innerHTML = `<p class="node-choice-help">${escapeHtml(!running ? "核心未运行，没有当前生效的代理节点。" : !profile ? "请先选用配置。" : profile.routingMode === "direct" ? "当前为直连模式，不使用代理节点。切回规则或全局模式后可选点。" : proxyReadError || "正在读取节点信息…")}</p>`;
+    return;
+  }
+  const map = (store.proxies.proxies ?? {}) as ProxyMap;
+  const groups = generalGroups(map, profile.routingMode);
+  if (!groups.includes(overviewGroup)) overviewGroup = groups[0] ?? "";
+  const html = `${groups.length > 1 ? `<label class="overview-node-selector">查看普通策略组（仅切换展示）<select id="overview-node-group">${groups.map(name => `<option value="${escapeHtml(name)}" ${overviewGroup === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>` : ""}
+    <div class="overview-node-grid">${overviewGroup ? currentNodeMarkup(profile.routingMode === "global" ? "全局代理" : "普通代理", overviewGroup, map, overviewNodeDetails[overviewGroup]) : '<p class="node-choice-help">当前配置没有可展示的普通代理组，请在「配置」检查节点与分流规则。</p>'}
+    ${profile.routingMode === "rule" && profile.openaiPolicy.enabled && map[OPENAI_GROUP_NAME] ? currentNodeMarkup("OpenAI 专用出口", OPENAI_GROUP_NAME, map, overviewNodeDetails[OPENAI_GROUP_NAME]) : ""}</div>
+    <p class="node-choice-help">${profile.routingMode === "global" ? "全局模式按 GLOBAL 组路由，不使用 OpenAI 专用分流规则。" : profile.openaiPolicy.enabled ? "OpenAI 专用出口仅用于命中对应规则的请求；用户自定义规则可能优先。" : "OpenAI 灾备未启用，普通代理选点可独立使用。"} 切换只影响后续新连接，不主动断开已有连接。</p>`;
+  if (!container.contains(document.activeElement) && container.innerHTML !== html) container.innerHTML = html;
+}
+
+async function changeNode(group: string, node: string | null, returnFocus?: HTMLElement) {
+  const profile = store.activeProfile?.profile;
+  if (nodeSelectionBusy || !profile?.activeRevisionId || store.runtime?.phase !== "running" || !store.proxies || store.openAiTask?.running) return;
+  nodeSelectionBusy = true;
+  proxyReadSequence++;
+  try {
+    const costNode = node ? ((store.proxies?.proxies ?? {}) as ProxyMap)[node] : null;
+    if (node && group === OPENAI_GROUP_NAME && (costNode?.trafficMultiplier == null || store.proxies?.costMode === "value" && costNode?.withinCostBudget === false)) {
+      if (!await confirmAction({ title: "确认节点费用", message: costNode?.trafficMultiplier == null ? "此节点倍率未知，无法保证流量成本。手动选择会优先于自动成本策略，仍要继续吗？" : `此节点为 ${costNode.trafficMultiplier}×，不符合自动成本预算。手动选择会优先于预算，仍要继续吗？`, confirmLabel: "继续手动选择", returnFocus })) return;
+    }
+    const confirmed = await confirmAction({ title: node === null ? "恢复自动选择？" : "应用所选节点？", message: `${group}${node === null ? "：恢复该组的自动策略。" : ` → ${node}。`}只影响命中此组的后续新连接，不主动断开已有连接。${group === OPENAI_GROUP_NAME && profile.openaiPolicy.stabilityEnabled && node !== null ? "手动固定期间暂停稳定策略的自动切换，节点故障时需手动更换或恢复自动。" : "Fallback / URLTest 的手动选择为优先使用，失效时核心仍可能回退。"}`, confirmLabel: node === null ? "恢复自动" : "应用节点", returnFocus });
+    if (!confirmed) return;
+    if (profile.id !== store.activeProfile?.profile.id || profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || store.runtime?.phase !== "running") {
+      toast("配置或运行状态已变化，请重新选择", "error"); return;
+    }
+    await action(node === null ? "已恢复自动选择" : "已提交节点选择，正在读取实际出口", async () => {
+      if (node === null) await api.clearProxySelection(group, profile.id, profile.activeRevisionId!);
+      else await api.selectProxy(group, node, profile.id, profile.activeRevisionId!);
+      return true;
+    });
+  } finally {
+    nodeSelectionBusy = false;
+    await refreshProxies(true);
+  }
 }
 
 function renderProxies() {
+  // Do not replace a focused native dropdown or an unapplied selection draft
+  // during background polling. Explicit refresh/confirmation updates it later.
+  if ($("#proxies-view")?.contains(document.activeElement) && !store.proxies) (document.activeElement as HTMLElement)?.blur();
+  if (store.proxies && (nodeSelectionBusy || $("#proxies-view")?.contains(document.activeElement) && document.activeElement?.tagName === "SELECT")) return;
   renderOpenAiPolicy();
   const container = $("#proxy-groups");
   if (!container) return;
-  const proxyMap = (store.proxies?.proxies ?? {}) as Record<string, any>;
+  const proxyMap = (store.runtime?.phase === "running" ? store.proxies?.proxies ?? {} : {}) as Record<string, any>;
   const groups = Object.entries(proxyMap).filter(
     ([name, value]) => name !== OPENAI_GROUP_NAME && Array.isArray(value?.all),
   );
   if (!groups.length) {
     container.className = "card-list empty-state";
-    container.textContent = "没有可展示的代理组。";
+    container.textContent = proxyReadError || "启动核心后可查看普通代理组，无需启用 OpenAI 灾备。";
     return;
   }
   container.className = "card-list";
   container.innerHTML = groups
     .map(([name, value]) => {
-      const selector = String(value.type).toLowerCase() === "selector";
       return `
         <article class="proxy-card" data-group="${escapeHtml(name)}" tabindex="-1">
           <div><h3>${escapeHtml(name)}</h3><p>${escapeHtml(value.type)} · UDP ${value.udp ? "支持" : "未知"}</p></div>
-          ${selector
-            ? `<select class="proxy-select" data-group="${escapeHtml(name)}">
-                ${value.all.map((proxy: string) => `<option value="${escapeHtml(proxy)}" ${proxy === value.now ? "selected" : ""}>${escapeHtml(proxy)}</option>`).join("")}
-              </select>`
-            : `<div class="proxy-current-node">${escapeHtml(value.now ?? "正在选择")}</div>`}
+          ${nodeSelectionMarkup(name, value, nodeSelectionBusy || Boolean(store.openAiTask?.running))}
           <div class="proxy-card-footer">
             <span>当前：${escapeHtml(value.now ?? "—")}</span>
             <div class="toolbar">
-              ${value.fixed ? `<button class="button button-quiet proxy-auto" data-group="${escapeHtml(name)}">恢复自动</button>` : ""}
               <button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">详情</button>
               <button class="button button-quiet proxy-delay" data-proxy="${escapeHtml(value.now ?? name)}">测速</button>
             </div>
@@ -1900,19 +2012,9 @@ function renderProxies() {
 
 function preferredCurrentGroup(): string | null {
   const proxyMap = (store.proxies?.proxies ?? {}) as Record<string, any>;
-  if (store.activeProfile?.profile.openaiPolicy.enabled && proxyMap[OPENAI_GROUP_NAME]) {
-    return OPENAI_GROUP_NAME;
-  }
-  const preferred = Object.entries(proxyMap).find(
-    ([name, value]) =>
-      name !== "GLOBAL" &&
-      name !== "COMPATIBLE" &&
-      name !== "PASS" &&
-      Array.isArray(value?.all) &&
-      typeof value?.now === "string",
-  );
-  if (preferred) return preferred[0];
-  return proxyMap.GLOBAL ? "GLOBAL" : null;
+  const groups = generalGroups(proxyMap, store.activeProfile?.profile.routingMode ?? "rule");
+  if (groups.length) return groups.includes(overviewGroup) ? overviewGroup : groups[0];
+  return null;
 }
 
 function renderNodeDetails() {
@@ -1945,7 +2047,7 @@ function renderNodeDetails() {
     ["端口", details.port ?? "—"],
     ["UDP", details.udp == null ? "未知" : details.udp ? "支持" : "关闭"],
     ["Provider", details.providerName ?? "本地配置"],
-    ["活动状态", details.alive == null ? "未知" : details.alive ? "Mihomo 已选中" : "当前不可用"],
+    ["探测状态", details.alive == null ? "尚未验证" : details.alive ? "最近探测可达" : "最近探测失败"],
   ];
   container.innerHTML = `
     <header class="node-modal-header">
@@ -1953,7 +2055,7 @@ function renderNodeDetails() {
       <button class="button button-quiet" data-node-modal-action="close">关闭</button>
     </header>
     <div class="node-health-summary">
-      <div><span>状态</span><strong>${details.alive === false ? "不可用" : "在线"}</strong></div>
+      <div><span>状态</span><strong>${details.alive == null ? "尚未验证" : details.alive ? "最近探测可达" : "最近探测失败"}</strong></div>
       <div><span>延迟</span><strong>${details.lastDelayMs == null ? "—" : `${details.lastDelayMs} ms`}</strong></div>
       <div><span>协议</span><strong>${escapeHtml(details.nodeType)} · ${escapeHtml(details.tls ?? "无 TLS")}</strong></div>
       <div><span>最近检测</span><strong>${latestTime ? formatPolicyDate(latestTime) : "暂无"}</strong></div>
@@ -2003,7 +2105,9 @@ function closeNodeDetails() {
 
 function focusNodeGroup(group: string) {
   closeNodeDetails();
-  const card = $$(".proxy-card").find((element) => element.dataset.group === group);
+  navigate("proxies");
+  renderProxies();
+  const card = group === OPENAI_GROUP_NAME ? $("#openai-policy-card") : $$(".proxy-card").find((element) => element.dataset.group === group);
   card?.scrollIntoView({ behavior: "smooth", block: "center" });
   (card?.querySelector("select, button") as HTMLElement | null)?.focus();
 }
@@ -2119,6 +2223,12 @@ async function runDiagnostics() {
 }
 
 const logsView = mountLogs($("#logs-view")!, { api, confirm: confirmAction });
+const openAiCosts = mountOpenAiCosts({
+  profile: () => store.activeProfile ? { id: store.activeProfile.profile.id, revision: store.activeProfile.profile.activeRevisionId } : null,
+  read: api.openAiCosts, save: api.saveOpenAiCosts,
+  confirm: message => confirmAction({ title: "节点成本策略", message, confirmLabel: "确认", returnFocus: $("#openai-cost-settings summary") ?? undefined }),
+  changed: () => { void refreshProxies(true); },
+});
 const programManager = mountProgramManager($("#programs-view")!, { api, confirm: confirmAction, error: errorMessage });
 const localRouting = mountLocalRouting($("#routing-view")!, { api, confirm: confirmAction, error: errorMessage });
 mountProxyCompatibility($("#proxy-compatibility-panel")!, api.systemProxyCompatibility, errorMessage);
@@ -2152,9 +2262,11 @@ function navigate(view: ViewName) {
     element.classList.toggle("is-hidden", element.id !== `${view}-view`),
   );
   if (view === "proxies") {
+    void openAiCosts.refresh();
     void refreshOpenAiTask();
     if (store.runtime?.phase === "running") void refreshProxies();
   }
+  if (view === "overview") void refreshProxies(true);
   if (view === "subscriptions") renderSubscriptions();
   if (view === "settings") void refreshSessionResume(true);
   if (view === "programs") void programManager.refresh();
@@ -2282,21 +2394,31 @@ $("#confirmation-modal")!.addEventListener("click", (event) => {
   if (button?.dataset.confirmationAction === "confirm") closeConfirmation(true);
 });
 
-$("#proxy-groups")!.addEventListener("change", async (event) => {
-  const select = (event.target as HTMLElement).closest<HTMLSelectElement>(".proxy-select");
-  if (!select) return;
-  await action("节点已切换", () => api.selectProxy(select.dataset.group ?? "", select.value));
-  await refreshProxies();
+$("#proxies-view")!.addEventListener("submit", (event) => {
+  const form = (event.target as HTMLElement).closest<HTMLFormElement>("form[data-node-group]");
+  if (!form) return;
+  event.preventDefault();
+  const selected = form.querySelector("select")?.value;
+  if (selected) void changeNode(form.dataset.nodeGroup!, selected, form.querySelector("button") ?? undefined);
+});
+$("#proxies-view")!.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLElement>("[data-node-auto]");
+  if (button) void changeNode(button.dataset.nodeAuto!, null, button);
+});
+$("#overview-nodes-refresh")!.addEventListener("click", () => void refreshProxies());
+$("#overview-nodes-content")!.addEventListener("change", event => {
+  if ((event.target as HTMLElement).id !== "overview-node-group") return;
+  overviewGroup = (event.target as HTMLSelectElement).value;
+  (event.target as HTMLElement).blur();
+  renderOverviewNodes();
+  void refreshProxies(true);
+});
+$("#overview-nodes-content")!.addEventListener("click", event => {
+  const target = (event.target as HTMLElement).closest<HTMLElement>("[data-overview-node-group], [data-overview-node-details]");
+  if (target?.dataset.overviewNodeGroup) focusNodeGroup(target.dataset.overviewNodeGroup);
+  else if (target?.dataset.overviewNodeDetails) void openNodeDetails(target.dataset.overviewNodeDetails);
 });
 $("#proxy-groups")!.addEventListener("click", async (event) => {
-  const autoButton = (event.target as HTMLElement).closest<HTMLButtonElement>(".proxy-auto");
-  if (autoButton?.dataset.group) {
-    await action("已恢复自动选择", () =>
-      api.clearProxySelection(autoButton.dataset.group!),
-    );
-    await refreshProxies();
-    return;
-  }
   const detailsButton = (event.target as HTMLElement).closest<HTMLButtonElement>(
     ".proxy-details",
   );
@@ -2347,11 +2469,6 @@ $("#openai-policy-card")!.addEventListener("click", async (event) => {
     }
   } else if (actionName === "details") {
     await openNodeDetails(OPENAI_GROUP_NAME);
-  } else if (actionName === "auto") {
-    await action("OpenAI 策略已恢复自动选择", () =>
-      api.clearProxySelection(OPENAI_GROUP_NAME),
-    );
-    await refreshProxies();
   } else if (actionName === "disable") {
     const policy = await action("OpenAI 自动灾备已停用", () =>
       api.disableOpenAiPolicy(store.activeProfile!.profile.id),
@@ -2571,6 +2688,12 @@ window.setInterval(() => {
 window.setInterval(() => {
   if (store.openAiTask?.running) void refreshOpenAiTask();
 }, 1_000);
+
+window.setInterval(() => {
+  if (proxyPolling || nodeSelectionBusy || document.hidden || !["overview", "proxies"].includes(store.view) || store.runtime?.phase !== "running") return;
+  proxyPolling = true;
+  void refreshProxies(true).finally(() => { proxyPolling = false; });
+}, 10_000);
 
 void listen<GlobalTrafficSnapshot>("global-traffic", (event) => {
   store.globalTraffic = event.payload;
