@@ -2,6 +2,7 @@ mod app_log;
 mod app_update;
 mod appearance;
 mod config;
+mod connection_feedback;
 mod diagnostics;
 mod effective;
 mod error;
@@ -29,8 +30,9 @@ mod user_rules;
 mod windows_test_manifest;
 
 use config::{inspect_profile, ProfileSummary};
+use connection_feedback::{ConnectionFeedback, Phase as ConnectionPhase};
 use diagnostics::DiagnosticCheck;
-use error::{AppError, AppErrorDto};
+use error::{AppError, AppErrorDto, StartupReason};
 use mihomo_api::MihomoApiClient;
 use models::{AppSettings, NetworkMode, PublicAppSettings, PublicProfileRecord, RoutingMode};
 use openai_policy::{OpenAiPolicyTaskManager, OpenAiPolicyTaskSnapshot};
@@ -391,6 +393,38 @@ async fn start_runtime_for_settings(
     settings: &AppSettings,
     automatic_proxy: Option<&platform::ResumeProxyGuard>,
 ) -> Result<(), AppErrorDto> {
+    let feedback = app.state::<ConnectionFeedback>();
+    let operation = feedback.begin(app, settings.network_mode, ConnectionPhase::Validating);
+    let result = start_runtime_inner(app, state, settings, automatic_proxy).await;
+    match &result {
+        Ok(()) => {
+            feedback.advance(app, operation, ConnectionPhase::Enabled);
+            if settings.network_mode != NetworkMode::Tun {
+                feedback.probe(app, operation, settings.clone());
+            }
+        }
+        Err(error) => {
+            if app
+                .state::<session_resume::SessionResumeManager>()
+                .is_shutting_down()
+            {
+                return result;
+            }
+            // cleanup may invalidate a background probe; publish failure on the
+            // current generation, with no stale old network result attached.
+            let current = feedback.snapshot().operation;
+            feedback.fail(app, current, error);
+        }
+    }
+    result
+}
+
+async fn start_runtime_inner(
+    app: &AppHandle,
+    state: &State<'_, MihomoRuntime>,
+    settings: &AppSettings,
+    automatic_proxy: Option<&platform::ResumeProxyGuard>,
+) -> Result<(), AppErrorDto> {
     let storage = AppStorage::from_app(app).map_err(dto)?;
     let effective = active_effective_config(app, settings).map_err(dto)?;
     app_log::record(
@@ -401,7 +435,10 @@ async fn start_runtime_for_settings(
             settings.network_mode, settings.mixed_port, settings.controller_port
         ),
     );
-    runtime::validate_source(app, &effective.yaml).map_err(dto)?;
+    #[cfg(not(windows))]
+    if settings.network_mode == NetworkMode::Tun {
+        runtime::validate_source(app, &effective.yaml).map_err(dto)?;
+    }
     app.state::<session_resume::SessionResumeManager>()
         .while_open(|| {
             storage.mark_clean_shutdown(false)?;
@@ -441,40 +478,45 @@ async fn finish_runtime_start(
     };
     if let Err(error) = api.wait_ready(ready_timeout).await {
         let _ = state.stop(Some(app));
-        return Err(dto(error));
+        return Err(dto(AppError::startup(
+            StartupReason::CoreNotReady,
+            error,
+            None,
+        )));
     }
     if settings.network_mode == NetworkMode::SystemProxy {
-        let report = match network_safety::verify_local_proxy(settings).await {
-            Ok(report) => report,
-            Err(error) => {
-                let _ = state.stop(Some(app));
-                return Err(dto(error));
-            }
-        };
+        let feedback = app.state::<ConnectionFeedback>();
+        feedback.advance(
+            app,
+            feedback.snapshot().operation,
+            ConnectionPhase::Applying,
+        );
         let proxy_result = app
             .state::<session_resume::SessionResumeManager>()
             .while_open(|| match automatic_proxy {
                 Some(guard) => {
-                    platform::enable_automatic_system_proxy(app, settings.mixed_port, guard)
+                    platform::enable_automatic_system_proxy(app, settings.mixed_port, guard)?;
+                    if let Err(error) = platform::verify_system_proxy(settings.mixed_port) {
+                        let restored = platform::restore_system_proxy(app).is_ok();
+                        return Err(AppError::startup(
+                            StartupReason::ProxyApply,
+                            error,
+                            Some(restored),
+                        ));
+                    }
+                    Ok(())
                 }
-                None => platform::enable_system_proxy(app, settings.mixed_port),
+                None => platform::proxy_transaction(app, || {
+                    platform::enable_system_proxy(app, settings.mixed_port)?;
+                    platform::verify_system_proxy(settings.mixed_port)
+                }),
             });
         if let Err(error) = proxy_result {
-            if automatic_proxy.is_none() {
-                let _ = platform::restore_system_proxy(app);
-            }
             let _ = state.stop(Some(app));
             return Err(dto(error));
         }
-        if let Err(error) = platform::verify_system_proxy(settings.mixed_port) {
-            let _ = platform::restore_system_proxy(app);
-            let _ = state.stop(Some(app));
-            return Err(dto(error));
-        }
-        // The explicit loopback proxy was just tested. Changing OS registration
-        // does not change that route; a second identical probe could tear down
-        // an already validated core on a single transient upstream failure.
-        let _ = app.emit("network-safety-report", &report);
+        // Internet health is observed after local enablement; it never gates
+        // this command or tears down an already enabled system proxy.
     } else if settings.network_mode == NetworkMode::Tun {
         tokio::time::sleep(Duration::from_millis(900)).await;
         #[cfg(not(windows))]
@@ -697,18 +739,70 @@ fn check_system_proxy_compatibility(
     platform::proxy_compatibility(settings.mixed_port).map_err(dto)
 }
 
+fn can_switch_without_restart(previous: NetworkMode, next: NetworkMode) -> bool {
+    previous != NetworkMode::Tun && next != NetworkMode::Tun
+}
+
 #[tauri::command]
-fn set_network_mode(
+async fn set_network_mode(
     app: AppHandle,
     state: State<'_, MihomoRuntime>,
     mode: NetworkMode,
 ) -> Result<PublicAppSettings, AppErrorDto> {
-    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
-    if state.status(Some(&app)).phase == models::RuntimePhase::Running {
-        return Err(dto(AppError::Conflict(
-            "请先停止 Mihomo 再切换网络模式".to_string(),
-        )));
+    let _configuration = session_resume::acquire_manual_configuration(&app)
+        .await
+        .map_err(dto)?;
+    let storage = AppStorage::from_app(&app).map_err(dto)?;
+    let current = storage.settings().map_err(dto)?;
+    if state.running_identity().is_some() {
+        if !can_switch_without_restart(current.network_mode, mode) {
+            return Err(dto(AppError::Conflict(
+                "请先停止代理服务，再切换 TUN 模式".into(),
+            )));
+        }
+        let feedback = app.state::<ConnectionFeedback>();
+        let operation = feedback.begin(&app, mode, ConnectionPhase::Applying);
+        if mode == NetworkMode::SystemProxy {
+            let result = MihomoApiClient::new(&current)
+                .map_err(dto)?
+                .wait_ready(Duration::from_secs(2))
+                .await;
+            if let Err(error) = result {
+                let error = dto(AppError::startup(StartupReason::CoreNotReady, error, None));
+                feedback.fail(&app, operation, &error);
+                return Err(error);
+            }
+        }
+        let result = app
+            .state::<session_resume::SessionResumeManager>()
+            .while_open(|| {
+                platform::proxy_transaction(&app, || {
+                    if mode == NetworkMode::SystemProxy {
+                        platform::enable_system_proxy(&app, current.mixed_port)?;
+                        platform::verify_system_proxy(current.mixed_port)?;
+                    } else {
+                        platform::restore_system_proxy(&app)?;
+                    }
+                    let mut next = current.clone();
+                    next.network_mode = mode;
+                    storage.save_settings(&next)?;
+                    Ok(next)
+                })
+            });
+        return match result {
+            Ok(settings) => {
+                feedback.advance(&app, operation, ConnectionPhase::Enabled);
+                feedback.probe(&app, operation, settings.clone());
+                Ok(PublicAppSettings::from(&settings))
+            }
+            Err(error) => {
+                let error = dto(error);
+                feedback.fail(&app, operation, &error);
+                Err(error)
+            }
+        };
     }
+    app.state::<ConnectionFeedback>().invalidate(&app);
     if mode == NetworkMode::Tun {
         let helper = tun_service::status();
         if !helper.ready() {
@@ -911,6 +1005,7 @@ fn cleanup_app(app: &AppHandle) {
     if !resume.begin_shutdown() {
         return;
     }
+    app.state::<ConnectionFeedback>().invalidate(app);
     app_log::record(
         0,
         app_log::Area::App,
@@ -967,6 +1062,7 @@ pub fn run() {
                 .build(),
         )
         .manage(MihomoRuntime::default())
+        .manage(ConnectionFeedback::default())
         .manage(session_resume::SessionResumeManager::default())
         .manage(app_update::AppUpdateManager::default())
         .manage(program_proxy::ProgramProxyManager::default())
@@ -1087,6 +1183,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            connection_feedback::connection_feedback,
+            connection_feedback::recheck_connection,
             session_resume::get_session_resume_status,
             startup::get_startup_status,
             local_routing::local_route_status,
@@ -1171,4 +1269,28 @@ pub fn run() {
                 cleanup_app(app);
             }
         });
+}
+
+#[cfg(test)]
+mod startup_transition_tests {
+    use super::*;
+    #[test]
+    fn only_manual_system_proxy_changes_keep_the_core_alive() {
+        for from in [
+            NetworkMode::Manual,
+            NetworkMode::SystemProxy,
+            NetworkMode::Tun,
+        ] {
+            for to in [
+                NetworkMode::Manual,
+                NetworkMode::SystemProxy,
+                NetworkMode::Tun,
+            ] {
+                assert_eq!(
+                    can_switch_without_restart(from, to),
+                    from != NetworkMode::Tun && to != NetworkMode::Tun
+                );
+            }
+        }
+    }
 }

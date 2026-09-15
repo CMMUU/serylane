@@ -55,6 +55,7 @@ pub struct NetworkSafetyCheck {
 #[serde(rename_all = "snake_case")]
 pub enum TransportFailure {
     Timeout,
+    Certificate,
     Tls,
     Dns,
     Tunnel,
@@ -81,6 +82,20 @@ pub struct NetworkSafetyReport {
 }
 
 pub async fn verify_local_proxy(settings: &AppSettings) -> AppResult<NetworkSafetyReport> {
+    let mut report = inspect_local_proxy(settings).await?;
+    if should_retry(&report) {
+        crate::app_log::record(
+            1,
+            crate::app_log::Area::Network,
+            "连接检查用时较长，等待 1 秒后重试",
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        report = inspect_local_proxy(settings).await?;
+    }
+    require_connectivity(report, "连接检查暂未通过")
+}
+
+pub async fn inspect_local_proxy(settings: &AppSettings) -> AppResult<NetworkSafetyReport> {
     let endpoint = format!("http://127.0.0.1:{}", settings.mixed_port);
     let proxy =
         reqwest::Proxy::all(&endpoint).map_err(|error| AppError::Runtime(error.to_string()))?;
@@ -93,20 +108,10 @@ pub async fn verify_local_proxy(settings: &AppSettings) -> AppResult<NetworkSafe
         .build()
         .map_err(|error| AppError::Runtime(error.to_string()))?;
 
-    let mut report = run_checks(&client, endpoint.clone(), SAFETY_TARGETS).await;
-    if should_retry(&report) {
-        crate::app_log::record(
-            1,
-            crate::app_log::Area::Network,
-            "本地核心已就绪，但外网检测出现传输错误；等待 1 秒后仅重试一次健康检查",
-        );
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        report = run_checks(&client, endpoint, SAFETY_TARGETS).await;
-    }
-    require_connectivity(report, "代理基础连通性预检失败")
+    Ok(run_checks(&client, endpoint, SAFETY_TARGETS).await)
 }
 
-fn should_retry(report: &NetworkSafetyReport) -> bool {
+pub(crate) fn should_retry(report: &NetworkSafetyReport) -> bool {
     !report.success
         && report.checks.iter().any(|check| {
             check.target != "openai" && check.failure_kind.is_some_and(TransportFailure::transient)
@@ -127,7 +132,7 @@ fn transport_error(error: &reqwest::Error) -> (TransportFailure, String) {
     let chain = causes.join(" → ");
     let lower = chain.to_ascii_lowercase();
     let (kind, category) = if lower.contains("certificate") || lower.contains("invalid peer") {
-        (TransportFailure::Tls, "TLS/证书校验失败（未绕过校验）")
+        (TransportFailure::Certificate, "安全连接校验未通过")
     } else if error.is_timeout() {
         (TransportFailure::Timeout, "连接或响应超时")
     } else if lower.contains("dns") || lower.contains("resolve") {
@@ -135,7 +140,7 @@ fn transport_error(error: &reqwest::Error) -> (TransportFailure, String) {
     } else if lower.contains("tunnel") {
         (TransportFailure::Tunnel, "代理 CONNECT 隧道建立失败")
     } else if lower.contains("tls") {
-        (TransportFailure::Tls, "TLS 握手失败（未绕过校验）")
+        (TransportFailure::Tls, "连接建立时中断")
     } else if error.is_connect()
         || ["connection reset", "broken pipe", "unexpected eof"]
             .iter()

@@ -1,0 +1,13 @@
+.connection-feedback { margin: 0 0 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-soft); }
+.connection-feedback-summary strong { font-size: 14px; }
+.connection-feedback-summary p { margin: 5px 0 0; line-height: 1.6; font-size: 13px; opacity: .85; }
+.connection-feedback[data-tone="warning"] { border-color: rgba(var(--warning-rgb), .45); }
+.connection-feedback[data-tone="error"] { border-color: rgba(var(--danger-rgb), .45); }
+.connection-feedback-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+#connection-feedback-elapsed { font-size: 12px; font-variant-numeric: tabular-nums; opacity: .7; }
+#connection-feedback-elapsed:empty { display: none; }
+#connection-feedback-details { min-width: 0; max-width: 100%; font-size: 12px; }
+#connection-feedback-details summary { cursor: pointer; padding: 6px 0; }
+#connection-feedback-details[open] { flex-basis: 100%; }
+#connection-feedback-detail-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; line-height: 1.6; }
+.connection-feedback button:focus-visible, #connection-feedback-details summary:focus-visible { outline: 2px solid #557bdb; outline-offset: 3px; border-radius: 6px; }

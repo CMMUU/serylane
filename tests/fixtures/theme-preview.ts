@@ -4,10 +4,11 @@
  * No call is forwarded to a native bridge, filesystem, core, or subscription.
  */
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
 import packageInfo from "../../package.json";
 import type { InvokeArgs } from "@tauri-apps/api/core";
 import type {
-  AppSettings, AppUpdateStatus, UpdateSource, ProfileDetails, ProfileRecord,
+  ConnectionFeedback, AppSettings, AppUpdateStatus, UpdateSource, ProfileDetails, ProfileRecord,
   UserRule, UserRulesState, UserRulesValidation,
   ProgramInput, ProgramState, RouteSettings, RouteSnapshot,
   SubscriptionMetadata, SubscriptionOverview, SubscriptionStatus, NetworkMode, OpenAiPolicyTask,
@@ -697,7 +698,28 @@ function settings(): AppSettings {
   };
 }
 
+let fixtureFeedback: ConnectionFeedback = { revision: 0, operation: 0, phase: "idle", mode: "manual", health: "unchecked", retrying: false, elapsedMs: 0, issue: null, checks: [] };
+let feedbackStartedAt = performance.now();
+function updateFeedback(change: Partial<ConnectionFeedback>) {
+  if (change.operation !== undefined && change.operation !== fixtureFeedback.operation) feedbackStartedAt = performance.now();
+  fixtureFeedback = { ...fixtureFeedback, ...change, revision: fixtureFeedback.revision + 1, elapsedMs: performance.now() - feedbackStartedAt };
+  void emit("connection-feedback", structuredClone(fixtureFeedback));
+}
+window.addEventListener("serylane-fixture-feedback", event => updateFeedback((event as CustomEvent).detail));
+function fixtureHealthProbe() {
+  const operation = fixtureFeedback.operation;
+  updateFeedback({ phase: "enabled", health: "checking", checks: [], issue: null });
+  window.setTimeout(() => {
+    if (fixtureFeedback.operation !== operation) return;
+    updateFeedback({ health: "partial", checks: [
+      { target: "google", url: "https://example.invalid", expectedStatus: 204, actualStatus: 204, success: true, latencyMs: 800, detail: "合成检测通过" },
+      { target: "cloudflare", url: "https://example.invalid", expectedStatus: 204, actualStatus: 204, success: true, latencyMs: 950, detail: "合成检测通过" },
+      { target: "openai", url: "https://example.invalid", expectedStatus: 401, actualStatus: null, success: false, latencyMs: 3000, detail: "合成连接超时；未发送网络请求", failureKind: "timeout" },
+    ] });
+  }, 3000);
+}
 const readonlyReplies: Record<string, () => unknown> = {
+  connection_feedback: () => structuredClone({ ...fixtureFeedback, elapsedMs: fixtureFeedback.health === "checking" ? performance.now() - feedbackStartedAt : fixtureFeedback.elapsedMs }),
   app_info: () => ({ productName: "Serylane", version: `${packageInfo.version} · 合成预览`, targetOs: previewWindows ? "windows" : "macos", targetArch: previewWindows ? "x86_64" : "aarch64" }),
   app_update_status: () => structuredClone(fixtureUpdate),
   get_settings: settings,
@@ -767,6 +789,7 @@ function payloadRecord(payload: InvokeArgs | undefined): Record<string, unknown>
 
 mockIPC(async (command, payload) => {
   const args = payloadRecord(payload);
+  if (command === "recheck_connection") { updateFeedback({ operation: fixtureFeedback.operation + 1 }); fixtureHealthProbe(); return structuredClone(fixtureFeedback); }
   if (command === "get_openai_costs") {
     const p = profileDetails(String(args.profileId)).profile;
     return structuredClone(fixtureCosts ?? { profileId: p.id, profileRevision: p.activeRevisionId, revision: 0, mode: "quality", maxMultiplier: null, allowUnknown: false,
@@ -859,13 +882,14 @@ mockIPC(async (command, payload) => {
     await new Promise(resolve => window.setTimeout(resolve, fixtureRuntimeDelay));
     if (command === "set_network_mode") {
       if (!["manual", "system_proxy", "tun"].includes(requestedMode)) throw routeError("INVALID_INPUT", "合成网络模式无效。");
-      if (fixtureRuntimePhase === "running") throw routeError("STATE_CONFLICT", "合成核心已运行，不允许切换模式。");
+      if (fixtureRuntimePhase === "running" && (fixtureRuntimeMode === "tun" || requestedMode === "tun")) throw routeError("STATE_CONFLICT", "切换 TUN 需要先停止。");
       if (fixtureRuntimeFailSave || (fixtureRuntimeFailRollback && fixtureRuntimeCalls.some(call => call.command === "start_active_profile"))) {
         fixtureRuntimeFailSave = false;
         throw routeError("IO_ERROR", "模拟网络模式保存失败；原设置保持不变。");
       }
       fixtureRuntimeMode = requestedMode;
-      if (requestedMode !== "system_proxy") fixtureSystemProxyActive = false;
+      fixtureSystemProxyActive = requestedMode === "system_proxy" && fixtureRuntimePhase === "running";
+      if (fixtureRuntimePhase === "running") { updateFeedback({ operation: fixtureFeedback.operation + 1, mode: requestedMode }); fixtureHealthProbe(); }
       reportRuntimeScenario();
       return settings();
     }
@@ -884,8 +908,11 @@ mockIPC(async (command, payload) => {
       fixtureRuntimePhase = "running";
       fixtureDesiredRunning = true;
       fixtureSystemProxyActive = fixtureRuntimeMode === "system_proxy" && fixtureRuntimeProxyConfirmed;
+      updateFeedback({ operation: fixtureFeedback.operation + 1, mode: fixtureRuntimeMode });
+      fixtureHealthProbe();
     } else {
       fixtureRuntimePhase = "stopped";
+      updateFeedback({ operation: fixtureFeedback.operation + 1, phase: "idle", health: "unchecked" });
       fixtureDesiredRunning = false;
       fixtureResumeStatus = { phase: "idle", message: "合成状态：用户停止，下次保持停止。" };
       fixtureSystemProxyActive = false;

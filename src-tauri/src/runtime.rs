@@ -135,6 +135,9 @@ impl MihomoRuntime {
         validate_file(&binary, &profile_dir, &config_path)?;
 
         self.set_phase(RuntimePhase::Starting);
+        if let Some(feedback) = app.try_state::<crate::connection_feedback::ConnectionFeedback>() {
+            feedback.starting(app);
+        }
         let version = binary_version(&binary).ok();
         let mut command = Command::new(&binary);
         command
@@ -226,6 +229,13 @@ impl MihomoRuntime {
     }
 
     pub fn stop(&self, app: Option<&AppHandle>) -> AppResult<RuntimeStatus> {
+        if let Some(app) = app {
+            if let Some(feedback) =
+                app.try_state::<crate::connection_feedback::ConnectionFeedback>()
+            {
+                feedback.invalidate(app);
+            }
+        }
         self.set_phase(RuntimePhase::Stopping);
         self.stop_tun_heartbeat();
         let had_tun = lock(&self.tun_lease, "tun lease")?.take().is_some();
@@ -310,7 +320,18 @@ impl MihomoRuntime {
             }
         }
 
-        let binary_info = probe_binary(app);
+        let cached_path = self.binary_path.lock().ok().and_then(|p| p.clone());
+        let cached_version = self.binary_version.lock().ok().and_then(|v| v.clone());
+        let binary_info = if let Some(path) = cached_path.filter(|p| p.is_file()) {
+            BinaryInfo {
+                available: true,
+                path: Some(path.display().to_string()),
+                version: cached_version,
+                message: "代理服务文件已就绪".into(),
+            }
+        } else {
+            probe_binary(app)
+        };
         let binary_path = self
             .binary_path
             .lock()
@@ -396,6 +417,21 @@ impl MihomoRuntime {
             }
         }
         logs
+    }
+
+    pub(crate) fn running_identity(&self) -> Option<(u32, DateTime<Utc>)> {
+        if !self.is_running().ok()? {
+            return None;
+        }
+        let started = (*self.started_at.lock().ok()?)?;
+        let pid = self
+            .child
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(|child| child.id())
+            .or_else(|| self.tun_pid.lock().ok().and_then(|pid| *pid))?;
+        Some((pid, started))
     }
 
     pub fn clear_logs(&self) {
@@ -667,8 +703,13 @@ fn preflight_ports(source: &str) -> AppResult<()> {
         ("controller port", controller_port),
     ] {
         if let Some(port) = port {
-            TcpListener::bind(("127.0.0.1", port))
-                .map_err(|error| AppError::Runtime(format!("{label} {port} 不可用: {error}")))?;
+            TcpListener::bind(("127.0.0.1", port)).map_err(|error| {
+                AppError::startup(
+                    crate::error::StartupReason::PortInUse,
+                    format!("{label} {port}: {error}"),
+                    None,
+                )
+            })?;
         }
     }
     Ok(())

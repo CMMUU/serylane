@@ -82,8 +82,10 @@ pub(crate) fn prepare_automatic_proxy_resume(app: &AppHandle) -> AppResult<Resum
         false
     };
     if !resume_proxy_available(&baseline, owned) {
-        return Err(AppError::Conflict(
-            "系统代理或 PAC 已由其他配置占用，自动恢复不会覆盖它".into(),
+        return Err(AppError::startup(
+            crate::error::StartupReason::ProxyChanged,
+            "系统代理或 PAC 已由其他配置占用，自动恢复不会覆盖它",
+            None,
         ));
     }
     #[cfg(target_os = "macos")]
@@ -95,8 +97,10 @@ pub(crate) fn prepare_automatic_proxy_resume(app: &AppHandle) -> AppResult<Resum
                     line.trim().eq_ignore_ascii_case("Enabled: Yes")
                         || line.trim().eq_ignore_ascii_case("Auto Proxy Discovery: On")
                 }) {
-                    return Err(AppError::Conflict(
-                        "系统已启用 PAC 或自动代理发现，自动恢复不会覆盖它".into(),
+                    return Err(AppError::startup(
+                        crate::error::StartupReason::ProxyChanged,
+                        "系统已启用 PAC 或自动代理发现，自动恢复不会覆盖它",
+                        None,
                     ));
                 }
             }
@@ -114,8 +118,10 @@ pub(crate) fn enable_automatic_system_proxy(
     // connectivity checks. If ownership changed meanwhile, leave it untouched.
     let current = prepare_automatic_proxy_resume(app)?;
     if current.baseline != guard.baseline {
-        return Err(AppError::Conflict(
-            "启动检查期间系统代理设置已变化，已取消自动接管".into(),
+        return Err(AppError::startup(
+            crate::error::StartupReason::ProxyChanged,
+            "启动检查期间系统代理设置已变化，已取消自动接管",
+            None,
         ));
     }
     let mut mutation_started = false;
@@ -170,8 +176,10 @@ fn check_resume_baseline(
     expected: Option<&SystemProxySnapshot>,
 ) -> AppResult<()> {
     if expected.is_some_and(|value| current != value) {
-        return Err(AppError::Conflict(
-            "接入前系统代理设置已变化，已取消自动接管".into(),
+        return Err(AppError::startup(
+            crate::error::StartupReason::ProxyChanged,
+            "接入前系统代理设置已变化，已取消自动接管",
+            None,
         ));
     }
     Ok(())
@@ -277,7 +285,14 @@ pub fn restore_system_proxy(app: &AppHandle) -> AppResult<SystemProxyStatus> {
 pub fn status(app: &AppHandle) -> SystemProxyStatus {
     let path = snapshot_path(app).ok();
     #[cfg(not(windows))]
-    let active = path.as_ref().is_some_and(|value| value.exists());
+    let active = path.as_ref().is_some_and(|value| value.exists())
+        && (|| -> AppResult<bool> {
+            let port = crate::storage::AppStorage::from_app(app)?
+                .settings()?
+                .mixed_port;
+            Ok(proxy_matches_port(&capture_system_proxy()?, port))
+        })()
+        .unwrap_or(false);
     #[cfg(windows)]
     let active = (|| -> Option<bool> {
         let saved: WindowsProxyLease =
@@ -1076,6 +1091,76 @@ mod tests {
     }
 }
 
+/// Roll back exactly this operation's OS state and ownership file, including
+/// persistence failures. Never expose snapshots or their possible credentials.
+pub(crate) fn proxy_transaction<T>(
+    app: &AppHandle,
+    change: impl FnOnce() -> AppResult<T>,
+) -> AppResult<T> {
+    let before = capture_system_proxy()?;
+    let path = snapshot_path(app)?;
+    let lease = if path.exists() {
+        Some(fs::read(&path)?)
+    } else {
+        None
+    };
+    complete_proxy_transaction(change(), || {
+        restore_snapshot(&before)?;
+        if capture_system_proxy()? != before {
+            return Err(AppError::Platform(
+                "恢复后读回的系统代理设置与原状态不一致".into(),
+            ));
+        }
+        if let Some(bytes) = lease {
+            crate::storage::write_private_atomic(&path, &bytes)
+        } else if path.exists() {
+            fs::remove_file(&path).map_err(AppError::from)
+        } else {
+            Ok(())
+        }
+    })
+}
+fn complete_proxy_transaction<T>(
+    result: AppResult<T>,
+    restore: impl FnOnce() -> AppResult<()>,
+) -> AppResult<T> {
+    result.map_err(|error| {
+        AppError::startup(
+            crate::error::StartupReason::ProxyApply,
+            error,
+            Some(restore().is_ok()),
+        )
+    })
+}
+
+#[cfg(any(not(windows), test))]
+fn proxy_matches_port(snapshot: &SystemProxySnapshot, port: u16) -> bool {
+    match snapshot {
+        SystemProxySnapshot::Macos { services } => {
+            !services.is_empty()
+                && services.iter().all(|service| {
+                    [&service.http, &service.https, &service.socks]
+                        .iter()
+                        .all(|p| p.enabled && p.server == "127.0.0.1" && p.port == port)
+                })
+        }
+        SystemProxySnapshot::Linux { values } => {
+            values
+                .get("org.gnome.system.proxy|mode")
+                .is_some_and(|v| v.trim().trim_matches('\'') == "manual")
+                && ["http", "https", "socks"].iter().all(|p| {
+                    values
+                        .get(&format!("org.gnome.system.proxy.{p}|host"))
+                        .is_some_and(|v| v.trim().trim_matches('\'') == "127.0.0.1")
+                        && values
+                            .get(&format!("org.gnome.system.proxy.{p}|port"))
+                            .is_some_and(|v| v.trim() == port.to_string())
+                })
+        }
+        SystemProxySnapshot::Windows { .. } => false,
+    }
+}
+
 #[cfg(test)]
 mod windows_proxy_tests {
     use super::*;
@@ -1353,5 +1438,71 @@ mod windows_proxy_tests {
             committed: false,
         };
         assert_eq!(saved.restoration(&before, 7891), Some(original));
+    }
+}
+
+#[cfg(test)]
+mod local_proxy_transaction_tests {
+    use super::*;
+    #[test]
+    fn successful_changes_do_not_run_rollback() {
+        assert_eq!(
+            complete_proxy_transaction(Ok(42), || panic!("unexpected rollback")).unwrap(),
+            42
+        );
+    }
+    #[test]
+    fn failed_setting_or_persistence_rolls_back_and_reports_the_actual_outcome() {
+        for restore_ok in [true, false] {
+            let called = std::cell::Cell::new(0);
+            let error = complete_proxy_transaction::<()>(
+                Err(AppError::Io("fixture save error".into())),
+                || {
+                    called.set(called.get() + 1);
+                    if restore_ok {
+                        Ok(())
+                    } else {
+                        Err(AppError::Io("fixture restore error".into()))
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(called.get(), 1);
+            assert!(
+                matches!(error, AppError::Startup { restored: Some(ok), .. } if ok == restore_ok)
+            );
+        }
+    }
+    #[test]
+    fn snapshot_file_alone_is_not_proxy_enablement_evidence() {
+        let proxy = ProxyProtocolState {
+            enabled: true,
+            server: "127.0.0.1".into(),
+            port: 7895,
+        };
+        let mut service = MacServiceProxyState {
+            service: "fixture".into(),
+            http: proxy.clone(),
+            https: proxy.clone(),
+            socks: proxy,
+            bypass_domains: vec![],
+        };
+        assert!(proxy_matches_port(
+            &SystemProxySnapshot::Macos {
+                services: vec![service.clone()]
+            },
+            7895
+        ));
+        service.https.port = 7999;
+        assert!(!proxy_matches_port(
+            &SystemProxySnapshot::Macos {
+                services: vec![service]
+            },
+            7895
+        ));
+        assert!(!proxy_matches_port(
+            &SystemProxySnapshot::Macos { services: vec![] },
+            7895
+        ));
     }
 }

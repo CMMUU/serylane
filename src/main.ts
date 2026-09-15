@@ -1,4 +1,6 @@
 import "./styles.css";
+import "./connection-feedback.css";
+import { connectionFeedbackMarkup, mountConnectionFeedback } from "./connection-feedback";
 import "./desktop-theme.css";
 import "./local-routing.css";
 import "./subscription-cards.css";
@@ -27,6 +29,7 @@ import {
 } from "./theme";
 import type { ThemePreference, ThemeSnapshot } from "./theme";
 import type {
+  ConnectionFeedback,
   AppInfo,
   AppSettings,
   AppUpdateInfo,
@@ -202,6 +205,7 @@ app.innerHTML = `
 
       <div class="page-scroll" id="page-scroll" tabindex="0" role="region" aria-labelledby="page-title">
       <aside class="session-resume-notice is-hidden" id="session-resume-notice" role="status" aria-live="polite"><strong id="session-resume-title"></strong><p id="session-resume-message"></p></aside>
+      ${connectionFeedbackMarkup}
       <section class="view-stack" id="overview-view">
         <div class="hero-grid">
           <article class="connection-card">
@@ -630,6 +634,22 @@ function phaseLabel(phase: string | undefined): string {
   return labels[phase ?? "stopped"] ?? phase ?? "已停止";
 }
 
+const connectionFeedback = mountConnectionFeedback(document.querySelector<HTMLElement>("#connection-feedback")!, async name => {
+  if (["settings", "profiles", "subscriptions", "diagnostics"].includes(name)) { navigate(name as ViewName); return; }
+  if (name === "refresh") { await refreshRuntimeOnly(); await refreshConnectionFeedback(); return; }
+  if (name === "retry") {
+    const mode = connectionFeedback.snapshot()?.mode ?? store.settings?.networkMode ?? "manual";
+    if (store.runtime?.phase === "running") { await switchNetworkMode(mode); return; }
+    await startRuntime(mode === "manual" ? "previous" : mode); return;
+  }
+  connectionFeedback.accept(await api.recheckConnection());
+});
+window.addEventListener("pagehide", () => connectionFeedback.dispose(), { once: true });
+async function refreshConnectionFeedback() {
+  try { connectionFeedback.accept(await api.connectionFeedback()); }
+  catch { /* A transient status-read failure never changes a known runtime state. */ }
+}
+
 async function refreshBase() {
   const requestedBaseRead = ++baseReadSequence;
   const requestedThemeRevision = themeController.mutationRevision;
@@ -727,6 +747,7 @@ async function refreshSessionResume(force = false) {
   const revision = sessionResumeRevision;
   try {
     const status = await api.sessionResume();
+    void refreshConnectionFeedback();
     const registration = store.view === "settings" || startupStatus === null || force
       ? await api.startupStatus().catch(() => null)
       : undefined;
@@ -764,7 +785,7 @@ function renderHeader() {
   $("#application-runtime-state")!.textContent = networkModeSwitching
     ? "正在切换网络"
     : runtimeActionInFlight
-      ? "正在处理"
+      ? "正在开启代理"
       : phaseLabel(store.runtime?.phase);
   $("#application-profile-state")!.textContent =
     store.activeProfile?.profile.displayName ?? "未选择订阅";
@@ -1306,12 +1327,13 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
   if (requestedDuringWrite && !allowDuringRuntimeAction) return;
   const requestedRevision = runtimeMutationRevision;
   const requestedSequence = ++runtimeReadSequence;
-  const [runtime, systemProxy, tunHelper] = await Promise.all([api.runtime(), api.systemProxy(), api.tunHelperStatus()]);
+  const [runtime, systemProxy] = await Promise.all([api.runtime(), api.systemProxy()]);
+  // Helper readback is unrelated to System Proxy completion. Refresh it later.
+  void api.tunHelperStatus().then(helper => { if (requestedRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); } }).catch(() => {});
   if (requestedRevision !== runtimeMutationRevision || requestedSequence !== runtimeReadSequence
     || (!allowDuringRuntimeAction && (runtimeActionInFlight || networkModeSwitching || settingsSaving))) return;
   store.runtime = runtime;
   store.systemProxy = systemProxy;
-  store.tunHelper = tunHelper;
   if (runtime.phase !== "running") {
     store.networkSafety = null;
     store.proxies = null;
@@ -1323,9 +1345,11 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
   renderHeader();
   renderOverview();
   renderSubscriptions();
+  void refreshConnectionFeedback();
 }
 
 async function startRuntime(mode: RuntimeStartMode) {
+  connectionFeedback.clearIssue();
   const result = await startRuntimeInMode(mode, {
     state: () => ({ settings: store.settings, runtime: store.runtime, systemProxyActive: Boolean(store.systemProxy?.active), hasProfile: Boolean(store.activeProfile), busy: runtimeActionInFlight || networkModeSwitching || settingsSaving }),
     setBusy: (busy) => { runtimeMutationRevision++; runtimeActionInFlight = busy; renderHeader(); renderOverview(); renderAppearance(themeController.snapshot); },
@@ -1345,16 +1369,18 @@ async function startRuntime(mode: RuntimeStartMode) {
     let message = errorMessage(result.error);
     if (result.restored) message += "；已恢复之前的网络模式，未重新启动代理";
     if (result.rollbackError) message += `；回滚失败：${errorMessage(result.rollbackError)}`;
-    toast(message, "error");
+    connectionFeedback.showError(result.error);
   } else if (result.refreshError) {
-    toast(`运行状态刷新失败，请点击刷新核对：${errorMessage(result.refreshError)}`, "error");
+    connectionFeedback.showError({ userMessage: { title: "暂时未获取到最新状态", description: "请刷新确认代理是否已开启。", action: "refresh", details: "" } });
   } else if (result.kind === "started") {
-    toast(store.settings?.networkMode === "system_proxy" ? "Mihomo 已启动，系统代理已开启" : store.settings?.networkMode === "tun" ? "Mihomo 已启动，TUN 模式已开启" : "Mihomo 已启动，仅使用本地代理端口", "success");
+    toast(store.settings?.networkMode === "system_proxy" ? "系统代理已开启，正在检查网络连接" : store.settings?.networkMode === "tun" ? "Mihomo 已启动，TUN 模式已开启" : "本地代理已开启，正在检查网络连接", "success");
   }
+  void refreshConnectionFeedback();
   void refreshSessionResume(true);
 }
 
 async function stopRuntime() {
+  connectionFeedback.clearIssue();
   if (runtimeActionInFlight || networkModeSwitching) return;
   runtimeActionInFlight = true;
   runtimeMutationRevision++;
@@ -1383,10 +1409,7 @@ function toggleGlobalNetworkMode(mode: "system_proxy" | "tun") {
   } else if (store.settings.networkMode === mode && !running) {
     void startRuntime(mode);
   } else if (store.settings.networkMode === mode) {
-    void (async () => {
-      await stopRuntime();
-      await startRuntime(mode);
-    })();
+    void switchNetworkMode(mode);
   } else {
     void switchNetworkMode(mode);
   }
@@ -1397,7 +1420,9 @@ async function switchNetworkMode(mode: NetworkMode) {
   if (networkModeSwitching || runtimeActionInFlight || settingsSaving) return;
   const wasRunning = store.runtime?.phase === "running";
   const currentMode = store.settings.networkMode;
-  if (mode === currentMode) return;
+  if (mode === currentMode && (mode !== "system_proxy" || store.systemProxy?.active)) return;
+  const keepCore = wasRunning && mode !== "tun" && currentMode !== "tun";
+  connectionFeedback.clearIssue();
   const systemSwitch = $("#home-system-proxy") as HTMLInputElement;
   const tunSwitch = $("#home-tun") as HTMLInputElement;
   let modeChanged = false;
@@ -1409,10 +1434,10 @@ async function switchNetworkMode(mode: NetworkMode) {
   renderHeader();
   try {
     if (mode === "tun" && !(await ensureTunHelperReady())) return;
-    if (wasRunning) await api.stop();
+    if (wasRunning && !keepCore) await api.stop();
     store.settings = await api.setNetworkMode(mode);
     modeChanged = true;
-    if (store.activeProfile && (wasRunning || mode !== "manual")) {
+    if (!keepCore && store.activeProfile && (wasRunning || mode !== "manual")) {
       store.runtime = await api.startActive();
     }
     toast(
@@ -1425,7 +1450,7 @@ async function switchNetworkMode(mode: NetworkMode) {
     );
   } catch (error) {
     let message = errorMessage(error);
-    if (modeChanged) {
+    if (modeChanged && !keepCore) {
       try {
         store.settings = await api.setNetworkMode(currentMode);
         if (store.activeProfile && wasRunning) {
@@ -1436,12 +1461,15 @@ async function switchNetworkMode(mode: NetworkMode) {
         message += `；回滚失败：${errorMessage(rollbackError)}`;
       }
     }
-    toast(message, "error");
+    connectionFeedback.showError(error);
   } finally {
     networkModeSwitching = false;
     runtimeMutationRevision++;
     renderAppearance(themeController.snapshot);
-    await refreshBase();
+    store.settings = await api.settings().catch(() => store.settings!);
+    try { await refreshRuntimeOnly(); } catch (error) { connectionFeedback.showError(error); }
+    await refreshConnectionFeedback();
+    void refreshBase();
   }
 }
 
@@ -2711,8 +2739,12 @@ void listen<SessionResumeStatus>("session-resume-status", (event) => {
 void listen<NetworkSafetyReport>("network-safety-report", (event) => {
   store.networkSafety = event.payload;
   renderSubscriptions();
-  if (event.payload.warnings?.length) toast(event.payload.warnings.join("；"), "info");
+  // Diagnostics have a persistent status panel; do not race the enablement toast.
 });
+
+void listen<ConnectionFeedback>("connection-feedback", event => {
+  connectionFeedback.accept(event.payload);
+}).then(() => refreshConnectionFeedback()).catch(() => { void refreshConnectionFeedback(); });
 
 void listen<string>("navigate-view", (event) => {
   if (event.payload === "overview") navigate("overview");

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CostSnapshot } from "./openai-costs";
 import type { ThemePreference } from "./theme";
 import type {
+  ConnectionFeedback,
   RouteSettings,
   RouteSnapshot,
   AppInfo,
@@ -39,6 +40,8 @@ import type {
 } from "./types";
 
 export const api = {
+  connectionFeedback: () => invoke<ConnectionFeedback>("connection_feedback"),
+  recheckConnection: () => invoke<ConnectionFeedback>("recheck_connection"),
   localRouteStatus: () => invoke<RouteSnapshot>("local_route_status"),
   saveLocalRoute: (settings: RouteSettings, expectedRevision: number) => invoke<RouteSnapshot>("save_local_route", { settings, expectedRevision }),
   setLocalRouteEnabled: (enabled: boolean, expectedRevision: number, confirmed: boolean) => invoke<RouteSnapshot>("set_local_route_enabled", { enabled, expectedRevision, confirmed }),
@@ -187,7 +190,8 @@ export const api = {
 export function errorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   if (error && typeof error === "object") {
-    const value = error as { message?: unknown; code?: unknown };
+    const value = error as { message?: unknown; code?: unknown; userMessage?: { title?: string; description?: string } };
+    if (value.userMessage?.title) return `${value.userMessage.title}。${value.userMessage.description ?? ""}`;
     const message = typeof value.message === "string" ? value.message : JSON.stringify(error);
     return typeof value.code === "string" ? `${value.code}: ${message}` : message;
   }

@@ -25,6 +25,7 @@ function fixture(scenario = "default") {
     return elements.get(id);
   };
   const context = {
+    performance: globalThis.performance, emit: async () => {},
     mockIPC: handler => { invoke = handler; }, packageInfo: { version: "0.0.0-fixture" },
     location: { search: `?subscriptionScenario=${encodeURIComponent(scenario)}` },
     localStorage: { getItem: () => null, setItem: () => { throw new Error("unexpected fixture persistence"); } },

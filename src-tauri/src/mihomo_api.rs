@@ -35,11 +35,19 @@ impl MihomoApiClient {
         let deadline = std::time::Instant::now() + timeout;
         let mut last_error = None;
         while std::time::Instant::now() < deadline {
-            match self.get("version").await {
-                Ok(value) => return Ok(value),
-                Err(error) => last_error = Some(error.to_string()),
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(remaining, self.get("version")).await {
+                Err(_) => break,
+                Ok(result) => match result {
+                    Ok(value) => return Ok(value),
+                    Err(error) => last_error = Some(error.to_string()),
+                },
             }
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            tokio::time::sleep(
+                Duration::from_millis(150)
+                    .min(deadline.saturating_duration_since(std::time::Instant::now())),
+            )
+            .await;
         }
         Err(AppError::Runtime(
             last_error.unwrap_or_else(|| "Mihomo API 启动超时".to_string()),
@@ -237,5 +245,28 @@ fn ensure_success(status: reqwest::StatusCode) -> AppResult<()> {
             "Mihomo API HTTP {}",
             status.as_u16()
         )))
+    }
+}
+
+#[cfg(test)]
+mod readiness_deadline_tests {
+    use super::*;
+    #[tokio::test]
+    async fn readiness_deadline_bounds_a_silent_controller_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client =
+            MihomoApiClient::from_endpoint(listener.local_addr().unwrap().port(), "fixture".into())
+                .unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let started = std::time::Instant::now();
+        assert!(client.wait_ready(Duration::from_millis(80)).await.is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(800),
+            "must not inherit the 10s per-request timeout"
+        );
+        server.abort();
     }
 }

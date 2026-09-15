@@ -279,7 +279,7 @@ export type NetworkSafetyCheck = {
   url: string;
   success: boolean;
   expectedStatus: number;
-  failureKind?: "timeout" | "tls" | "dns" | "tunnel" | "connect" | "other" | null;
+  failureKind?: "timeout" | "certificate" | "tls" | "dns" | "tunnel" | "connect" | "other" | null;
   actualStatus: number | null;
   latencyMs: number;
   detail: string;
@@ -387,4 +387,13 @@ export type AppError = {
   stage?: string;
   message?: string;
   retryable?: boolean;
+};
+
+export type UserMessage = { title: string; description: string; action: string; details: string };
+export type ConnectionFeedback = {
+  revision: number; operation: number;
+  phase: "idle" | "validating" | "starting" | "applying" | "enabled" | "failed";
+  mode: NetworkMode; health: "unchecked" | "checking" | "healthy" | "partial" | "unavailable";
+  retrying: boolean; elapsedMs: number; issue: UserMessage | null;
+  checks: NetworkSafetyReport["checks"];
 };

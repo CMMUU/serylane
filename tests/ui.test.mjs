@@ -235,7 +235,7 @@ function runtimeRefreshFixture() {
       systemProxy: async () => ({ active: activeRequest.proxyActive }),
       tunHelperStatus: async () => ({ state: "ready" }),
     },
-    renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop,
+    renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshConnectionFeedback: async () => {},
   };
   const source = main.slice(main.indexOf("async function refreshRuntimeOnly("), main.indexOf("async function startRuntime("));
   vm.createContext(environment);

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.11
+
+- 系统代理启用与后台网络检查分离，非 TUN 模式热切换保留运行核心。
+- 真实阶段提示、故障分类、恢复结果与技术详情；严格 API 就绪截止时间。
+- 后台检查取消和配置归属保护，保持既有更新及数据兼容性。
+
 ## 0.7.10 - 2026-09-15
 
 - Default missing legacy silent-startup preferences to tray-only login, while preserving explicit window-mode choices and manual opening. Test legacy settings, duplicate autostart and explicit single-instance reopening on disposable Windows runners.

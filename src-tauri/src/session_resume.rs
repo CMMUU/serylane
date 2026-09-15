@@ -101,10 +101,7 @@ impl SessionResumeManager {
                 "上次配置不可用，请先选用配置再手动启动。",
             )
         } else {
-            (
-                ResumePhase::Pending,
-                "正在准备恢复上次运行模式与配置；不会启动其他程序。",
-            )
+            (ResumePhase::Pending, "正在准备恢复上次的代理设置。")
         };
         state.status = SessionResumeStatus {
             phase,
@@ -233,7 +230,7 @@ pub async fn acquire_manual_configuration(
     wait_for_manual_configuration(restoring, || crate::user_rules::acquire_configuration(app)).await
 }
 
-// Two existing synchronous native validation passes are bounded at 30 s each.
+// Privileged TUN preparation may still include two bounded validation passes.
 // Keep enough margin for their cancellation boundary without blocking the UI.
 const MANUAL_WAIT_ATTEMPTS: usize = 1_400;
 
@@ -301,7 +298,7 @@ async fn restore_attempt(app: &AppHandle, plan: &ResumePlan) -> bool {
                 ResumePhase::Paused,
                 format!(
                     "自动恢复已暂停：{}。请检查后手动启动。",
-                    crate::runtime::redact(&error.to_string())
+                    error.user_message().title
                 ),
             );
             return false;
@@ -314,7 +311,7 @@ async fn restore_attempt(app: &AppHandle, plan: &ResumePlan) -> bool {
         app,
         plan.generation,
         ResumePhase::Restoring,
-        "正在恢复上次配置与网络模式；通过安全检查后才接入系统代理。".into(),
+        "正在恢复上次的代理设置。".into(),
     );
     let runtime = app.state::<crate::runtime::MihomoRuntime>();
     let result = tokio::select! {
@@ -338,7 +335,7 @@ async fn restore_attempt(app: &AppHandle, plan: &ResumePlan) -> bool {
                 app,
                 plan.generation,
                 ResumePhase::Restored,
-                "已恢复上次运行模式与配置；不代表所有网站或模型长连接均已验证。".into(),
+                "已恢复上次的代理设置，网络检查单独显示。".into(),
             );
         }
         Ok(()) => manager.cleanup_transition(|| {
@@ -361,7 +358,7 @@ async fn restore_attempt(app: &AppHandle, plan: &ResumePlan) -> bool {
             ResumePhase::Paused,
             format!(
                 "自动恢复已暂停：{}；未自动降级模式，请检查后手动启动。",
-                crate::runtime::redact(&error.message)
+                error.user_message.title
             ),
         ),
     }
