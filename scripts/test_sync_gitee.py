@@ -659,8 +659,11 @@ class CurlUploadTests(unittest.TestCase):
             self.assertIn('filename="package with;space.zip"', options["form"])
             self.assertEqual(options["proto"], "=https")
             self.assertEqual(options["max-time"], str(sync.UPLOAD_TIMEOUT))
-            self.assertEqual(options["speed-limit"], "32768")
+            # Observed 25-65 KiB/s routes must not be treated as a stalled
+            # connection. Keep a nonzero floor and the independent total cap.
+            self.assertEqual(options["speed-limit"], "1024")
             self.assertEqual(options["speed-time"], "120")
+            self.assertEqual(options["max-time"], "7200")
             self.assertNotIn("http1.1\n", config)
             self.assertEqual(kwargs["timeout"], sync.UPLOAD_TIMEOUT + 30)
             for forbidden in ("location", "retry", "insecure", "verbose", "trace"):

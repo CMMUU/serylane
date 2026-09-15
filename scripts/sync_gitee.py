@@ -41,6 +41,11 @@ READ_ATTEMPTS = 3
 # 100 MiB AppImage cannot finish in 30 minutes. Retain a finite two-hour total
 # deadline and low-speed detection; never retry a write without re-inspection.
 UPLOAD_TIMEOUT = 7200
+# Detect a stalled connection, not a healthy but slow cross-region upload.
+# A 32 KiB/s floor aborted a stream averaging 35 KiB/s during a brief dip,
+# while another 100 MB upload on the same runner verified successfully.
+UPLOAD_STALL_BYTES_PER_SECOND = 1024
+UPLOAD_STALL_SECONDS = 120
 TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
 GH_STORAGE = {"release-assets.githubusercontent.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com"}
 GE_STORAGE = {"foruda.gitee.com"}
@@ -337,7 +342,8 @@ class Api:
                 options = [
                     ("url", GE_API + path), ("proto", "=https"),
                     ("connect-timeout", 30), ("max-time", UPLOAD_TIMEOUT),
-                    ("speed-limit", 32768), ("speed-time", 120),
+                    ("speed-limit", UPLOAD_STALL_BYTES_PER_SECOND),
+                    ("speed-time", UPLOAD_STALL_SECONDS),
                     ("max-filesize", MAX_JSON), ("expect100-timeout", 2),
                     ("user-agent", "CMMUU-Gitee-Sync/1"),
                     ("header", "Accept: application/json"),
