@@ -363,6 +363,60 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(ge.uploads, 1)
         self.assertEqual(ge.content, b"good")
 
+    def test_preconnection_failure_rechecks_destination_before_bounded_retry(self):
+        job, ge, item = self.attachment_job()
+        original_upload = ge.upload
+        calls = []
+        def connect(path, file):
+            calls.append(path)
+            if len(calls) == 1:
+                raise sync.UploadNotStartedError("No HTTP request sent")
+            return original_upload(path, file)
+        with patch.object(ge, "upload", side_effect=connect), patch.object(ge, "pages", wraps=ge.pages) as pages, patch.object(sync.time, "sleep"):
+            job.ensure_attachment(1, item)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(pages.call_count, 3)
+        self.assertEqual(ge.uploads, 1)
+        self.assertEqual(ge.content, b"good")
+
+    def test_connection_retry_stops_at_three_attempts(self):
+        job, ge, item = self.attachment_job()
+        with patch.object(ge, "upload", side_effect=sync.UploadNotStartedError("No request")) as upload, patch.object(sync.time, "sleep") as sleep:
+            with self.assertRaises(sync.UploadNotStartedError):
+                job.ensure_attachment(1, item)
+        self.assertEqual(upload.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_file_appearing_during_connection_failure_is_verified_not_reposted(self):
+        for content, copies in ((b"good", 1), (b"evil", 1), (b"good", 2)):
+            with self.subTest(content=content, copies=copies):
+                job, ge, item = self.attachment_job()
+                def connect(path, file):
+                    ge.content, ge.copies = content, copies
+                    raise sync.UploadNotStartedError("No request")
+                with patch.object(ge, "upload", side_effect=connect) as upload, patch.object(sync.time, "sleep"):
+                    if content == b"good" and copies == 1:
+                        job.ensure_attachment(1, item)
+                    else:
+                        with self.assertRaises(sync.SyncError):
+                            job.ensure_attachment(1, item)
+                self.assertEqual(upload.call_count, 1)
+
+    def test_changed_source_or_failed_read_blocks_connection_retry(self):
+        for changed_source in (True, False):
+            with self.subTest(changed_source=changed_source):
+                job, ge, item = self.attachment_job()
+                def connect(path, file):
+                    if changed_source:
+                        Path(file).write_bytes(b"evil")
+                    else:
+                        ge.pages = lambda path: (_ for _ in ()).throw(sync.SyncError("Cannot reconcile"))
+                    raise sync.UploadNotStartedError("No request")
+                with patch.object(ge, "upload", side_effect=connect) as upload, patch.object(sync.time, "sleep"):
+                    with self.assertRaises(sync.SyncError):
+                        job.ensure_attachment(1, item)
+                self.assertEqual(upload.call_count, 1)
+
     def test_uncertain_upload_is_reconciled_before_any_second_post(self):
         job, ge, item = self.attachment_job()
         original_upload = ge.upload
@@ -643,7 +697,7 @@ class CurlUploadTests(unittest.TestCase):
         payload.write_bytes(b"verified archive fixture")
         return payload
 
-    def response_runner(self, status=201, body=b'{"id":7}', returncode=0, syntax=False):
+    def response_runner(self, status=201, body=b'{"id":7}', returncode=0, syntax=False, metrics=None):
         original_run = sync.subprocess.run
 
         def run(command, **kwargs):
@@ -664,6 +718,9 @@ class CurlUploadTests(unittest.TestCase):
             self.assertEqual(options["speed-limit"], "1024")
             self.assertEqual(options["speed-time"], "120")
             self.assertEqual(options["max-time"], "7200")
+            self.assertIn("%{size_request}", options["write-out"])
+            self.assertIn("%{time_connect}", options["write-out"])
+            self.assertIn("%{time_appconnect}", options["write-out"])
             self.assertNotIn("http1.1\n", config)
             self.assertEqual(kwargs["timeout"], sync.UPLOAD_TIMEOUT + 30)
             for forbidden in ("location", "retry", "insecure", "verbose", "trace"):
@@ -680,7 +737,7 @@ class CurlUploadTests(unittest.TestCase):
                                       capture_output=True, timeout=10)
                 self.assertEqual(parsed.returncode, 0, parsed.stderr)
             response.write_bytes(body)
-            return SimpleNamespace(returncode=returncode, stdout=f"{status:03d} 1234 5000 0.25",
+            return SimpleNamespace(returncode=returncode, stdout=metrics if metrics is not None else f"{status:03d} 1234 5000 0.25 0.05 0.10 400",
                                    stderr="not logged " + self.credential)
         return run
 
@@ -699,6 +756,27 @@ class CurlUploadTests(unittest.TestCase):
                     sync.Api("gitee", self.credential).upload(self.endpoint, payload)
                 self.assertNotIn(self.credential, str(raised.exception))
                 self.assertEqual(run.call_count, 1)
+
+    def test_only_confirmed_preconnection_failure_is_safe_for_reconciliation(self):
+        payload = self.fixture()
+        for code in (6, 7, 28):
+            with self.subTest(code=code), patch.object(sync.subprocess, "run", side_effect=self.response_runner(0, returncode=code, metrics="000 0 0 30.0 0.0 0.0 0")) as run:
+                with self.assertRaises(sync.UploadNotStartedError):
+                    sync.Api("gitee", self.credential).upload(self.endpoint, payload)
+                self.assertEqual(run.call_count, 1)  # Api never retries a POST itself.
+        for code, metrics in (
+            (28, "000 0 0 30.0 0.1 0.0 0"),
+            (28, "000 0 0 30.0 0.1 0.2 0"),
+            (28, "000 0 0 30.0 0.0 0.0 1"),
+            (28, "000 1 0 30.0 0.0 0.0 0"),
+            (28, "100 0 0 30.0 0.0 0.0 0"),
+            (60, "000 0 0 30.0 0.0 0.0 0"),
+            (28, "unknown metrics"),
+        ):
+            with self.subTest(code=code, metrics=metrics), patch.object(sync.subprocess, "run", side_effect=self.response_runner(0, returncode=code, metrics=metrics)):
+                with self.assertRaises(sync.SyncError) as error:
+                    sync.Api("gitee", self.credential).upload(self.endpoint, payload)
+                self.assertNotIsInstance(error.exception, sync.UploadNotStartedError)
 
     def test_timeout_bad_json_and_oversized_response_are_bounded(self):
         payload = self.fixture()

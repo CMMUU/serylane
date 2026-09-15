@@ -46,6 +46,7 @@ UPLOAD_TIMEOUT = 7200
 # while another 100 MB upload on the same runner verified successfully.
 UPLOAD_STALL_BYTES_PER_SECOND = 1024
 UPLOAD_STALL_SECONDS = 120
+UPLOAD_CONNECT_ATTEMPTS = 3
 TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
 GH_STORAGE = {"release-assets.githubusercontent.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com"}
 GE_STORAGE = {"foruda.gitee.com"}
@@ -57,6 +58,10 @@ class SyncError(Exception):
 
 class RetryableReadError(SyncError):
     pass
+
+
+class UploadNotStartedError(SyncError):
+    """curl confirmed no connection and no HTTP request or payload sent."""
 
 
 class NotFoundError(SyncError):
@@ -350,17 +355,23 @@ class Api:
                     ("header", "Authorization: Bearer " + self.token),
                     ("form-string", "access_token=" + self.token),
                     ("form", multipart), ("output", response_file),
-                    ("write-out", "%{http_code} %{size_upload} %{speed_upload} %{time_total}"),
+                    ("write-out", "%{http_code} %{size_upload} %{speed_upload} %{time_total} "
+                     "%{time_connect} %{time_appconnect} %{size_request}"),
                 ]
                 config = "silent\nshow-error\n" + "".join(f"{key} = {quote(value)}\n" for key, value in options)
                 # --disable is first: no user curlrc may add redirects, retries,
                 # insecure TLS or alternate endpoints. No -L or --retry here.
                 result = subprocess.run(["curl", "--disable", "--config", "-"], input=config,
                                         text=True, capture_output=True, timeout=UPLOAD_TIMEOUT + 30)
-                metrics = re.fullmatch(r"(\d{3}) (\d+) ([\d.]+) ([\d.]+)\s*", result.stdout)
+                number = r"(\d+(?:\.\d+)?)"
+                metrics = re.fullmatch(r"(\d{3}) (\d+) " + " ".join([number] * 4) + r" (\d+)\s*", result.stdout)
                 if metrics:
-                    status, sent, speed, elapsed = metrics.groups()
-                    print(f"Gitee upload transport: {name}, HTTP {status}, {sent} bytes, {elapsed}s, {speed} bytes/s", flush=True)
+                    status, sent, speed, elapsed, connected, secured, request_bytes = metrics.groups()
+                    print(f"Gitee upload transport: {name}, HTTP {status}, {sent} bytes, {elapsed}s, "
+                          f"{speed} bytes/s, connect={connected}s, TLS={secured}s, request={request_bytes} bytes", flush=True)
+                    if (result.returncode in (6, 7, 28) and status == "000" and int(sent) == 0
+                            and int(request_bytes) == 0 and float(connected) == 0 and float(secured) == 0):
+                        raise UploadNotStartedError("Gitee connection failed before any HTTP request was sent")
                 if result.returncode or not metrics:
                     raise SyncError(f"Gitee upload transport exited {result.returncode}; outcome is uncertain, inspect existing attachments before retry")
                 if int(metrics[1]) != 201 or response_file.stat().st_size > MAX_JSON:
@@ -832,18 +843,30 @@ class Sync:
 
     def ensure_attachment(self, release_id, item):
         endpoint = f"{self.target_path}/releases/{release_id}/attach_files"
-        matches = [asset for asset in self.ge.pages(endpoint) if asset.get("name") == item["name"]]
-        if len(matches) > 1:
-            raise SyncError("Duplicate destination attachment names; no files were replaced")
-        if not matches:
+        for attempt in range(UPLOAD_CONNECT_ATTEMPTS):
+            # Reconcile before every connection attempt, including a file that
+            # appeared while this runner could not connect. Never replace it.
+            matches = [asset for asset in self.ge.pages(endpoint) if asset.get("name") == item["name"]]
+            if len(matches) > 1:
+                raise SyncError("Duplicate destination attachment names; no files were replaced")
+            if matches:
+                break
             self.guard()
             if Path(item["path"]).stat().st_size != item["size"] or sha256(item["path"]) != item["sha256"]:
                 raise SyncError("Local source attachment changed before upload")
             print(f"Uploading Gitee attachment: {item['name']} ({item['size']} bytes)", flush=True)
-            self.ge.upload(endpoint, item["path"])
+            try:
+                self.ge.upload(endpoint, item["path"])
+            except UploadNotStartedError:
+                if attempt == UPLOAD_CONNECT_ATTEMPTS - 1:
+                    raise
+                print(f"No HTTP request sent for {item['name']}; recheck destination before connection attempt {attempt + 2}", flush=True)
+                time.sleep(2 ** attempt)
+                continue
             matches = [asset for asset in self.ge.pages(endpoint) if asset.get("name") == item["name"]]
             if len(matches) != 1:
                 raise SyncError("Upload completed without one unambiguous destination attachment")
+            break
         asset = matches[0]
         if type(asset.get("id")) is not int or (type(asset.get("size")) is int and asset["size"] != item["size"]):
             raise SyncError("Destination attachment metadata differs; it was not replaced")
