@@ -941,7 +941,23 @@ mod tests {
 
     #[tokio::test]
     async fn abrupt_sse_end_is_not_reported_as_success_or_replayed() {
-        let (upstream,task)=fixture("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n9\r\ndata: 1\n\n\r\n").await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = format!("http://{}", listener.local_addr().unwrap());
+        let (disconnect, wait) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut bytes = [0; 4096];
+                let count = socket.read(&mut bytes).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&bytes[..count]);
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n9\r\ndata: 1\n\n\r\n").await.unwrap();
+            // Close only after the client observes a real stream chunk. Otherwise
+            // Hyper may legally fail before forwarding headers on fast runners.
+            wait.await.unwrap();
+        });
         let doc = document(free_port());
         let server = start_inner(&doc, upstream, None).unwrap();
         let response = reqwest::Client::builder()
@@ -953,7 +969,20 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert!(response.bytes().await.is_err());
+        assert_eq!(response.status(), 200);
+        let mut stream = response.bytes_stream();
+        let first = tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(&first[..], b"data: 1\n\n");
+        disconnect.send(()).unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
         task.await.unwrap();
         assert_eq!(server.stats.requests.load(Ordering::Relaxed), 1);
         assert_eq!(server.stats.completed.load(Ordering::Relaxed), 0);
