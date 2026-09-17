@@ -1,0 +1,74 @@
+name: Recover verified release publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Completed Release bundles run with all six successful platform gates
+        required: true
+        type: string
+      release_tag:
+        description: Existing immutable stable tag matching the original build commit
+        required: true
+        type: string
+
+# Serializes with ordinary trusted-main publishing. Never cancel an upload.
+concurrency:
+  group: release-bundles-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover:
+    if: github.repository == 'CMMUU/serylane' && github.ref == 'refs/heads/main'
+    runs-on: macos-14
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test scripts/test-release-recovery.mjs
+      - name: Verify original run, every platform gate, artifact provenance and tag
+        id: original
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/inspect-release-recovery.mjs
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.original.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '{macos,windows,linux}-*'
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/release-artifacts
+      - name: Resume original publisher with unchanged signatures, hashes and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_COMMIT: ${{ steps.original.outputs.commit }}
+          # Alternate transport only; never disable HTTPS/certificate verification.
+          GODEBUG: http2client=0
+          PYTHONUNBUFFERED: '1'
+        run: >-
+          python3 scripts/publish_github_release.py
+          --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+          --artifacts "$RUNNER_TEMP/release-artifacts"
+          --output "$RUNNER_TEMP/release-assets" --apply

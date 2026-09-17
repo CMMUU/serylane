@@ -22,6 +22,8 @@ jobs:
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Test immutable release-tag creation
         run: node --test scripts/test-create-release-tag.mjs
+      - name: Test verified-artifact release recovery boundaries
+        run: node --test scripts/test-release-recovery.mjs
 
   test:
     strategy:
