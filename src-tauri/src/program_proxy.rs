@@ -851,9 +851,14 @@ mod tests {
             .unwrap();
         assert_eq!(application.version, version);
         assert_eq!(application.availability, AppAvailability::Ready);
+        let installed_root = std::env::var("SERYLANE_BINDING_TEST_ROOT").unwrap();
+        assert_eq!(
+            app_binding::path_key(&application.executable),
+            app_binding::path_key(&format!("{installed_root}\\app.exe"))
+        );
         assert!(application
-            .executable
-            .contains(&format!("version-{version}")));
+            .package_full_name
+            .contains(&format!("_{version}_")));
         let mut program = entry();
         program.binding = Some(binding);
         program.executable = "C:\\old-version-removed\\app.exe".into();
