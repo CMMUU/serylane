@@ -951,7 +951,9 @@ mod tests {
         drop(listener);
         runtime
             .start_attempt(|| {
-                preflight_ports(&source)?;
+                // The free port may be allocated to another parallel test as
+                // soon as the listener drops (seen on macOS). The occupied-port
+                // check above covers the real bind; this checks state recovery.
                 runtime.set_phase(RuntimePhase::Stopped);
                 Ok(())
             })

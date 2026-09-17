@@ -19,6 +19,7 @@ mod openai_stability;
 mod platform;
 mod profile_service;
 mod program_proxy;
+mod route_health;
 mod runtime;
 mod session_resume;
 mod startup;

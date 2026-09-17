@@ -1,14 +1,16 @@
 //! Sticky, evidence-based failover. Only selects a destination for NEW connections.
 //! Never calls /connections DELETE, reloads the core from a timer, or replays model requests.
+use crate::route_health::{ProbeReport, ProbeState, Target};
 use crate::{
     error::{AppError, AppErrorDto, AppResult},
-    mihomo_api::MihomoApiClient,
+    mihomo_api::{DelayProbe, MihomoApiClient},
     models::RuntimePhase,
     runtime::MihomoRuntime,
     storage::AppStorage,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::AtomicU64;
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
@@ -29,6 +31,39 @@ fn now() -> u64 {
         .as_secs()
 }
 
+async fn probe_target(api: &MihomoApiClient, name: &str, target: Target) -> ProbeReport {
+    let (url, expected) = target.probe();
+    let (state, latency_ms) = match api.health_probe(name, url, Some(expected)).await {
+        DelayProbe::Passed(ms) => (ProbeState::Passed, Some(ms)),
+        DelayProbe::Unknown => (ProbeState::Unknown, None),
+        DelayProbe::Failed => match api.health_probe(name, url, None).await {
+            // HTTP worked but the expected response did not. This could be a
+            // challenge, service error or transient recovery: neither model
+            // success nor enough evidence to punish this node.
+            DelayProbe::Passed(ms) => (ProbeState::HttpUnverified, Some(ms)),
+            DelayProbe::Failed => (ProbeState::Failed, None),
+            DelayProbe::Unknown => (ProbeState::Unknown, None),
+        },
+    };
+    ProbeReport {
+        state,
+        checked_at: now(),
+        latency_ms,
+    }
+}
+
+fn all_exits_failed(checks: &[(String, ProbeReport, ProbeReport)], target: Target) -> bool {
+    checks.len() >= 2
+        && checks.iter().all(|(_, chatgpt, api)| {
+            (match target {
+                Target::Chatgpt => chatgpt,
+                Target::OpenaiApi => api,
+            })
+            .state
+                == ProbeState::Failed
+        })
+}
+
 #[derive(Clone, Copy)]
 pub enum Evidence {
     Probe(bool),
@@ -44,8 +79,33 @@ struct NodeHealth {
     last_probe: u64,
     model_completed: u64,
     model_interrupted: u64,
+    chatgpt: ProbeReport,
+    openai_api: ProbeReport,
 }
 impl NodeHealth {
+    fn probes(
+        &mut self,
+        target: Target,
+        chatgpt: ProbeReport,
+        openai_api: ProbeReport,
+        time: u64,
+        shared_failure: bool,
+    ) {
+        let report = match target {
+            Target::Chatgpt => &chatgpt,
+            Target::OpenaiApi => &openai_api,
+        };
+        if let Some(ok) = report.evidence().filter(|_| !shared_failure) {
+            self.record(time, Evidence::Probe(ok));
+        } else {
+            // Keep historical evidence/cooldown, but do not select an unverified
+            // candidate using a success from a previous round.
+            self.last_probe = 0;
+            self.recovery_passes = 0;
+        }
+        self.chatgpt = chatgpt;
+        self.openai_api = openai_api;
+    }
     fn prune(&mut self, time: u64) {
         while self
             .samples
@@ -100,7 +160,7 @@ impl NodeHealth {
     }
     fn usable(&self, time: u64) -> bool {
         self.last_probe > 0
-            && time.saturating_sub(self.last_probe) <= 150
+            && time.saturating_sub(self.last_probe) <= 240
             && self.cooldown_until <= time
             && (self.cooldown_until == 0 || self.recovery_passes >= 3)
             && self
@@ -136,6 +196,8 @@ pub struct NodeSnapshot {
     recovery_passes: u32,
     model_completed: u64,
     model_interrupted: u64,
+    chatgpt: ProbeReport,
+    openai_api: ProbeReport,
 }
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,6 +211,9 @@ pub struct StabilitySnapshot {
     pub last_switch: Option<u64>,
     pub message: String,
     pub nodes: Vec<NodeSnapshot>,
+    pub selection_target: Target,
+    pub last_check: Option<u64>,
+    pub common_failure: bool,
 }
 #[derive(Default)]
 struct HealthState {
@@ -184,6 +249,8 @@ impl HealthState {
             });
         }
         self.current = None;
+        self.snapshot.last_check = None;
+        self.snapshot.common_failure = false;
         self.epoch += 1;
         self.profile = profile;
         self.revision = revision;
@@ -208,6 +275,8 @@ fn node_identities(source: &str) -> AppResult<BTreeMap<String, [u8; 32]>> {
 pub struct StabilityManager {
     inner: Arc<Mutex<HealthState>>,
     stopped: Arc<AtomicBool>,
+    wake: Arc<tokio::sync::Notify>,
+    last_hint: Arc<AtomicU64>,
 }
 /// A request contributes model evidence only when its outbound is the default RouteDeck
 /// proxy and the observed group selection stays unchanged throughout the request.
@@ -313,15 +382,17 @@ impl StabilityManager {
                         recovery_passes: n.recovery_passes,
                         model_completed: n.model_completed,
                         model_interrupted: n.model_interrupted,
+                        chatgpt: n.chatgpt.fresh(time),
+                        openai_api: n.openai_api.fresh(time),
                     })
                     .collect();
                 out
             })
             .unwrap_or_default()
     }
-    pub fn observe(&self) -> Option<Observation> {
+    pub fn observe(&self, target: Target) -> Option<Observation> {
         let s = self.inner.lock().ok()?;
-        if !s.snapshot.running {
+        if !s.snapshot.running || s.snapshot.selection_target != target {
             return None;
         }
         Some(Observation {
@@ -329,6 +400,27 @@ impl StabilityManager {
             node: s.current.clone().filter(|s| s != "REJECT")?,
             epoch: s.epoch,
         })
+    }
+    pub fn request_check(&self, target: Target) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        let permitted = self.inner.lock().is_ok_and(|s| {
+            s.snapshot.enabled && s.snapshot.running && s.snapshot.selection_target == target
+        });
+        if !permitted {
+            return;
+        }
+        let time = now();
+        let previous = self.last_hint.load(Ordering::Relaxed);
+        if time.saturating_sub(previous) >= 30
+            && self
+                .last_hint
+                .compare_exchange(previous, time, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            self.wake.notify_one();
+        }
     }
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
@@ -338,8 +430,10 @@ impl StabilityManager {
         tauri::async_runtime::spawn(async move {
             let mut timer = tokio::time::interval(Duration::from_secs(60));
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut earliest = tokio::time::Instant::now();
             while !manager.stopped.load(Ordering::Acquire) {
-                timer.tick().await;
+                tokio::select! { _ = timer.tick() => {}, _ = manager.wake.notified() => {} }
+                tokio::time::sleep_until(earliest).await;
                 if manager.stopped.load(Ordering::Acquire) {
                     break;
                 }
@@ -355,6 +449,10 @@ impl StabilityManager {
                             "稳定性检查暂不可用，保留当前节点；没有关闭连接".into();
                     }
                 }
+                // No overlapping rounds or accumulated interval catch-up. A burst
+                // of client retries can request one follow-up, not a probe storm.
+                earliest = tokio::time::Instant::now() + Duration::from_secs(30);
+                timer.reset();
             }
         });
     }
@@ -363,6 +461,7 @@ impl StabilityManager {
         let active = storage.state()?.active_profile_id;
         let profile = active.map(|id| storage.load_profile(id)).transpose()?;
         let policy = profile.as_ref().map(|p| &p.openai_policy);
+        let target = crate::local_routing::stability_target(app)?;
         let revision = profile.as_ref().and_then(|p| p.active_revision_id);
         let identities_changed = {
             let s = self
@@ -387,6 +486,13 @@ impl StabilityManager {
                 .lock()
                 .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?;
             s.reconcile(active, revision, identities);
+            if s.snapshot.selection_target != target {
+                // Evidence from the other service must not make this target healthy.
+                s.nodes.clear();
+                s.epoch += 1;
+                s.snapshot.last_check = None;
+            }
+            s.snapshot.selection_target = target;
             s.nodes.retain(|name, _| {
                 policy.is_some_and(|p| p.selected_nodes.iter().any(|n| n.name == *name))
             });
@@ -395,12 +501,20 @@ impl StabilityManager {
             s.snapshot.eligible = policy.is_some_and(|p| p.enabled && p.selected_nodes.len() >= 2);
             s.snapshot.enabled = policy.is_some_and(|p| p.enabled && p.stability_enabled);
             s.snapshot.running = false;
+            s.snapshot.common_failure = false;
             s.snapshot.message = "请先生成 OpenAI 灾备并启用稳定策略".into();
+            if policy.is_some_and(|p| p.enabled && !p.stability_enabled) {
+                s.snapshot.message =
+                    "基础 Fallback 生效；稳定策略未开启，双目标检测和故障反馈选点未运行".into();
+            }
         }
         let Some(policy) = policy.filter(|p| p.enabled && p.stability_enabled) else {
             return Ok(());
         };
         if app.state::<MihomoRuntime>().status(Some(app)).phase != RuntimePhase::Running {
+            if let Ok(mut s) = self.inner.lock() {
+                s.snapshot.message = "稳定策略已开启，等待代理核心运行；未执行双目标检测".into();
+            }
             return Ok(());
         }
         let settings = storage.settings()?;
@@ -411,6 +525,7 @@ impl StabilityManager {
             return Err(AppError::Conflict("核心尚未加载稳定策略".into()));
         }
         let current = group["now"].as_str().unwrap_or("REJECT").to_string();
+        let run_before = app.state::<MihomoRuntime>().status(Some(app));
         if let Some(node) = active
             .map(|id| storage.openai_manual_node(id))
             .transpose()?
@@ -494,20 +609,11 @@ impl StabilityManager {
         let checks = stream::iter(allowed.iter().cloned().map(|name| {
             let api = api.clone();
             async move {
-                // No login credentials are used for probes. A 401 only means API reachability.
-                let result = api
-                    .delay_expected(
-                        &name,
-                        "https://api.openai.com/v1/models",
-                        8_000,
-                        Some("401"),
-                    )
-                    .await;
-                let ok = result
-                    .ok()
-                    .and_then(|v| v["delay"].as_u64())
-                    .is_some_and(|n| n > 0);
-                (name, ok)
+                // Sequential per node, only two nodes in flight. No account credentials,
+                // model requests, throughput tests or runtime selection changes.
+                let chatgpt = probe_target(&api, &name, Target::Chatgpt).await;
+                let openai_api = probe_target(&api, &name, Target::OpenaiApi).await;
+                (name, chatgpt, openai_api)
             }
         }))
         .buffer_unordered(2)
@@ -516,8 +622,12 @@ impl StabilityManager {
         // A stopped/reloaded core is not evidence that every candidate is broken.
         // Gate both recording and selection, not just the eventual controller write.
         let _permit = crate::user_rules::acquire_configuration(app)?;
+        let run_after = app.state::<MihomoRuntime>().status(Some(app));
         if self.stopped.load(Ordering::Acquire)
-            || app.state::<MihomoRuntime>().status(Some(app)).phase != RuntimePhase::Running
+            || run_after.phase != RuntimePhase::Running
+            || run_before.pid != run_after.pid
+            || run_before.started_at != run_after.started_at
+            || crate::local_routing::stability_target(app)? != target
             || storage.state()?.active_profile_id != active
         {
             self.invalidate_observations();
@@ -557,19 +667,31 @@ impl StabilityManager {
                 .inner
                 .lock()
                 .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?;
-            for (name, ok) in checks {
-                s.nodes
-                    .entry(name)
-                    .or_default()
-                    .record(now(), Evidence::Probe(ok));
+            // When every probed exit fails together, do not churn through exits.
+            // The current within-budget exit is held while the shared fault is checked.
+            let common_failure = all_exits_failed(&checks, target);
+            s.snapshot.common_failure = common_failure;
+            s.snapshot.last_check = Some(now());
+            for (name, chatgpt, openai_api) in checks {
+                let health = s.nodes.entry(name).or_default();
+                health.probes(target, chatgpt, openai_api, now(), common_failure);
             }
-            choose_with_costs(&s.nodes, &current, &allowed, now(), &costs)
+            if common_failure && allowed.contains(&current) && costs.allowed(&current) {
+                s.snapshot.message = "多个出口的目标检测同时失败，可能是公共网络或目标服务异常；保留当前合预算出口复查，未反复切换".into();
+                current.clone()
+            } else {
+                choose_with_costs(&s.nodes, &current, &allowed, now(), &costs)
+            }
         };
         if candidate == current {
-            if candidate == "REJECT" && costs.value_mode() {
+            if candidate == "REJECT" {
                 if let Ok(mut s) = self.inner.lock() {
-                    s.snapshot.message =
-                        "没有符合预算的健康节点，后续新请求仍被拒绝；请调整倍率或预算".into();
+                    s.snapshot.message = if costs.value_mode() {
+                        "没有符合预算的健康节点，后续新请求仍被拒绝；请调整倍率或预算"
+                    } else {
+                        "没有可验证的健康候选，后续新请求仍被拒绝；请核对网络与节点检测"
+                    }
+                    .into();
                 }
             }
             return Ok(());
@@ -585,8 +707,12 @@ impl StabilityManager {
             .lock()
             .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?;
         s.epoch += 1;
-        s.snapshot.message = if candidate == "REJECT" && costs.value_mode() {
-            "没有符合预算的健康节点，拒绝后续新请求；未使用超预算或未获允许的未知倍率节点"
+        s.snapshot.message = if candidate == "REJECT" {
+            if costs.value_mode() {
+                "没有符合预算的健康节点，拒绝后续新请求；未使用超预算或未获允许的未知倍率节点"
+            } else {
+                "没有可验证的健康候选，拒绝后续新请求；未主动关闭现有连接"
+            }
         } else if costs.value_mode() {
             "已按健康状态与倍率更新后续新连接出口；未主动关闭现有连接"
         } else {
@@ -713,6 +839,158 @@ pub async fn set_openai_stability(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn report(state: ProbeState) -> ProbeReport {
+        ProbeReport {
+            state,
+            checked_at: 100,
+            latency_ms: None,
+        }
+    }
+    #[test]
+    fn dual_target_evidence_is_isolated_and_shared_failure_is_neutral() {
+        let mut n = NodeHealth::default();
+        n.probes(
+            Target::Chatgpt,
+            report(ProbeState::Failed),
+            report(ProbeState::Passed),
+            100,
+            false,
+        );
+        assert_eq!(n.consecutive_failures, 1);
+        assert!(!n.usable(100), "an API pass cannot validate ChatGPT");
+        n.probes(
+            Target::Chatgpt,
+            report(ProbeState::HttpUnverified),
+            report(ProbeState::Passed),
+            110,
+            false,
+        );
+        assert_eq!(
+            n.consecutive_failures, 1,
+            "a challenge is not a node failure"
+        );
+        n.probes(
+            Target::Chatgpt,
+            report(ProbeState::Failed),
+            report(ProbeState::Failed),
+            120,
+            true,
+        );
+        assert_eq!(
+            n.cooldown_until, 0,
+            "shared outages must not penalize every node"
+        );
+        assert!(!n.usable(120));
+        n.probes(
+            Target::OpenaiApi,
+            report(ProbeState::Failed),
+            report(ProbeState::Passed),
+            130,
+            false,
+        );
+        assert!(n.usable(130));
+        n.probes(
+            Target::OpenaiApi,
+            report(ProbeState::Passed),
+            report(ProbeState::Unknown),
+            140,
+            false,
+        );
+        assert!(!n.usable(140), "unknown cannot reuse an earlier success");
+        let checks = vec![
+            (
+                "a".into(),
+                report(ProbeState::Failed),
+                report(ProbeState::Passed),
+            ),
+            (
+                "b".into(),
+                report(ProbeState::Failed),
+                report(ProbeState::Unknown),
+            ),
+        ];
+        assert!(all_exits_failed(&checks, Target::Chatgpt));
+        assert!(!all_exits_failed(&checks, Target::OpenaiApi));
+        assert!(!all_exits_failed(&checks[..1], Target::Chatgpt));
+    }
+
+    #[tokio::test]
+    async fn fault_hints_are_coalesced_target_bound_and_do_not_score_nodes() {
+        let manager = StabilityManager::default();
+        manager.request_check(Target::Chatgpt);
+        assert_eq!(manager.last_hint.load(Ordering::Relaxed), 0);
+        {
+            let mut s = manager.inner.lock().unwrap();
+            s.snapshot.enabled = true;
+            s.snapshot.running = true;
+        }
+        manager.request_check(Target::OpenaiApi);
+        assert_eq!(manager.last_hint.load(Ordering::Relaxed), 0);
+        for _ in 0..50 {
+            manager.request_check(Target::Chatgpt);
+        }
+        tokio::time::timeout(Duration::from_millis(30), manager.wake.notified())
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), manager.wake.notified())
+                .await
+                .is_err()
+        );
+        assert!(manager.inner.lock().unwrap().nodes.is_empty());
+        manager.stop();
+        manager.last_hint.store(0, Ordering::Relaxed);
+        manager.request_check(Target::Chatgpt);
+        assert_eq!(manager.last_hint.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn probe_distinguishes_expected_http_challenge_failure_and_controller_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (responses, expected, count) in [
+            (vec![(200, "{\"delay\":24}")], ProbeState::Passed, 1),
+            (
+                vec![(503, "{}"), (200, "{\"delay\":30}")],
+                ProbeState::HttpUnverified,
+                2,
+            ),
+            (vec![(504, "{}"), (503, "{}")], ProbeState::Failed, 2),
+            (vec![(401, "{}")], ProbeState::Unknown, 1),
+            (vec![(200, "{\"delay\":0}")], ProbeState::Unknown, 1),
+            (vec![(503, "{}"), (404, "{}")], ProbeState::Unknown, 2),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api = MihomoApiClient::from_endpoint(
+                listener.local_addr().unwrap().port(),
+                "fixture".into(),
+            )
+            .unwrap();
+            let task = tokio::spawn(async move {
+                let mut requests = Vec::new();
+                for (status, body) in responses {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut bytes = vec![0; 4096];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    requests.push(String::from_utf8_lossy(&bytes[..n]).into_owned());
+                    socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+                requests
+            });
+            let result = probe_target(&api, "fixture-node", Target::Chatgpt).await;
+            assert_eq!(result.state, expected);
+            let requests = tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(requests.len(), count);
+            assert!(requests[0].starts_with("GET /proxies/fixture-node/delay?"));
+            assert!(requests[0].contains("expected=200"));
+            assert!(requests[0].contains("chatgpt.com%2Frobots.txt"));
+            if count == 2 {
+                assert!(!requests[1].contains("expected="));
+            }
+        }
+    }
     #[test]
     fn refresh_retains_cooldown_only_for_unchanged_node_identity() {
         let profile = Uuid::new_v4();
@@ -865,7 +1143,8 @@ mod tests {
             s.current = Some("a".into());
             s.snapshot.running = true;
         }
-        let valid = manager.observe().unwrap();
+        let valid = manager.observe(Target::Chatgpt).unwrap();
+        assert!(manager.observe(Target::OpenaiApi).is_none());
         let connections = serde_json::json!({"connections":[{"metadata":{"sourceIP":"127.0.0.1","sourcePort":"45678","host":"chatgpt.com"},"chains":["a",GROUP]}]});
         assert!(valid.matches_connection(
             &connections,
@@ -890,21 +1169,21 @@ mod tests {
         ));
         valid.finish(Evidence::ModelComplete);
         assert_eq!(manager.inner.lock().unwrap().nodes["a"].model_completed, 1);
-        let stale = manager.observe().unwrap();
+        let stale = manager.observe(Target::Chatgpt).unwrap();
         manager.invalidate_observations();
         stale.finish(Evidence::ModelInterrupted);
         assert_eq!(
             manager.inner.lock().unwrap().nodes["a"].model_interrupted,
             0
         );
-        assert!(manager.observe().is_none());
+        assert!(manager.observe(Target::Chatgpt).is_none());
     }
     #[test]
     fn no_healthy_candidate_fails_closed_and_stale_evidence_expires() {
         assert_eq!(choose(&BTreeMap::new(), "a", &["a".into()], 100), "REJECT");
         let mut a = NodeHealth::default();
         a.record(10, Evidence::Probe(true));
-        assert!(!a.usable(200));
+        assert!(!a.usable(251));
         a.prune(1000);
         assert!(a.samples.is_empty());
     }

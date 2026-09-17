@@ -2,6 +2,7 @@
 use super::{RouteDocument, RouteMode, RouteStats};
 use crate::error::{AppError, AppResult};
 use crate::openai_stability::{Evidence, Observation, StabilityManager};
+use crate::route_health::{Diagnostic, Failure, Target};
 use bytes::Bytes;
 use futures_util::{stream, StreamExt};
 use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Full, Limited, StreamBody};
@@ -17,7 +18,7 @@ use std::{
     convert::Infallible,
     net::{Ipv4Addr, TcpListener},
     sync::{atomic::Ordering, Arc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::Manager;
 use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
@@ -56,6 +57,8 @@ struct Relay {
     app: Option<tauri::AppHandle>,
     default_proxy: bool,
     stop: watch::Receiver<bool>,
+    target: Target,
+    proxy: Option<String>,
 }
 
 pub fn start(
@@ -98,7 +101,7 @@ fn start_with_app(
         .no_brotli()
         .no_deflate()
         .no_zstd();
-    if let Some(proxy) = proxy {
+    if let Some(proxy) = &proxy {
         builder = builder.proxy(
             reqwest::Proxy::all(proxy)
                 .map_err(|_| AppError::InvalidInput("出站代理地址无效".into()))?,
@@ -128,6 +131,8 @@ fn start_with_app(
         app,
         default_proxy: document.settings.outbound_proxy.is_empty(),
         stop: receiver.clone(),
+        target: document.settings.upstream.target(),
+        proxy,
     });
     tauri::async_runtime::spawn(async move {
         struct RunningGuard(Arc<RouteStats>);
@@ -239,8 +244,28 @@ struct RequestGuard {
     _permit: OwnedSemaphorePermit,
     finished: bool,
     observation: Option<Observation>,
+    relay: Arc<Relay>,
+    started: Instant,
 }
 impl RequestGuard {
+    fn diagnose(&self, failure: Failure, stage: &'static str, status: Option<u16>) {
+        self.stats.diagnostic(Diagnostic::new(
+            failure,
+            self.relay.target,
+            stage,
+            self.started.elapsed().as_millis() as u64,
+            status,
+            self.observation.is_some(),
+        ));
+        // A hint only wakes bounded probes. Never invent per-node evidence when
+        // connection metadata was unavailable (including TLS/CONNECT failures).
+        if failure.warrants_check() && self.relay.default_proxy {
+            if let Some(app) = &self.relay.app {
+                app.state::<StabilityManager>()
+                    .request_check(self.relay.target);
+            }
+        }
+    }
     fn evidence(&mut self, event: Evidence) {
         if let Some(o) = self.observation.take() {
             o.finish(event);
@@ -330,7 +355,7 @@ async fn handle(
         relay
             .app
             .as_ref()
-            .and_then(|app| app.state::<StabilityManager>().observe())
+            .and_then(|app| app.state::<StabilityManager>().observe(relay.target))
     } else {
         None
     };
@@ -339,6 +364,8 @@ async fn handle(
         _permit: permit,
         finished: false,
         observation: None,
+        relay: relay.clone(),
+        started: Instant::now(),
     };
     if !relay.stats.accepting.load(Ordering::SeqCst) {
         return Ok(json(StatusCode::SERVICE_UNAVAILABLE, "route_stopping"));
@@ -398,15 +425,17 @@ async fn handle(
         match tokio::time::timeout(FIRST_RESPONSE_TIMEOUT, outgoing.body(body).send()).await {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
-                relay.stats.error(if error.is_connect() {
-                    "出站代理或上游连接失败"
-                } else {
-                    "上游请求发送失败"
-                });
-                return Ok(json(StatusCode::BAD_GATEWAY, "upstream_connection_failed"));
+                let mut failure = Failure::from_reqwest(&error);
+                if error.is_connect() && !local_proxy_available(relay.proxy.as_deref()).await {
+                    failure = Failure::LocalProxyUnavailable;
+                }
+                guard.diagnose(failure, "request", None);
+                relay.stats.last_status.store(502, Ordering::Relaxed);
+                return Ok(json(StatusCode::BAD_GATEWAY, failure.code()));
             }
             Err(_) => {
-                relay.stats.error("等待上游响应头超时");
+                guard.diagnose(Failure::ResponseTimeout, "response_headers", None);
+                relay.stats.last_status.store(504, Ordering::Relaxed);
                 return Ok(json(
                     StatusCode::GATEWAY_TIMEOUT,
                     "upstream_response_timeout",
@@ -506,9 +535,11 @@ async fn handle(
         return Ok(json(StatusCode::BAD_GATEWAY, "upstream_redirect_rejected"));
     }
     if !status.is_success() {
-        relay
-            .stats
-            .error("上游返回错误状态；请核对页面中的 HTTP 状态码");
+        guard.diagnose(
+            Failure::from_status(status.as_u16()),
+            "response_headers",
+            Some(status.as_u16()),
+        );
     }
     let mut response = Response::builder().status(status);
     let hop_headers = connection_tokens(upstream.headers());
@@ -543,7 +574,15 @@ async fn handle(
             match tokio::time::timeout(STREAM_IDLE_TIMEOUT, source.next()).await {
                 Ok(Some(Ok(bytes))) => {
                     if sse {
+                        let was_failed = tracker.failed;
                         tracker.feed(&bytes);
+                        if tracker.failed && !was_failed {
+                            guard.diagnose(
+                                Failure::ModelRejected,
+                                "stream_event",
+                                Some(status.as_u16()),
+                            );
+                        }
                         // Codex may stop reading immediately after this event, without EOF.
                         // Count the confirmed terminal event once, not a subsequent cancellation.
                         if tracker.completed {
@@ -561,6 +600,11 @@ async fn handle(
                         if tracker.completed {
                             guard.evidence(Evidence::ModelComplete);
                         } else if !tracker.failed && !tracker.unverified {
+                            guard.diagnose(
+                                Failure::StreamInterrupted,
+                                "stream",
+                                Some(status.as_u16()),
+                            );
                             guard.evidence(Evidence::ModelInterrupted);
                             guard
                                 .stats
@@ -570,10 +614,18 @@ async fn handle(
                     guard.finish(status.is_success() && (!sse || tracker.completed));
                     None
                 }
-                Ok(Some(Err(_))) | Err(_) => {
-                    guard
-                        .stats
-                        .error("上游流式连接中断或空闲超时；未自动重放请求");
+                result => {
+                    if !tracker.completed && !tracker.failed {
+                        guard.diagnose(
+                            if result.is_err() {
+                                Failure::StreamIdle
+                            } else {
+                                Failure::StreamInterrupted
+                            },
+                            "stream",
+                            Some(status.as_u16()),
+                        );
+                    }
                     if sse && !tracker.completed && !tracker.failed {
                         guard.evidence(Evidence::ModelInterrupted);
                     }
@@ -592,6 +644,29 @@ async fn handle(
     Ok(response
         .body(StreamBody::new(stream).boxed_unsync())
         .expect("validated upstream headers"))
+}
+
+async fn local_proxy_available(proxy: Option<&str>) -> bool {
+    let Some(url) = proxy.and_then(|p| url::Url::parse(p).ok()) else {
+        return true;
+    };
+    let Some(port) = url.port() else { return true };
+    // Inspect only the configured loopback proxy, never the remote target.
+    let host = url.host_str().unwrap_or("");
+    let address = match host {
+        "127.0.0.1" => std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        "::1" | "[::1]" => std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+        // localhost may be either family. Do not mislabel a v6 service as down.
+        _ => return true,
+    };
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            tokio::net::TcpStream::connect(address)
+        )
+        .await,
+        Ok(Ok(_))
+    )
 }
 
 /// Bounded event-name parser; never stores a prompt/response body or invents completion.
@@ -999,6 +1074,98 @@ mod tests {
         assert_eq!(response.text().await.unwrap(), "{}");
         let request = task.await.unwrap();
         assert!(request.starts_with("POST /responses HTTP/1.1"));
+        assert_eq!(server.stats.requests.load(Ordering::Relaxed), 1);
+        let diagnostic = server
+            .stats
+            .last_diagnostic
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert_eq!(diagnostic.category, Failure::RateOrQuota);
+        assert_eq!(diagnostic.http_status, Some(429));
+        assert!(!diagnostic.category.warrants_check());
+        assert!(!diagnostic.log_message().contains("test-only"));
+    }
+
+    #[tokio::test]
+    async fn missing_local_proxy_gets_distinct_diagnostic_without_model_replay() {
+        // Keep an unlistened port reserved to avoid a free-port/rebind race.
+        let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+        reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        let doc = document(free_port());
+        let server = start_inner(
+            &doc,
+            "https://official-fixture.invalid/v1".into(),
+            Some(format!("http://127.0.0.1:{port}")),
+        )
+        .unwrap();
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(endpoint(&doc, "/responses?secret=fixture-sensitive"))
+            .bearer_auth("fixture-private-token")
+            .body("private-prompt")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 502);
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+            "local_proxy_unavailable"
+        );
+        let d = server
+            .stats
+            .last_diagnostic
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert_eq!(d.http_status, None);
+        assert_eq!(d.attribution, "unconfirmed");
+        let serialized = serde_json::to_string(&d).unwrap();
+        for secret in [
+            "fixture-sensitive",
+            "private-prompt",
+            "fixture-private-token",
+            "official-fixture.invalid",
+        ] {
+            assert!(!serialized.contains(secret));
+        }
+        assert_eq!(server.stats.requests.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn upstream_503_is_passed_through_without_replay_or_node_penalty() {
+        let (url, task) =
+            fixture("HTTP/1.1 503 Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await;
+        let doc = document(free_port());
+        let server = start_inner(&doc, url, None).unwrap();
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(endpoint(&doc, "/responses"))
+            .bearer_auth("fixture")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 503);
+        assert_eq!(response.text().await.unwrap(), "{}");
+        assert!(task.await.unwrap().starts_with("POST /responses"));
+        let d = server
+            .stats
+            .last_diagnostic
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert_eq!(d.category, Failure::UpstreamServer);
+        assert!(!d.category.warrants_check());
         assert_eq!(server.stats.requests.load(Ordering::Relaxed), 1);
     }
 

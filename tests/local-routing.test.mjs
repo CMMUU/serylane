@@ -4,8 +4,33 @@ import test from "node:test";
 import ts from "typescript";
 const read = name => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 const url = source => `data:text/javascript;base64,${Buffer.from(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`;
-const {validateRouteSettings,routeSettingsError,modelHealthLabel,localRoutingMarkup,routeMetricsMarkup,mountLocalRouting} = await import(url(read("local-routing.ts").replace('"./ui"',JSON.stringify(url(read("ui.ts"))))));
+const {validateRouteSettings,routeSettingsError,modelHealthLabel,probeLabel,routeDiagnosticLabel,localRoutingMarkup,routeMetricsMarkup,mountLocalRouting} = await import(url(read("local-routing.ts").replace('"./ui"',JSON.stringify(url(read("ui.ts"))))));
 const base = {listenPort:15731,mode:"compatible",upstream:"chatgpt",outboundProxy:""};
+test("dual probe labels distinguish reachability, unverified HTTP and stale observations",()=>{
+  const report={state:"passed",checkedAt:100,latencyMs:80};
+  assert.match(probeLabel(report,110000),/基础检测通过/);
+  assert.doesNotMatch(probeLabel(report,110000),/模型.*已验证/);
+  assert.match(probeLabel({...report,state:"http_unverified"},110000),/预期响应未验证/);
+  assert.match(probeLabel({...report,state:"failed"},110000),/检测失败/);
+  assert.match(probeLabel(report,341000),/已过期/);
+  assert.match(probeLabel(undefined),/未检测/);
+});
+test("local 502 is not mislabeled an upstream HTTP 502; diagnostic has stage, time and attribution",()=>{
+  const d={timestamp:100000,target:"chatgpt",stage:"request",elapsedMs:10000,httpStatus:null,attribution:"unconfirmed",code:"upstream_tls_failed",message:"TLS 握手中断"};
+  assert.match(routeDiagnosticLabel(d),/ChatGPT.*发送请求.*10000 ms.*未收到上游 HTTP 响应.*实际出口未确认/);
+  assert.match(routeDiagnosticLabel({...d,httpStatus:429}),/上游 HTTP 429/);
+});
+test("route status exposes both targets and distinguishes enabled from running without mutation",async()=>{
+  const h=routeHarness();
+  const report={state:"http_unverified",checkedAt:Math.floor(Date.now()/1000),latencyMs:80};
+  h.snapshot.stability={...h.snapshot.stability,enabled:true,running:false,selectionTarget:"openai_api",lastCheck:report.checkedAt,commonFailure:true,nodes:[{name:"<img src=x>",probeOk:false,successRate:null,samples:0,cooldownSeconds:0,recoveryPasses:0,modelCompleted:0,modelInterrupted:0,chatgpt:report,openaiApi:{...report,state:"failed"}}]};
+  await h.controller.refresh();
+  assert.match(h.control("check-state").textContent,/已开启 · 自动检测未运行.*OpenAI API.*多出口同时失败/);
+  assert.match(h.control("nodes").innerHTML,/ChatGPT：HTTP 可达，预期响应未验证/);
+  assert.match(h.control("nodes").innerHTML,/OpenAI API：检测失败/);
+  assert.doesNotMatch(h.control("nodes").innerHTML,/<img/);
+  assert.deepEqual(h.calls,[["status"]]);
+});
 test("loopback routes reject secrets, remote destinations, self loops, malformed ports",()=>{
   assert.equal(validateRouteSettings(base),null);
   for(const outboundProxy of ["http://remote.invalid:7890","http://user:pass@127.0.0.1:7890","http://127.0.0.1:15731","http://localhost:7890/path","http://localhost:7890?token=x","http://localhost"]) assert.ok(validateRouteSettings({...base,outboundProxy}));

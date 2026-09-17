@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.13 - 2026-09-18
+
+- Classify local proxy, DNS, TLS/certificate, connection, HTTP/account and streaming failures without storing request URLs, credentials, bodies or model output. Expose the latest historical diagnosis and bounded, rate-limited application-log events.
+- Probe ChatGPT and OpenAI API independently; distinguish expected reachability, unverified HTTP, failures and unavailable/stale checks. Select for ChatGPT by default, or the explicitly enabled API route target; never treat 401 as a verified model stream.
+- Coalesce transport-failure hints into bounded rechecks. Preserve manual choices, multiplier budgets and healthy connections; hold an in-budget current exit during shared failures without penalizing every node. Never replay model requests.
+- Preserve the v0.7.12 application-binding changes; fix the relocated Windows test manifest and a parallel macOS test port race without removing release gates. Synchronize website help and six-platform downloads through the existing release pipeline.
+
 ## 0.7.12 - 2026-09-17
 
 - Bind Windows MSIX/Store applications by package family and application ID; resolve the current registered executable before launching, preserving proxy mode, arguments and directory policy.

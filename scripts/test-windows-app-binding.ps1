@@ -25,6 +25,12 @@ try {
         $directory = Join-Path $root "version-$version"
         New-Item -ItemType Directory -Path (Join-Path $directory 'Assets') -Force | Out-Null
         Copy-Item $testBinary (Join-Path $directory 'app.exe')
+        # Cargo unit-test binaries can have an external Common-Controls v6
+        # activation manifest. Relocate it with the executable; otherwise the
+        # loader can exit before Rust runs, producing no stdout/stderr.
+        if (Test-Path -LiteralPath "$testBinary.manifest") {
+            Copy-Item -LiteralPath "$testBinary.manifest" -Destination (Join-Path $directory 'app.exe.manifest')
+        }
         Copy-Item 'assets/brand/app-icon-128.png' (Join-Path $directory 'Assets\Logo.png')
         $manifest = @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -56,5 +62,8 @@ try {
     Remove-Item Env:\SERYLANE_BINDING_TEST_VERSION -ErrorAction SilentlyContinue
     if ($hadValue) { Set-ItemProperty -Path $developmentKey -Name AllowDevelopmentWithoutDevLicense -Value $previousValue }
     else { Remove-ItemProperty -Path $developmentKey -Name AllowDevelopmentWithoutDevLicense -ErrorAction SilentlyContinue }
-    if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+    $resolvedRoot = [IO.Path]::GetFullPath($root)
+    $expectedParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    if ([IO.Path]::GetDirectoryName($resolvedRoot) -ne $expectedParent -or [IO.Path]::GetFileName($resolvedRoot) -notlike 'serylane-binding-*') { throw 'Refusing cleanup outside the exact temporary fixture directory.' }
+    if (Test-Path -LiteralPath $resolvedRoot) { Remove-Item -LiteralPath $resolvedRoot -Recurse -Force }
 }

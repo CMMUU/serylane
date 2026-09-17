@@ -875,7 +875,8 @@ mod tests {
             .unwrap();
         assert!(
             output.status.success(),
-            "{}",
+            "relocated package child exited with {:?}: {}",
+            output.status.code(),
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("proxy-child-ok"));
@@ -1058,6 +1059,41 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("proxy-child-ok"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn relocated_test_executable_keeps_its_activation_manifest() {
+        let root = std::env::temp_dir().join(format!("serylane-relocated-test-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let source = std::env::current_exe().unwrap();
+        let target = root.join("app.exe");
+        std::fs::copy(&source, &target).unwrap();
+        let manifest = source.with_extension("exe.manifest");
+        if manifest.exists() {
+            std::fs::copy(manifest, root.join("app.exe.manifest")).unwrap();
+        }
+        let mut program = entry();
+        program.executable = target.to_string_lossy().into();
+        program.arguments = vec![
+            "--exact".into(),
+            "program_proxy::tests::proxy_child_helper".into(),
+            "--nocapture".into(),
+        ];
+        let output = proxy_command(&program, 17892)
+            .env("ROUTEDECK_PROXY_TEST_HELPER", "1")
+            .env_remove("SERYLANE_BINDING_TEST_FAMILY")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "relocated helper status {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("proxy-child-ok"));
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[cfg(windows)]
     #[test]

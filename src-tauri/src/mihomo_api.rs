@@ -11,6 +11,16 @@ pub struct MihomoApiClient {
     secret: String,
 }
 
+/// The controller transport is not the tested node. Only its documented
+/// delay-test 503/504 responses are probe failures; auth/reload/JSON errors
+/// and an unreachable controller remain unknown.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DelayProbe {
+    Passed(u64),
+    Failed,
+    Unknown,
+}
+
 impl MihomoApiClient {
     pub fn new(settings: &AppSettings) -> AppResult<Self> {
         Self::from_endpoint(settings.controller_port, settings.controller_secret.clone())
@@ -123,6 +133,47 @@ impl MihomoApiClient {
                 .append_pair("expected", expected_status);
         }
         self.get_url(url).await
+    }
+
+    pub async fn health_probe(
+        &self,
+        proxy: &str,
+        test_url: &str,
+        expected: Option<&str>,
+    ) -> DelayProbe {
+        let Ok(mut url) = self.path_url(&["proxies", proxy, "delay"]) else {
+            return DelayProbe::Unknown;
+        };
+        url.query_pairs_mut()
+            .append_pair("url", test_url)
+            .append_pair("timeout", "5000");
+        if let Some(expected) = expected {
+            url.query_pairs_mut().append_pair("expected", expected);
+        }
+        let Ok(response) = self
+            .client
+            .get(url)
+            .bearer_auth(&self.secret)
+            .timeout(Duration::from_secs(7))
+            .send()
+            .await
+        else {
+            return DelayProbe::Unknown;
+        };
+        match response.status().as_u16() {
+            200 => match response
+                .json::<Value>()
+                .await
+                .ok()
+                .and_then(|v| v["delay"].as_u64())
+                .filter(|v| *v > 0 && *v <= u16::MAX as u64)
+            {
+                Some(delay) => DelayProbe::Passed(delay),
+                None => DelayProbe::Unknown,
+            },
+            503 | 504 => DelayProbe::Failed,
+            _ => DelayProbe::Unknown,
+        }
     }
 
     pub async fn group_delay(

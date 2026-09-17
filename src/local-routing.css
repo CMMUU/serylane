@@ -167,6 +167,8 @@
 .local-route-node + .local-route-node { border-top: 1px solid var(--line); }
 .local-route-node > div { min-width: 0; overflow-wrap: anywhere; }
 .local-route-node strong { font-weight: 500; }
+.local-route-probes p { margin: 0 0 4px; }
+.local-route-diagnostic { white-space: pre-line; overflow-wrap: anywhere; border-inline-start: 2px solid var(--line); padding-inline-start: 12px; }
 .local-route-node > div:last-child { text-align: right; }
 .local-route-layout .local-route-footer { margin: 2px 24px 8px; }
 

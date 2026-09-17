@@ -30,12 +30,16 @@ export type OpenAiNodeScore = {
 };
 
 export type RouteSettings = { listenPort: number; mode: "native" | "compatible"; upstream: "chatgpt" | "openai_api"; outboundProxy: string };
+export type RouteProbe = { state: "unknown" | "passed" | "http_unverified" | "failed"; checkedAt: number; latencyMs: number | null };
+export type RouteDiagnostic = { timestamp: number; category: string; code: string; message: string; target: RouteSettings["upstream"]; stage: string; elapsedMs: number; httpStatus: number | null; attribution: "verified" | "unconfirmed" };
 export type RouteSnapshot = {
   revision: number; enabled: boolean; running: boolean; settings: RouteSettings; endpoint: string;
   requests: number; active: number; completed: number; failed: number; lastStatus: number; lastError: string | null;
+  lastDiagnostic?: RouteDiagnostic | null;
   codex: { configRevision: string; attached: boolean; hasBackup: boolean; provider: string; endpoint: string | null; warning: string | null; backupPath: string | null };
   stability: { enabled: boolean; running: boolean; eligible: boolean; profileId: string | null; revisionId: string | null; current: string | null; lastSwitch: number | null; message: string;
-    nodes: { name: string; probeOk: boolean; successRate: number | null; samples: number; cooldownSeconds: number; recoveryPasses: number; modelCompleted: number; modelInterrupted: number }[] };
+    selectionTarget?: RouteSettings["upstream"]; lastCheck?: number | null; commonFailure?: boolean;
+    nodes: { name: string; probeOk: boolean; successRate: number | null; samples: number; cooldownSeconds: number; recoveryPasses: number; modelCompleted: number; modelInterrupted: number; chatgpt?: RouteProbe; openaiApi?: RouteProbe }[] };
 };
 export type OpenAiPolicy = {
   stabilityEnabled?: boolean;

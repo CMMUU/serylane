@@ -213,6 +213,16 @@ function routeScenario(detail: Record<string, unknown>) {
     if (detail.scenario === "read-failed") routeFailRead = true;
     if (detail.scenario === "start-failed") routeFailStart = true;
     if (detail.scenario === "eligible") detail.eligible = true;
+    if (detail.scenario === "dual-health") {
+      const checkedAt = Math.floor(Date.now() / 1000);
+      route.enabled = route.running = true;
+      route.requests = 8; route.completed = 6; route.failed = 2; route.lastStatus = 502;
+      route.lastDiagnostic = { timestamp: Date.now(), category: "tls", code: "upstream_tls_failed", message: "合成异常：TLS 握手中断；等待复查，未直接归因节点", target: "chatgpt", stage: "request", elapsedMs: 10020, httpStatus: null, attribution: "unconfirmed" };
+      route.stability = { ...route.stability, enabled: true, running: true, eligible: true, profileId: "fixture-active", revisionId: "fixture-active-revision", current: "演示 · 日本 01", selectionTarget: "chatgpt", lastCheck: checkedAt, commonFailure: false, message: "合成状态：保持当前合预算出口；仅用于界面测试，没有真实探测。", nodes: [
+        { name: "演示 · 日本 01", probeOk: true, successRate: 95, samples: 20, cooldownSeconds: 0, recoveryPasses: 3, modelCompleted: 0, modelInterrupted: 0, chatgpt: { state: "passed", checkedAt, latencyMs: 180 }, openaiApi: { state: "http_unverified", checkedAt, latencyMs: 220 } },
+        { name: "演示 · 新加坡 02", probeOk: false, successRate: 70, samples: 10, cooldownSeconds: 240, recoveryPasses: 0, modelCompleted: 0, modelInterrupted: 0, chatgpt: { state: "failed", checkedAt, latencyMs: null }, openaiApi: { state: "passed", checkedAt, latencyMs: 160 } },
+      ] };
+    }
   }
   for (const key of ["requests", "active", "completed", "failed", "lastStatus"] as const) {
     if (typeof detail[key] === "number" && Number.isSafeInteger(detail[key]) && detail[key] >= 0) route[key] = detail[key];

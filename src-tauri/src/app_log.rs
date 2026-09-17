@@ -30,6 +30,7 @@ pub enum Area {
     Stability = 4,
     Settings = 5,
     CoreNetwork = 6,
+    Routing = 7,
 }
 
 // Compact on-disk tuple: first occurrence of a <=60s group, severity, area,
@@ -165,6 +166,7 @@ impl Journal {
                         4 => "节点稳定性",
                         5 => "设置",
                         6 => "核心网络",
+                        7 => "本地路由",
                         _ => "应用",
                     },
                     message: sanitize(&e.3),

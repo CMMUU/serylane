@@ -1,4 +1,4 @@
-import type { RouteSettings, RouteSnapshot } from "./types";
+import type { RouteDiagnostic, RouteProbe, RouteSettings, RouteSnapshot } from "./types";
 import { preferenceSwitch } from "./ui";
 
 const escape = (value: string) => value.replace(/[&<>"']/g, c =>
@@ -25,6 +25,16 @@ export function modelHealthLabel(n: RouteSnapshot["stability"]["nodes"][number])
   if (n.modelInterrupted > 0) return `已观察到 ${n.modelInterrupted} 次模型流异常`;
   if (n.modelCompleted > 0) return `已完成 ${n.modelCompleted} 次模型流`;
   return "模型流尚未验证";
+}
+export function probeLabel(probe?: RouteProbe, now = Date.now()): string {
+  if (!probe || !probe.checkedAt || now / 1000 - probe.checkedAt > 240 || probe.state === "unknown") return "未检测 / 已过期 / 暂不可用";
+  if (probe.state === "http_unverified") return "HTTP 可达，预期响应未验证";
+  if (probe.state === "failed") return "检测失败";
+  return `基础检测通过${probe.latencyMs == null ? "" : ` · ${probe.latencyMs} ms`}`;
+}
+export function routeDiagnosticLabel(d: RouteDiagnostic): string {
+  const stage = ({request:"发送请求",response_headers:"等待响应头",stream:"读取数据流",stream_event:"模型返回事件"} as Record<string,string>)[d.stage] ?? "连接阶段";
+  return `${new Date(d.timestamp).toLocaleString()} · ${d.target === "openai_api" ? "OpenAI API" : "ChatGPT"} · ${stage} · ${d.elapsedMs} ms · ${d.httpStatus == null ? "未收到上游 HTTP 响应" : `上游 HTTP ${d.httpStatus}`} · ${d.attribution === "verified" ? "实际出口已核对" : "实际出口未确认"}\n${d.code}：${d.message}`;
 }
 export function routeMetricsMarkup(state: Pick<RouteSnapshot, "requests" | "active" | "completed" | "failed"> | null): string {
   return [["请求",state?.requests],["进行中",state?.active],["转发完成",state?.completed],["未确认完整（含取消）",state?.failed]]
@@ -80,17 +90,18 @@ export const localRoutingMarkup = `
     <section class="local-route-statistics" aria-labelledby="local-route-statistics-title"><h2 id="local-route-statistics-title">本次请求</h2>
       <dl class="local-route-metrics" id="local-route-metrics">${routeMetricsMarkup(null)}</dl>
       <p class="local-route-hint local-route-state-help" id="local-route-last-error" hidden></p>
+      <p class="local-route-hint local-route-diagnostic" id="local-route-diagnostic" hidden></p>
     </section>
   </article>
   <article class="local-route-stability-panel" aria-labelledby="local-route-stability-title">
     <div class="local-route-stability-heading"><h2 id="local-route-stability-title">OpenAI 稳定灾备</h2><label class="local-route-toggle"><span>稳定策略</span>${preferenceSwitch("local-route-stability")}</label></div>
     <div class="local-route-stability-overview"><div class="local-route-stability-summary"><strong id="local-route-node">尚无托管节点</strong><p class="local-route-hint" id="local-route-stability-message">先在「代理」生成灾备，再启用稳定策略。</p><p class="local-route-hint">最近 15 分钟评分 · 故障冷却 5 分钟 · 连续 3 次恢复检查</p></div>
-      <div class="local-route-evidence"><p>${infoIcon}<span>API 可达不等于模型流已验证</span></p><p>${infoIcon}<span id="local-route-evidence-message">无模型样本，不代表连接已验证。</span></p></div>
+      <div class="local-route-evidence"><p>${infoIcon}<span>基础可达不等于模型流已验证</span></p><p id="local-route-check-state" class="local-route-hint"></p><p>${infoIcon}<span id="local-route-evidence-message">无模型样本，不代表连接已验证。</span></p></div>
       <details class="local-route-help"><summary>使用与恢复说明<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
         <div class="local-route-help-content">
           <section><h3>使用边界</h3><p>默认关闭。仅转发 Codex 模型 API，不接管整个应用，不修改系统代理，不关闭运行中的程序。关窗后留在托盘；退出 Serylane 会尝试恢复原配置，下次需再次接入。</p><p>切换出口无法续接已经中断的数据流；兼容模式也不保证永不断线。</p></section>
           <section><h3>连接方式与接入</h3><p>兼容模式减少对 WebSocket 的依赖，但仍需要稳定出口；部分实时能力需在新会话验证。原生模式透传 WebSocket，不声称已验证模型完成。</p><p>出站代理留空时使用 Serylane 当前代理端口。指定其他代理时，不将流异常归因给 Serylane 节点。API Key 模式仍使用 Codex 自己的登录配置。</p><p>修改连接方式前，请先恢复 Codex 接入并关闭路由。接入不会迁移正在进行的请求。恢复后若原入口是 CC Switch，仍需开启其服务。</p></section>
-          <section><h3>稳定灾备与模型验证</h3><p>按最近 15 分钟样本评分，模型流权重高于基础检测。健康节点保持使用；连续失败后冷却 5 分钟，恢复需连续 3 次检查通过。只改变后续新连接，不清空正常连接、不自动重发模型请求。</p><p>基础检测每分钟执行；预期 401 仅表示 API 可达。模型样本来自兼容路由，需核对实际连接出口且期间托管节点未变化。无法确认出口时仅统计请求异常，不归因节点；取消请求和关闭原生隧道不等同于节点故障。</p></section>
+          <section><h3>稳定灾备与模型验证</h3><p>按最近 15 分钟样本评分，模型流权重高于基础检测。健康节点保持使用；连续失败后冷却 5 分钟，恢复需连续 3 次检查通过。只改变后续新连接，不清空正常连接、不自动重发模型请求。</p><p>每轮结束约 60 秒后检测 ChatGPT 与 OpenAI API，网络异常可触发限频复查。最多 10 个预算内候选，同时只检查 2 个节点，不执行模型请求或带宽测速。预期 401 仅表示 API 可达；非预期 HTTP 响应不计为节点失败。默认依据 ChatGPT；本地路由启用且选择 API Key 入口时依据 OpenAI API，两者证据不混用。</p><p>多个出口同时失败时先复查公共网络或服务状态，不逐个处罚节点；手动选点始终优先。模型样本来自兼容路由，需核对实际连接出口且期间托管节点未变化。无法确认出口时仅统计请求异常，不归因节点；取消请求和关闭原生隧道不等同于节点故障。应用日志只保留分类与耗时，不保存请求正文、认证信息或路由密钥。</p></section>
         </div>
       </details>
     </div>
@@ -159,12 +170,16 @@ export function mountLocalRouting(root: HTMLElement, services: Services) {
     optionalText("binding-warning", state.codex.warning ?? "");
     optionalText("backup", state.codex.backupPath ? `恢复备份：${state.codex.backupPath}` : "");
     $("metrics").innerHTML = routeMetricsMarkup(state);
-    optionalText("last-error", [state.lastStatus ? `最近 HTTP 状态：${state.lastStatus}` : "", state.lastError].filter(Boolean).join(" · "));
+    optionalText("last-error", [state.lastStatus ? `最近路由 HTTP 状态：${state.lastStatus}` : "", state.lastDiagnostic ? "" : state.lastError].filter(Boolean).join(" · "));
+    optionalText("diagnostic", state.lastDiagnostic ? `最近异常（历史记录，不代表当前连接）\n${routeDiagnosticLabel(state.lastDiagnostic)}` : "");
     $("node").textContent = state.stability.current ?? "尚无托管节点";
     $("stability-message").textContent = state.stability.message || "先在「代理」生成灾备，再启用稳定策略。";
+    const stable = state.stability;
+    const basis = stable.selectionTarget === "openai_api" ? "OpenAI API" : "ChatGPT";
+    $("check-state").textContent = `${stable.running ? "自动检测运行中" : stable.enabled ? "已开启 · 自动检测未运行" : "稳定策略未开启"} · 选点依据：${basis} · ${stable.lastCheck ? `最近检查 ${new Date(stable.lastCheck * 1000).toLocaleTimeString()}` : "尚无双目标检测"}${stable.commonFailure ? " · 多出口同时失败，等待复查" : ""}`;
     $("evidence-message").textContent = state.stability.nodes.some(n => n.modelCompleted > 0 || n.modelInterrupted > 0) ? "模型样本与节点状态见下方。" : "无模型样本，不代表连接已验证。";
     $("nodes").hidden = state.stability.nodes.length === 0;
-    $("nodes").innerHTML = state.stability.nodes.map(n => `<section class="local-route-node"><div><strong>${escape(n.name)}</strong><p class="local-route-hint">${escape(modelHealthLabel(n))}</p></div><div><span>${n.cooldownSeconds > 0 ? `冷却 ${n.cooldownSeconds} 秒` : n.probeOk ? "基础检查通过" : "基础检查未通过 / 待恢复"}</span><p class="local-route-hint">${n.samples} 个近期样本 · 加权成功率 ${n.successRate == null ? "—" : `${n.successRate}%`}</p></div></section>`).join("");
+    $("nodes").innerHTML = state.stability.nodes.map(n => `<section class="local-route-node"><div><strong>${escape(n.name)}</strong><p class="local-route-hint">${escape(modelHealthLabel(n))}</p><p class="local-route-hint">${n.cooldownSeconds > 0 ? `冷却 ${n.cooldownSeconds} 秒` : n.probeOk ? "可参与自动选点" : "待检测 / 待恢复"} · ${n.samples} 个近期样本 · 加权成功率 ${n.successRate == null ? "—" : `${n.successRate}%`}</p></div><div class="local-route-probes"><p>ChatGPT：${escape(probeLabel(n.chatgpt))}</p><p>OpenAI API：${escape(probeLabel(n.openaiApi))}</p></div></section>`).join("");
   }
   async function operation(work: () => Promise<void>, label = "处理中…", returnFocus?: HTMLElement) {
     if (busy) return; busy = true; pending(label); render();

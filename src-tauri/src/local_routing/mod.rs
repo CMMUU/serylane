@@ -33,6 +33,12 @@ pub enum Upstream {
     OpenaiApi,
 }
 impl Upstream {
+    pub fn target(self) -> crate::route_health::Target {
+        match self {
+            Self::Chatgpt => crate::route_health::Target::Chatgpt,
+            Self::OpenaiApi => crate::route_health::Target::OpenaiApi,
+        }
+    }
     pub fn base_url(self) -> &'static str {
         match self {
             Self::Chatgpt => "https://chatgpt.com/backend-api/codex",
@@ -167,8 +173,31 @@ pub struct RouteStats {
     pub failed: AtomicU64,
     pub last_status: AtomicU64,
     last_error: Mutex<Option<String>>,
+    last_diagnostic: Mutex<Option<crate::route_health::Diagnostic>>,
+    diagnostic_logged: Mutex<std::collections::BTreeMap<&'static str, std::time::Instant>>,
 }
 impl RouteStats {
+    pub fn diagnostic(&self, value: crate::route_health::Diagnostic) {
+        self.error(value.message);
+        // Bounded by the fixed category enum, not arbitrary URLs or node names.
+        // Client retry bursts update the UI but cannot flood the disk journal.
+        let should_log = self.diagnostic_logged.lock().is_ok_and(|mut logged| {
+            if logged
+                .get(value.code)
+                .is_some_and(|t| t.elapsed().as_secs() < 30)
+            {
+                return false;
+            }
+            logged.insert(value.code, std::time::Instant::now());
+            true
+        });
+        if should_log {
+            crate::app_log::record(1, crate::app_log::Area::Routing, &value.log_message());
+        }
+        if let Ok(mut last) = self.last_diagnostic.lock() {
+            *last = Some(value);
+        }
+    }
     pub fn error(&self, value: &str) {
         if let Ok(mut e) = self.last_error.lock() {
             *e = Some(value.into());
@@ -189,6 +218,7 @@ pub struct RouteSnapshot {
     failed: u64,
     last_status: u64,
     last_error: Option<String>,
+    last_diagnostic: Option<crate::route_health::Diagnostic>,
     codex: codex::CodexStatus,
     stability: crate::openai_stability::StabilitySnapshot,
 }
@@ -220,6 +250,7 @@ impl LocalRoutingManager {
             completed: stats.completed.load(Ordering::Relaxed),
             failed: stats.failed.load(Ordering::Relaxed),
             last_status: stats.last_status.load(Ordering::Relaxed),
+            last_diagnostic: stats.last_diagnostic.lock().ok().and_then(|v| v.clone()),
             last_error: self
                 .error
                 .lock()
@@ -276,6 +307,18 @@ impl LocalRoutingManager {
         }
         Ok(())
     }
+}
+
+// General system-proxy use targets ChatGPT. An explicitly enabled API route
+// targets the API instead; this reads preferences without enabling any service.
+pub(crate) fn stability_target(app: &AppHandle) -> AppResult<crate::route_health::Target> {
+    let storage = AppStorage::from_app(app)?;
+    let doc = RouteDocument::read(&storage.routing_dir())?;
+    Ok(if doc.enabled {
+        doc.settings.upstream.target()
+    } else {
+        crate::route_health::Target::Chatgpt
+    })
 }
 
 #[tauri::command]
