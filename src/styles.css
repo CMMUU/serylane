@@ -1959,3 +1959,14 @@ td small { color: var(--muted); }
   .program-layout { grid-template-columns: minmax(0, 1fr); }
   .proxy-compatibility-results { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Application identities stay prominent; versioned paths are secondary details. */
+.program-add-sources { flex-wrap: wrap; }
+.program-app-picker { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel-soft); }
+.program-app-results { display: grid; gap: 6px; max-height: 290px; overflow-y: auto; margin-top: 10px; }
+.program-app-choice { display: grid; gap: 4px; text-align: left; width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--input); color: var(--text); cursor: pointer; overflow-wrap: anywhere; }
+.program-app-choice:hover, .program-app-choice:focus-visible { border-color: var(--accent); }
+.program-app-choice span, .program-app-choice small { color: var(--muted); font-size: 12px; }
+.program-association { color: var(--accent); font-size: 12px; line-height: 1.6; margin-bottom: 10px; }
+.program-path-details summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+#program-binding-info { overflow-wrap: anywhere; }

@@ -77,6 +77,10 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
         env:
           SERYLANE_NATIVE_TRAY_SNAPSHOT_DIR: ${{ runner.temp }}/native-tray
+      - name: Verify version-independent Windows application binding
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-windows-app-binding.ps1
       - name: Retain native tray rendering evidence
         if: always() && runner.os == 'macOS'
         uses: actions/upload-artifact@v4

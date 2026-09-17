@@ -1,3 +1,4 @@
+mod app_binding;
 mod app_log;
 mod app_update;
 mod appearance;
@@ -1234,6 +1235,7 @@ pub fn run() {
             program_proxy::delete_proxy_program,
             program_proxy::launch_proxy_program,
             program_proxy::choose_proxy_program,
+            program_proxy::list_installed_proxy_applications,
             tun_helper_status,
             install_tun_helper,
             repair_tun_helper,

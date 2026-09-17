@@ -10,7 +10,7 @@ import type { InvokeArgs } from "@tauri-apps/api/core";
 import type {
   ConnectionFeedback, AppSettings, AppUpdateStatus, UpdateSource, ProfileDetails, ProfileRecord,
   UserRule, UserRulesState, UserRulesValidation,
-  ProgramInput, ProgramState, RouteSettings, RouteSnapshot,
+  InstalledApplication, AppAvailability, ProgramInput, ProgramState, RouteSettings, RouteSnapshot,
   SubscriptionMetadata, SubscriptionOverview, SubscriptionStatus, NetworkMode, OpenAiPolicyTask,
 } from "../../src/types";
 import type { ThemePreference } from "../../src/theme";
@@ -58,6 +58,19 @@ try {
   const saved = JSON.parse(localStorage.getItem(PROGRAMS_STORAGE_KEY) ?? "null") as ProgramState | null;
   if (saved && Array.isArray(saved.programs)) programs = { ...programs, revision: saved.revision, programs: saved.programs.map((program) => ({ ...program, runningPid: null })) };
 } catch { /* Isolated fixture only; never read actual application data. */ }
+let installedAppVersion = "1.0.0.0";
+let installedAppStatus: AppAvailability = "ready";
+function fixtureInstalledApplication(): InstalledApplication {
+  return { binding: { packageFamilyName: "Fixture.Codex_123456789abcd", applicationId: "App" }, name: "Codex（合成应用）", version: installedAppVersion,
+    packageFullName: `Fixture.Codex_${installedAppVersion}_x64__123456789abcd`, packageRoot: `C:\\Program Files\\WindowsApps\\Fixture.Codex_${installedAppVersion}`,
+    executable: `C:\\Program Files\\WindowsApps\\Fixture.Codex_${installedAppVersion}\\app\\Codex.exe`, availability: installedAppStatus,
+    detail: installedAppStatus === "ready" ? "已关联应用，更新后自动定位当前安装版本。" : installedAppStatus === "updating" ? "Windows 正在更新此应用，完成后请刷新重试。" : "应用信息待重新关联；原代理参数已保留。" };
+}
+window.addEventListener("serylane-fixture-app-binding", (event) => {
+  const detail = (event as CustomEvent<{ version?: string; status?: AppAvailability }>).detail;
+  installedAppVersion = detail.version ?? installedAppVersion;
+  installedAppStatus = detail.status ?? installedAppStatus;
+});
 let programLaunches = 0;
 let failProgramSave = false;
 let cancelProgramPicker = false;
@@ -242,7 +255,17 @@ window.addEventListener("routedeck-fixture-programs", (event) => {
   if (detail.missing && programs.programs[0]) programs.programs[0].available = false;
   if (detail.exited) programs.programs.forEach((program) => { program.runningPid = null; });
 });
-function programState() { return structuredClone(programs); }
+function programState() {
+  for (const program of programs.programs) {
+    if (program.binding) {
+      const app = fixtureInstalledApplication();
+      program.executable = app.executable;
+      program.available = app.availability === "ready";
+      program.resolution = { availability: app.availability, detail: app.detail, application: app };
+    }
+  }
+  return structuredClone(programs);
+}
 function persistPrograms() {
   localStorage.setItem(PROGRAMS_STORAGE_KEY, JSON.stringify(programs));
   return programState();
@@ -736,6 +759,7 @@ const readonlyReplies: Record<string, () => unknown> = {
   }),
   get_user_rules: userRulesState,
   list_proxy_programs: programState,
+  list_installed_proxy_applications: () => ({ applications: [fixtureInstalledApplication()], warnings: [] }),
   check_system_proxy_compatibility: () => ({ supported: true, systemConfigured: true, compatible: true, expectedProxy: programs.proxyEndpoint, resolvedHttp: programs.proxyEndpoint, resolvedHttps: programs.proxyEndpoint, detail: "合成检查：HTTP/HTTPS 解析已指向本地代理；未读取真实注册表，也未验证真实长连接。" }),
   probe_mihomo: () => ({ available: true, path: "/fixture-only/mihomo", version: "v0.0.0-fixture", message: "纯合成状态，真实内核未启动" }),
   runtime_status: () => ({
@@ -1114,7 +1138,7 @@ mockIPC(async (command, payload) => {
     if (command === "save_proxy_program") {
       if (failProgramSave) { failProgramSave = false; throw ruleError("IO_ERROR", "模拟保存失败；原清单未变化"); }
       const input = args.input as ProgramInput;
-      if (!input.name.trim() || !/^[a-z]:\\.+\.exe$/i.test(input.executable)) throw ruleError("INVALID_INPUT", "请选择存在的 .exe 文件");
+      if (!input.name.trim() || (!input.binding && !/^[a-z]:\\.+\.exe$/i.test(input.executable))) throw ruleError("INVALID_INPUT", "请选择存在的 .exe 文件");
       const old = programs.programs.find((program) => program.id === input.id);
       if (input.id && !old) throw ruleError("NOT_FOUND", "程序条目已被删除");
       const entry = { ...input, id: input.id ?? crypto.randomUUID(), available: true, runningPid: old?.runningPid ?? null };

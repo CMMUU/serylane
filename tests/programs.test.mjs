@@ -62,3 +62,29 @@ test("compatibility diagnostics never enable system routing for unrelated client
   assert.match(controller, /reqwest::Client::builder\(\)\s*\.no_proxy\(\)/);
   assert.match(lib, /if result\.updated && result\.profile\.openai_policy\.auto_maintain/);
 });
+
+test("bound application states explain installation failures rather than a generic missing file", () => {
+  for (const availability of ["not_installed", "updating", "maintenance", "needs_relink", "read_error", "unsupported_launch"]) {
+    const program = { available: false, runningPid: null, resolution: { availability, detail: `说明：${availability}` } };
+    assert.equal(launchBlockReason(program, { supported: true, coreRunning: true }), `说明：${availability}`);
+  }
+});
+
+test("installed-app binding and portable files keep independent directory and identity settings", () => {
+  assert.match(programManagerMarkup, /从已安装应用选择/);
+  assert.match(programManagerMarkup, /选择 \.exe 文件/);
+  assert.match(programManagerMarkup, /包内相对目录/);
+  assert.match(source, /readOnly = binding !== null/);
+  assert.match(source, /installedProxyApplications\(\)/);
+  assert.match(source, /workingDirectoryRelative:/);
+  assert.match(source, /editProgram\(program\)/);
+  assert.match(source, /program-path-details/);
+});
+
+test("README uses token-free theme-aware Star History without adding a chart scheduler", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  assert.ok(readme.indexOf("## Star 增长趋势") > readme.indexOf("## 快速开始"));
+  assert.match(readme, /prefers-color-scheme: dark/);
+  assert.match(readme, /https:\/\/api\.star-history\.com\/chart\?repos=CMMUU\/serylane/);
+  assert.doesNotMatch(readme, /sealed_token|[?&]token=/);
+});

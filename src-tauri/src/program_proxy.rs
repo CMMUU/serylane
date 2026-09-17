@@ -1,5 +1,8 @@
 //! Opt-in proxy launching, not process interception. No system environment,
 //! registry, DNS, existing process, or proxy mode is modified here.
+use crate::app_binding::{
+    self, AppAvailability, AppBinding, ApplicationCatalog, ApplicationResolution, CatalogSnapshot,
+};
 use crate::error::{AppError, AppErrorDto, AppResult};
 use crate::models::RuntimePhase;
 use crate::runtime::MihomoRuntime;
@@ -9,7 +12,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 const MAX_PROGRAMS: usize = 100;
@@ -27,6 +30,10 @@ pub struct ProxyProgram {
     pub id: Uuid,
     pub name: String,
     pub executable: String,
+    #[serde(default)]
+    pub binding: Option<AppBinding>,
+    #[serde(default)]
+    pub working_directory_relative: Option<String>,
     pub arguments: Vec<String>,
     pub working_directory: Option<String>,
     pub mode: ProgramProxyMode,
@@ -43,7 +50,7 @@ pub struct ProgramDocument {
 impl Default for ProgramDocument {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             revision: 0,
             programs: Vec::new(),
         }
@@ -52,7 +59,7 @@ impl Default for ProgramDocument {
 
 impl ProgramDocument {
     pub fn validate(&self) -> AppResult<()> {
-        if self.schema_version != 1 || self.programs.len() > MAX_PROGRAMS {
+        if !matches!(self.schema_version, 1 | 2) || self.programs.len() > MAX_PROGRAMS {
             return Err(AppError::InvalidInput(
                 "程序代理清单版本或条目数量无效".into(),
             ));
@@ -74,6 +81,10 @@ pub struct ProgramInput {
     pub id: Option<Uuid>,
     pub name: String,
     pub executable: String,
+    #[serde(default)]
+    pub binding: Option<AppBinding>,
+    #[serde(default)]
+    pub working_directory_relative: Option<String>,
     pub arguments: Vec<String>,
     pub working_directory: Option<String>,
     pub mode: ProgramProxyMode,
@@ -85,6 +96,7 @@ pub struct ProgramEntry {
     #[serde(flatten)]
     program: ProxyProgram,
     available: bool,
+    resolution: ApplicationResolution,
     running_pid: Option<u32>,
 }
 
@@ -102,6 +114,7 @@ pub struct ProgramState {
 pub struct ProgramProxyManager {
     // Serializes document mutations and starts, including double-clicks.
     children: Mutex<BTreeMap<Uuid, Child>>,
+    catalog: ApplicationCatalog,
 }
 
 fn invalid(message: &str) -> AppError {
@@ -123,13 +136,25 @@ fn validate_fields(program: &ProxyProgram) -> AppResult<()> {
     {
         return Err(invalid("程序名称不能为空，且不能超过 128 字"));
     }
-    if program.executable.is_empty()
+    if let Some(binding) = &program.binding {
+        if !binding.valid() {
+            return Err(invalid("应用身份无效，请重新选择已安装应用"));
+        }
+    } else if program.executable.is_empty()
         || program.executable.len() > 32760
         || program.executable.contains(['\0', '\n', '\r'])
         || !local_windows_path(&program.executable)
         || !program.executable.to_ascii_lowercase().ends_with(".exe")
     {
         return Err(invalid("程序路径无效"));
+    }
+    if let Some(relative) = &program.working_directory_relative {
+        if program.binding.is_none()
+            || program.working_directory.is_some()
+            || !(relative == "." || app_binding::relative_windows_path(relative))
+        {
+            return Err(invalid("包内工作目录应为相对目录，且仅用于已关联应用"));
+        }
     }
     if program.arguments.len() > 64
         || program.arguments.iter().map(String::len).sum::<usize>() > 8192
@@ -172,6 +197,8 @@ fn normalize_input(input: ProgramInput) -> AppResult<ProxyProgram> {
         id: input.id.unwrap_or_else(Uuid::new_v4),
         name: input.name.trim().into(),
         executable: input.executable.trim().into(),
+        binding: input.binding,
+        working_directory_relative: input.working_directory_relative,
         arguments: input.arguments,
         working_directory: input
             .working_directory
@@ -180,6 +207,11 @@ fn normalize_input(input: ProgramInput) -> AppResult<ProxyProgram> {
         mode: input.mode,
     };
     validate_fields(&program)?;
+    if program.binding.is_some() {
+        // A saved package binding never pins a versioned executable path.
+        program.executable.clear();
+        return Ok(program);
+    }
     // Reject UNC/device/relative paths before any metadata lookup so the picker
     // and manual input cannot accidentally initiate a network-share connection.
     if !local_windows_path(&program.executable) {
@@ -251,81 +283,218 @@ fn update_document(
     document.validate()
 }
 
-fn snapshot(
-    app: &AppHandle,
-    storage: &AppStorage,
-    children: &mut BTreeMap<Uuid, Child>,
-) -> AppResult<ProgramState> {
+fn snapshot(app: &AppHandle, storage: &AppStorage, fresh: bool) -> AppResult<ProgramState> {
+    let manager = app.state::<ProgramProxyManager>();
     let document = storage.programs()?;
-    children.retain(|_, child| matches!(child.try_wait(), Ok(None)));
+    let running = {
+        let mut children = manager
+            .children
+            .lock()
+            .map_err(|_| invalid("程序管理器繁忙"))?;
+        children.retain(|_, child| matches!(child.try_wait(), Ok(None)));
+        children
+            .iter()
+            .map(|(id, child)| (*id, child.id()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let mut families = BTreeMap::new();
+    let programs = document
+        .programs
+        .into_iter()
+        .map(|mut program| {
+            let resolution = if let Some(binding) = &program.binding {
+                let result = families
+                    .entry(binding.package_family_name.to_lowercase())
+                    .or_insert_with(|| {
+                        manager
+                            .catalog
+                            .query(Some(&binding.package_family_name), fresh)
+                    });
+                match result {
+                    Ok(catalog) => app_binding::resolve(binding, catalog),
+                    Err(error) => {
+                        ApplicationResolution::state(AppAvailability::ReadError, error.clone())
+                    }
+                }
+            } else if Path::new(&program.executable).is_file() {
+                ApplicationResolution::state(
+                    AppAvailability::Ready,
+                    "普通文件关联；移动文件后需重新选择。",
+                )
+            } else if program
+                .executable
+                .replace('/', "\\")
+                .to_lowercase()
+                .contains("\\windowsapps\\")
+            {
+                ApplicationResolution::state(
+                    AppAvailability::NeedsRelink,
+                    "原安装路径已失效，请重新关联已安装应用；原代理设置和参数已保留。",
+                )
+            } else {
+                ApplicationResolution::state(
+                    AppAvailability::MissingFile,
+                    "程序文件已移动或删除，请重新选择文件。",
+                )
+            };
+            if let Some(application) = &resolution.application {
+                program.executable.clone_from(&application.executable);
+            }
+            ProgramEntry {
+                available: resolution.availability == AppAvailability::Ready,
+                running_pid: running.get(&program.id).copied(),
+                program,
+                resolution,
+            }
+        })
+        .collect();
     Ok(ProgramState {
         revision: document.revision,
         supported: cfg!(windows),
         proxy_endpoint: format!("http://127.0.0.1:{}", storage.settings()?.mixed_port),
         core_running: app.state::<MihomoRuntime>().status(Some(app)).phase == RuntimePhase::Running,
-        programs: document
-            .programs
-            .into_iter()
-            .map(|program| ProgramEntry {
-                available: Path::new(&program.executable).is_file(),
-                running_pid: children.get(&program.id).map(Child::id),
-                program,
-            })
-            .collect(),
+        programs,
     })
 }
 
-#[tauri::command]
-pub fn list_proxy_programs(
-    app: AppHandle,
-    manager: State<'_, ProgramProxyManager>,
-) -> Result<ProgramState, AppErrorDto> {
-    (|| {
-        let storage = AppStorage::from_app(&app)?;
-        let mut children = manager
-            .children
-            .lock()
-            .map_err(|_| AppError::Conflict("程序管理器繁忙".into()))?;
-        snapshot(&app, &storage, &mut children)
-    })()
-    .map_err(|e: AppError| e.dto())
+fn migrate_legacy_program(program: &mut ProxyProgram, catalog: &CatalogSnapshot) -> bool {
+    if program.binding.is_some() {
+        return false;
+    }
+    let Some(app) = app_binding::exact_legacy_match(&program.executable, catalog) else {
+        return false;
+    };
+    if let Some(directory) = &program.working_directory {
+        let relative =
+            if app_binding::path_key(directory) == app_binding::path_key(&app.package_root) {
+                Some(".".into())
+            } else {
+                app_binding::install_relative(&app.package_root, directory)
+            };
+        if let Some(relative) = relative {
+            program.working_directory_relative = Some(relative);
+            program.working_directory = None;
+        }
+    }
+    program.binding = Some(app.binding.clone());
+    program.executable.clear();
+    true
 }
 
 #[tauri::command]
-pub fn save_proxy_program(
+pub async fn list_proxy_programs(
     app: AppHandle,
-    manager: State<'_, ProgramProxyManager>,
+    refresh: Option<bool>,
+) -> Result<ProgramState, AppErrorDto> {
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<ProgramState> {
+        let storage = AppStorage::from_app(&app)?;
+        let manager = app.state::<ProgramProxyManager>();
+        let mut document = storage.programs()?;
+        let original_revision = document.revision;
+        let mut changed = document.schema_version == 1;
+        if cfg!(windows) && document.programs.iter().any(|p| p.binding.is_none()) {
+            if let Ok(catalog) = manager.catalog.query(None, refresh.unwrap_or(false)) {
+                for program in &mut document.programs {
+                    changed |= migrate_legacy_program(program, &catalog);
+                }
+            }
+        }
+        if changed {
+            let _lock = manager
+                .children
+                .lock()
+                .map_err(|_| invalid("程序管理器繁忙"))?;
+            let current = storage.programs()?;
+            // Never overwrite a concurrently edited document with scan results.
+            if current.revision == original_revision {
+                document.schema_version = 2;
+                document.revision = document
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("程序清单版本溢出"))?;
+                storage.save_programs(&document)?;
+            }
+        }
+        snapshot(&app, &storage, refresh.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| AppError::Runtime(e.to_string()).dto())?
+    .map_err(|e| e.dto())
+}
+
+#[tauri::command]
+pub async fn list_installed_proxy_applications(
+    app: AppHandle,
+) -> Result<CatalogSnapshot, AppErrorDto> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<ProgramProxyManager>()
+            .catalog
+            .query(None, true)
+            .map_err(AppError::Platform)
+    })
+    .await
+    .map_err(|e| AppError::Runtime(e.to_string()).dto())?
+    .map_err(|e| e.dto())
+}
+
+#[tauri::command]
+pub async fn save_proxy_program(
+    app: AppHandle,
     input: ProgramInput,
     expected_revision: u64,
 ) -> Result<ProgramState, AppErrorDto> {
-    (|| {
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<ProgramState> {
         if !cfg!(windows) {
             return Err(invalid("程序代理启动目前仅支持 Windows"));
         }
         let storage = AppStorage::from_app(&app)?;
-        let mut children = manager
-            .children
-            .lock()
-            .map_err(|_| AppError::Conflict("程序管理器繁忙".into()))?;
+        let manager = app.state::<ProgramProxyManager>();
         let mut document = storage.programs()?;
         check_revision(&document, expected_revision)?;
         let editing = input.id.is_some();
-        update_document(&mut document, normalize_input(input)?, editing)?;
-        storage.save_programs(&document)?;
-        snapshot(&app, &storage, &mut children)
-    })()
-    .map_err(|e: AppError| e.dto())
+        let program = normalize_input(input)?;
+        if let Some(binding) = &program.binding {
+            let unchanged = document
+                .programs
+                .iter()
+                .any(|old| old.id == program.id && old.binding.as_ref() == Some(binding));
+            if !unchanged {
+                let catalog = manager
+                    .catalog
+                    .query(Some(&binding.package_family_name), true)
+                    .map_err(AppError::Platform)?;
+                let resolved = app_binding::resolve(binding, &catalog);
+                if resolved.application.is_none() {
+                    return Err(invalid(&resolved.detail));
+                }
+            }
+        }
+        {
+            let _lock = manager
+                .children
+                .lock()
+                .map_err(|_| invalid("程序管理器繁忙"))?;
+            check_revision(&storage.programs()?, expected_revision)?;
+            document.schema_version = 2;
+            update_document(&mut document, program, editing)?;
+            storage.save_programs(&document)?;
+        }
+        snapshot(&app, &storage, false)
+    })
+    .await
+    .map_err(|e| AppError::Runtime(e.to_string()).dto())?
+    .map_err(|e| e.dto())
 }
 
 #[tauri::command]
-pub fn delete_proxy_program(
+pub async fn delete_proxy_program(
     app: AppHandle,
-    manager: State<'_, ProgramProxyManager>,
     program_id: Uuid,
     expected_revision: u64,
 ) -> Result<ProgramState, AppErrorDto> {
-    (|| {
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<ProgramState> {
         let storage = AppStorage::from_app(&app)?;
+        let manager = app.state::<ProgramProxyManager>();
         let mut children = manager
             .children
             .lock()
@@ -345,9 +514,12 @@ pub fn delete_proxy_program(
         storage.save_programs(&document)?;
         // Drop only our handle: never kill the program or delete its executable.
         children.remove(&program_id);
-        snapshot(&app, &storage, &mut children)
-    })()
-    .map_err(|e: AppError| e.dto())
+        drop(children);
+        snapshot(&app, &storage, false)
+    })
+    .await
+    .map_err(|e| AppError::Runtime(e.to_string()).dto())?
+    .map_err(|e| e.dto())
 }
 
 fn proxy_command(program: &ProxyProgram, port: u16) -> Command {
@@ -417,6 +589,48 @@ fn running_program(executable: &str) -> Option<u32> {
         .map(|p| p.pid().as_u32())
 }
 
+fn resolve_launch_program(
+    program: &ProxyProgram,
+    catalog: &ApplicationCatalog,
+) -> AppResult<ProxyProgram> {
+    let mut resolved = program.clone();
+    if let Some(binding) = &program.binding {
+        let snapshot = catalog
+            .query(Some(&binding.package_family_name), true)
+            .map_err(AppError::Platform)?;
+        let resolution = app_binding::resolve(binding, &snapshot);
+        if resolution.availability != AppAvailability::Ready {
+            return Err(invalid(&resolution.detail));
+        }
+        let app = resolution
+            .application
+            .ok_or_else(|| invalid("应用信息尚未就绪，请刷新"))?;
+        resolved.executable = app.executable;
+        if let Some(relative) = &program.working_directory_relative {
+            resolved.working_directory = Some(
+                Path::new(&app.package_root)
+                    .join(relative)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    // Apply the same file, argument and working-directory checks to the resolved
+    // path as to a portable executable; keep the binding for instance detection.
+    let mut normalized = normalize_input(ProgramInput {
+        id: Some(resolved.id),
+        name: resolved.name,
+        executable: resolved.executable,
+        binding: None,
+        working_directory_relative: None,
+        arguments: resolved.arguments,
+        working_directory: resolved.working_directory,
+        mode: resolved.mode,
+    })?;
+    normalized.binding.clone_from(&program.binding);
+    Ok(normalized)
+}
+
 #[tauri::command]
 pub async fn launch_proxy_program(
     app: AppHandle,
@@ -425,31 +639,46 @@ pub async fn launch_proxy_program(
 ) -> Result<ProgramState, AppErrorDto> {
     tauri::async_runtime::spawn_blocking(move || -> AppResult<ProgramState> {
         if !cfg!(windows) { return Err(invalid("程序代理启动目前仅支持 Windows")); }
-        let _permit = crate::user_rules::acquire_configuration(&app)?;
         let storage = AppStorage::from_app(&app)?;
-        if app.state::<MihomoRuntime>().status(Some(&app)).phase != RuntimePhase::Running {
-            return Err(AppError::Conflict("请先启动 Serylane 的 Mihomo 核心；无需开启系统代理或 TUN".into()));
-        }
         let manager = app.state::<ProgramProxyManager>();
-        let mut children = manager.children.lock().map_err(|_| AppError::Conflict("程序管理器繁忙".into()))?;
-        if children.get_mut(&program_id).is_some_and(|c| matches!(c.try_wait(), Ok(None))) {
-            return Err(AppError::Conflict("该程序已经通过 Serylane 启动，请先在程序内退出后再启动".into()));
+        for attempt in 0..2 {
+            let document = storage.programs()?;
+            check_revision(&document, expected_revision)?;
+            let saved = document.programs.iter().find(|p| p.id == program_id).ok_or_else(|| invalid("程序条目不存在"))?;
+            // WinRT I/O occurs before acquiring either global configuration or
+            // child-process locks. Resolution is always fresh at launch time.
+            let program = resolve_launch_program(saved, &manager.catalog)?;
+            let permit = crate::user_rules::acquire_configuration(&app)?;
+            if app.state::<MihomoRuntime>().status(Some(&app)).phase != RuntimePhase::Running {
+                return Err(AppError::Conflict("请先启动 Serylane 本地核心，再启动应用。".into()));
+            }
+            let mut children = manager.children.lock().map_err(|_| invalid("程序管理器繁忙"))?;
+            check_revision(&storage.programs()?, expected_revision)?;
+            if children.get_mut(&program_id).is_some_and(|c| matches!(c.try_wait(), Ok(None))) {
+                return Err(AppError::Conflict("此应用已由 Serylane 启动。请先退出应用，再重新启动以应用新的代理设置。".into()));
+            }
+            #[cfg(windows)]
+            {
+                let bound_pid = program.binding.as_ref().and_then(app_binding::running_bound);
+                if let Some(pid) = bound_pid.or_else(|| running_program(&program.executable)) {
+                    return Err(AppError::Conflict(format!("此应用或同一应用包仍有后台进程（PID {pid}）。请先从应用中退出，再通过 Serylane 启动，让新的代理设置生效。")));
+                }
+            }
+            let port = storage.settings()?.mixed_port;
+            let endpoint = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            std::net::TcpStream::connect_timeout(&endpoint, std::time::Duration::from_secs(2))
+                .map_err(|_| AppError::Runtime("本地代理尚未就绪，请检查核心状态后重试；应用尚未启动。".into()))?;
+            match proxy_command(&program, port).spawn() {
+                Ok(child) => { children.insert(program_id, child); drop(children); drop(permit); return snapshot(&app, &storage, false); }
+                Err(error) if attempt == 0 && saved.binding.is_some() && error.kind() == std::io::ErrorKind::NotFound => {
+                    // Only a definitely failed spawn is retried. Never replay an
+                    // activation whose process creation may already have succeeded.
+                    drop(children); drop(permit); continue;
+                }
+                Err(error) => return Err(AppError::Runtime(format!("应用启动未完成，请刷新安装信息后重试。详情：{error}"))),
+            }
         }
-        let document = storage.programs()?;
-        check_revision(&document, expected_revision)?;
-        let program = document.programs.into_iter().find(|p| p.id == program_id).ok_or_else(|| AppError::NotFound("程序条目不存在".into()))?;
-        let program = normalize_input(ProgramInput { id: Some(program.id), name: program.name, executable: program.executable, arguments: program.arguments, working_directory: program.working_directory, mode: program.mode })?;
-        #[cfg(windows)]
-        if let Some(pid) = running_program(&program.executable) {
-            return Err(AppError::Conflict(format!("该程序已有运行实例（PID {pid}）。为避免代理参数被旧实例忽略，请先自行退出该程序；Serylane 不会强制关闭它。")));
-        }
-        let port = storage.settings()?.mixed_port;
-        let endpoint = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        std::net::TcpStream::connect_timeout(&endpoint, std::time::Duration::from_secs(2))
-            .map_err(|_| AppError::Runtime("Serylane 本地代理端口不可用，未启动程序".into()))?;
-        let child = proxy_command(&program, port).spawn().map_err(|e| AppError::Runtime(format!("程序启动失败：{e}")))?;
-        children.insert(program_id, child);
-        snapshot(&app, &storage, &mut children)
+        Err(invalid("应用安装信息正在变化，请稍后刷新重试。"))
     }).await.map_err(|e| AppError::Runtime(e.to_string()).dto())?.map_err(|e| e.dto())
 }
 
@@ -505,11 +734,159 @@ pub async fn choose_proxy_program(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_schema_is_backed_up_once_without_resetting_arguments() {
+        let root =
+            std::env::temp_dir().join(format!("serylane-program-migration-{}", Uuid::new_v4()));
+        let storage = AppStorage::from_root(root.clone()).unwrap();
+        let mut old = serde_json::to_value(ProgramDocument::default()).unwrap();
+        old["schemaVersion"] = 1.into();
+        let mut value = serde_json::to_value(entry()).unwrap();
+        value.as_object_mut().unwrap().remove("binding");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("workingDirectoryRelative");
+        old["programs"] = serde_json::json!([value]);
+        let bytes = serde_json::to_vec(&old).unwrap();
+        std::fs::write(root.join("proxy-programs.json"), &bytes).unwrap();
+        let mut document = storage.programs().unwrap();
+        assert_eq!(document.programs[0].binding, None);
+        storage.save_programs(&document).unwrap();
+        assert_eq!(storage.programs().unwrap().schema_version, 2);
+        assert_eq!(
+            std::fs::read(root.join("proxy-programs.v1.backup.json")).unwrap(),
+            bytes
+        );
+        document.programs[0].name = "changed".into();
+        storage.save_programs(&document).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("proxy-programs.v1.backup.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            storage.programs().unwrap().programs[0].arguments,
+            entry().arguments
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn migration_preserves_parameters_and_only_rebases_package_directories() {
+        use crate::app_binding::{InstalledApplication, PackageRecord};
+        let mut program = entry();
+        program.mode = ProgramProxyMode::Chromium;
+        program.working_directory = Some("C:\\Program Files\\Example\\work".into());
+        let id = program.id;
+        let binding = AppBinding {
+            package_family_name: "Example.App_123456789abcd".into(),
+            application_id: "App".into(),
+        };
+        let application = InstalledApplication {
+            binding: binding.clone(),
+            name: "Example".into(),
+            version: "1.0.0.0".into(),
+            package_full_name: "registered-package".into(),
+            package_root: "C:\\Program Files\\Example".into(),
+            executable: program.executable.clone(),
+            availability: AppAvailability::Ready,
+            detail: String::new(),
+        };
+        let catalog = CatalogSnapshot {
+            applications: vec![application],
+            packages: vec![PackageRecord {
+                family: binding.package_family_name.clone(),
+                full_name: "registered-package".into(),
+                availability: AppAvailability::Ready,
+                detail: String::new(),
+            }],
+            warnings: vec![],
+        };
+        assert!(migrate_legacy_program(&mut program, &catalog));
+        assert_eq!(program.id, id);
+        assert_eq!(program.arguments, entry().arguments);
+        assert_eq!(program.mode, ProgramProxyMode::Chromium);
+        assert_eq!(program.working_directory_relative.as_deref(), Some("work"));
+        assert_eq!(program.working_directory, None);
+        assert!(!migrate_legacy_program(&mut program, &catalog));
+        let mut custom = entry();
+        custom.working_directory = Some("D:\\Projects".into());
+        assert!(migrate_legacy_program(&mut custom, &catalog));
+        assert_eq!(custom.working_directory.as_deref(), Some("D:\\Projects"));
+    }
+
+    #[test]
+    fn bound_program_does_not_require_an_obsolete_executable_to_save() {
+        let mut program = entry();
+        program.binding = Some(AppBinding {
+            package_family_name: "Example.App_123456789abcd".into(),
+            application_id: "App".into(),
+        });
+        program.executable.clear();
+        assert!(validate_fields(&program).is_ok());
+        program.working_directory_relative = Some("..\\another-app".into());
+        assert!(validate_fields(&program).is_err());
+        program.working_directory_relative = Some("app\\work".into());
+        assert!(validate_fields(&program).is_ok());
+        program.working_directory = Some("C:\\Projects".into());
+        assert!(validate_fields(&program).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "registered disposable MSIX fixture; run scripts/test-windows-app-binding.ps1"]
+    fn registered_app_upgrade_receives_proxy_environment() {
+        let family = std::env::var("SERYLANE_BINDING_TEST_FAMILY").unwrap();
+        let version = std::env::var("SERYLANE_BINDING_TEST_VERSION").unwrap();
+        let binding = AppBinding {
+            package_family_name: family,
+            application_id: "App".into(),
+        };
+        let catalog = ApplicationCatalog::default();
+        let snapshot = catalog
+            .query(Some(&binding.package_family_name), true)
+            .unwrap();
+        let application = app_binding::resolve(&binding, &snapshot)
+            .application
+            .unwrap();
+        assert_eq!(application.version, version);
+        assert_eq!(application.availability, AppAvailability::Ready);
+        assert!(application
+            .executable
+            .contains(&format!("version-{version}")));
+        let mut program = entry();
+        program.binding = Some(binding);
+        program.executable = "C:\\old-version-removed\\app.exe".into();
+        program.arguments = vec![
+            "--exact".into(),
+            "program_proxy::tests::proxy_child_helper".into(),
+            "--nocapture".into(),
+        ];
+        let resolved = resolve_launch_program(&program, &catalog).unwrap();
+        assert_eq!(
+            app_binding::path_key(&resolved.executable),
+            app_binding::path_key(&application.executable)
+        );
+        let output = proxy_command(&resolved, 17892)
+            .env("ROUTEDECK_PROXY_TEST_HELPER", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("proxy-child-ok"));
+    }
     fn entry() -> ProxyProgram {
         ProxyProgram {
             id: Uuid::new_v4(),
             name: "示例".into(),
             executable: "C:\\Program Files\\Example\\app.exe".into(),
+            binding: None,
+            working_directory_relative: None,
             arguments: vec![
                 "an argument with spaces".into(),
                 "& not-a-shell-command".into(),
@@ -526,7 +903,7 @@ mod tests {
         document.programs.push(document.programs[0].clone());
         assert!(document.validate().is_err());
         document.programs.pop();
-        document.schema_version = 2;
+        document.schema_version = 999;
         assert!(document.validate().is_err());
         document.schema_version = 1;
         document.programs[0].arguments.push("x\0y".into());
@@ -630,6 +1007,8 @@ mod tests {
             id: None,
             name: "  test  ".into(),
             executable,
+            binding: None,
+            working_directory_relative: None,
             arguments: vec![],
             working_directory: None,
             mode: ProgramProxyMode::Environment,
@@ -695,6 +1074,25 @@ mod tests {
             "localhost,127.0.0.1,::1"
         );
         assert!(unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null());
+        if let Ok(expected) = std::env::var("SERYLANE_BINDING_TEST_FAMILY") {
+            use windows::core::PWSTR;
+            use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+            use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFamilyName;
+            let mut size = 0;
+            assert_eq!(
+                unsafe { GetCurrentPackageFamilyName(&mut size, None) },
+                ERROR_INSUFFICIENT_BUFFER
+            );
+            let mut value = vec![0u16; size as usize];
+            assert_eq!(
+                unsafe { GetCurrentPackageFamilyName(&mut size, Some(PWSTR(value.as_mut_ptr()))) },
+                ERROR_SUCCESS
+            );
+            assert_eq!(
+                String::from_utf16_lossy(&value[..size as usize - 1]),
+                expected
+            );
+        }
         println!("proxy-child-ok");
     }
 }

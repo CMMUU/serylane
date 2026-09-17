@@ -23,6 +23,7 @@ import type {
   ProfileSummary,
   ProgramInput,
   ProgramState,
+  InstalledApplications,
   ProxyCompatibility,
   RoutingMode,
   RuntimeLog,
@@ -110,7 +111,8 @@ export const api = {
   clearLogs: () => invoke<void>("clear_runtime_logs"),
   systemProxy: () => invoke<SystemProxyStatus>("system_proxy_status"),
   systemProxyCompatibility: () => invoke<ProxyCompatibility>("check_system_proxy_compatibility"),
-  proxyPrograms: () => invoke<ProgramState>("list_proxy_programs"),
+  proxyPrograms: (refresh = false) => invoke<ProgramState>("list_proxy_programs", { refresh }),
+  installedProxyApplications: () => invoke<InstalledApplications>("list_installed_proxy_applications"),
   saveProxyProgram: (input: ProgramInput, expectedRevision: number) =>
     invoke<ProgramState>("save_proxy_program", { input, expectedRevision }),
   deleteProxyProgram: (programId: string, expectedRevision: number) =>

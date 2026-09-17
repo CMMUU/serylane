@@ -316,17 +316,28 @@ export type ProxyCompatibility = {
 };
 
 export type ProgramProxyMode = "environment" | "chromium";
+export type AppBinding = { packageFamilyName: string; applicationId: string };
+export type AppAvailability = "ready" | "not_installed" | "updating" | "maintenance" | "needs_relink" | "missing_file" | "unsupported_launch" | "read_error";
+export type InstalledApplication = {
+  binding: AppBinding; name: string; version: string; packageFullName: string;
+  packageRoot: string; executable: string; availability: AppAvailability; detail: string;
+};
+export type ApplicationResolution = { availability: AppAvailability; detail: string; application: InstalledApplication | null };
+export type InstalledApplications = { applications: InstalledApplication[]; warnings: string[] };
 export type ProxyProgram = {
   id: string;
   name: string;
   executable: string;
+  binding?: AppBinding | null;
+  workingDirectoryRelative?: string | null;
+  resolution?: ApplicationResolution;
   arguments: string[];
   workingDirectory: string | null;
   mode: ProgramProxyMode;
   available: boolean;
   runningPid: number | null;
 };
-export type ProgramInput = Omit<ProxyProgram, "id" | "available" | "runningPid"> & { id: string | null };
+export type ProgramInput = Omit<ProxyProgram, "id" | "available" | "runningPid" | "resolution"> & { id: string | null };
 export type ProgramState = {
   revision: number;
   supported: boolean;

@@ -8,6 +8,8 @@ Serylane 是基于 **Mihomo** 内核、使用 Rust + Tauri 2 构建的开源桌�
 
 ## 主要功能
 
+- **Windows 应用绑定（v0.7.12）**：从已安装 MSIX / Store 应用选择，按包系列与应用 ID 关联；升级后自动定位当前安装入口。保留普通 `.exe` 选择、代理方式及启动参数，区分更新中、未安装和需要重新关联。[使用与验证说明](docs/应用绑定与自动跟随更新.md)。
+
 - **系统代理启动提速（v0.7.11）**：本地接管完成后即可使用，外网检查后台执行；Manual / System Proxy 热切换不主动重启核心。状态提示区分代理已开启、联网检查中和部分检测失败，并提供技术详情。
 
 - **订阅管理**：在「订阅」统一添加远程订阅，明确选择添加后是否选用；本地 YAML 仍在「配置」导入与回滚。用紧凑卡片查看服务商返回的套餐流量、到期时间与更新状态；没有提供的数据会明确标注，不显示成零或不限量。
@@ -37,6 +39,20 @@ Serylane 是基于 **Mihomo** 内核、使用 Rust + Tauri 2 构建的开源桌�
 3. 选用配置，点击顶部主「启动」会按当前保存的网络模式启动 Mihomo 核心；0.7.7 起不会强制改成系统代理。需要切换模式时使用明确的「系统代理」或「TUN 模式」入口，TUN 仍按原流程处理权限和预检。程序代理中的程序启动与独立路由服务操作仍不自动修改系统代理／TUN；它们不是 Mihomo 核心的启动入口。启用系统代理或 TUN 前先关闭其他客户端的系统代理／TUN，避免相互接管。
 4. Codex 本地路由不是普通代理使用的必要步骤，默认保持关闭。需要时先阅读下方「Codex 路由与稳定灾备」中的接入范围、备份与恢复说明。
 
+## Star 增长趋势
+
+如果 Serylane 对你有帮助，欢迎点亮 Star，关注后续更新。
+
+<a href="https://www.star-history.com/?repos=CMMUU%2Fserylane&amp;type=date&amp;legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=CMMUU/serylane&amp;type=date&amp;theme=dark&amp;legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=CMMUU/serylane&amp;type=date&amp;legend=top-left" />
+    <img alt="Serylane 的 GitHub Star 增长趋势" src="https://api.star-history.com/chart?repos=CMMUU/serylane&amp;type=date&amp;legend=top-left" width="800" />
+  </picture>
+</a>
+
+图表由 Star History 提供，可能存在缓存延迟；点击可查看详细趋势。
+
 ## 手动选点与主页节点详情（v0.7.10）
 
 以下能力随 v0.7.10 安装包交付；是否已经可下载，以正式 Release 和官网实时结果为准。
@@ -55,6 +71,9 @@ Serylane 是基于 **Mihomo** 内核、使用 Rust + Tauri 2 构建的开源桌�
 倍率上限和未知倍率兜底仅在性价比模式生效；未知费用默认不参与。没有符合预算的健康候选时，新请求会被拒绝，不偷偷使用超预算节点。显式允许未知费用后不能保证费用上限；手动固定选择优先，但应用前会提示未知或超预算费用。基础 Fallback 无法执行此预算限制，须先开启稳定优先。保存只更新成本策略，下一轮稳定检查生效，不启动核心、不重放请求、不自动生成灾备；需重新生成才能更换候选池。实际资费与账单以服务商为准。
 
 ## 设计文档
+
+- [应用绑定与自动跟随更新](docs/应用绑定与自动跟随更新.md)
+- [v0.7.12 发布说明](docs/发布说明-v0.7.12.md)
 
 - [启动提速与友好提示](docs/启动提速与友好提示.md)
 - [v0.7.11 发布说明](docs/发布说明-v0.7.11.md)

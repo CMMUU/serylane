@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.12 - 2026-09-17
+
+- Bind Windows MSIX/Store applications by package family and application ID; resolve the current registered executable before launching, preserving proxy mode, arguments and directory policy.
+- Add installed-app selection, conservative legacy migration with backup, identity-aware background-process checks, bounded native queries and actionable installation states.
+- Add a light/dark Star History chart to the repository README.
+- Gate Windows releases with a disposable registered-package v1-to-v2 launch/environment fixture; preserve existing six-target signing, website and mirror verification.
+
 ## 0.7.11
 
 - 系统代理启用与后台网络检查分离，非 TUN 模式热切换保留运行核心。

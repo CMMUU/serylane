@@ -3690,7 +3690,7 @@ dependencies = [
 
 [[package]]
 name = "serylane"
-version = "0.7.11"
+version = "0.7.12"
 dependencies = [
  "block2",
  "bytes",
@@ -3724,6 +3724,7 @@ dependencies = [
  "toml_edit 0.25.13+spec-1.1.0",
  "url",
  "uuid",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
  "winreg 0.55.0",
 ]

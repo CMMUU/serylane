@@ -78,15 +78,37 @@ impl AppStorage {
     }
 
     pub fn save_programs(&self, document: &crate::program_proxy::ProgramDocument) -> AppResult<()> {
+        let mut document = document.clone();
+        document.schema_version = 2;
         document.validate()?;
-        if serde_json::to_vec_pretty(document)
+        if serde_json::to_vec_pretty(&document)
             .map_err(|error| AppError::Io(error.to_string()))?
             .len()
             > 4 * 1024 * 1024
         {
             return Err(AppError::Io("程序代理清单超过大小限制".into()));
         }
-        write_json_atomic(&self.root.join("proxy-programs.json"), document)
+        let path = self.root.join("proxy-programs.json");
+        if path.exists() {
+            let old = self.programs()?;
+            if old.schema_version == 1 {
+                // Preserve the exact old bytes before the first v2 write. A
+                // failed backup aborts migration; an existing backup is retained.
+                let backup = self.root.join("proxy-programs.v1.backup.json");
+                if !backup.exists() {
+                    let bytes = fs::read(&path)?;
+                    let mut file = tempfile::Builder::new()
+                        .prefix(".programs-v1-")
+                        .tempfile_in(&self.root)?;
+                    file.write_all(&bytes)?;
+                    file.as_file().sync_all()?;
+                    set_private_file_permissions(file.path())?;
+                    file.persist_noclobber(&backup)
+                        .map_err(|e| AppError::Io(e.to_string()))?;
+                }
+            }
+        }
+        write_json_atomic(&path, &document)
     }
 
     pub fn user_rules(&self) -> AppResult<UserRulesDocument> {
