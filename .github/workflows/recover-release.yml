@@ -11,6 +11,15 @@ on:
         description: Existing immutable stable tag matching the original build commit
         required: true
         type: string
+      runner:
+        description: Alternate trusted cloud route for stalled uploads
+        required: true
+        type: choice
+        default: macos-14
+        options:
+          - macos-14
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
 
 # Serializes with ordinary trusted-main publishing. Never cancel an upload.
 concurrency:
@@ -24,7 +33,7 @@ permissions:
 jobs:
   recover:
     if: github.repository == 'CMMUU/serylane' && github.ref == 'refs/heads/main'
-    runs-on: macos-14
+    runs-on: ${{ inputs.runner == 'ubuntu-24.04-arm' && 'ubuntu-24.04-arm' || inputs.runner == 'ubuntu-24.04' && 'ubuntu-24.04' || 'macos-14' }}
     timeout-minutes: 30
     permissions:
       contents: write
