@@ -14,6 +14,10 @@ class Connection:
     def __init__(self, status=201, fail=False):
         self.status, self.fail, self.headers, self.body = status, fail, {}, b""
         self.closed = False
+        self.sock = self
+
+    def settimeout(self, timeout):
+        self.response_timeout = timeout
 
     def putrequest(self, method, endpoint):
         self.method, self.endpoint = method, endpoint
@@ -69,6 +73,7 @@ class RecoveryUploadTests(unittest.TestCase):
         self.assertEqual(c.method, "POST")
         self.assertIn("label=Serylane+Windows+x64", c.endpoint)
         self.assertTrue(c.closed)
+        self.assertEqual(c.response_timeout, 120)
 
     def test_rejections_are_not_retried_or_followed(self):
         for status in [302, 403, 422, 502]:

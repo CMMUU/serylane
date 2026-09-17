@@ -54,6 +54,9 @@ def upload(release_id, path, label, token, connection_factory=http.client.HTTPSC
                     print(f"Upload body {path.name}: {sent}/{size} bytes", flush=True)
         if sent != size:
             raise UploadError("Upload file changed; inspect draft before resuming")
+        # GitHub may acknowledge storage/digest processing later than the body.
+        # Keep the send idle timeout short, but allow bounded server confirmation.
+        connection.sock.settimeout(120)
         response = connection.getresponse()
         if response.status != 201:
             raise UploadError(f"Upload HTTP {response.status}; inspect draft before resuming")
@@ -94,7 +97,9 @@ def main():
     sys.argv = [str(root / "scripts/publish_github_release.py"), *sys.argv[3:]]
     try:
         original.main()
-    except (original.ReleaseError, OSError, ValueError, KeyError):
+    except original.ReleaseError as error:
+        raise UploadError(str(error)) from None
+    except (OSError, ValueError, KeyError):
         raise UploadError("Original publisher stopped safely; inspect its verified progress and draft assets") from None
 
 
