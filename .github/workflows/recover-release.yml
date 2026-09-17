@@ -38,6 +38,9 @@ jobs:
         with:
           node-version: 22
       - run: node --test scripts/test-release-recovery.mjs
+      - run: python3 -m unittest discover -s scripts -p test_recover_github_upload.py
+      - name: Preserve reviewed bounded transport outside original source tree
+        run: cp scripts/recover_github_upload.py "$RUNNER_TEMP/recover_github_upload.py"
       - name: Verify original run, every platform gate, artifact provenance and tag
         id: original
         env:
@@ -68,7 +71,7 @@ jobs:
           GODEBUG: http2client=0
           PYTHONUNBUFFERED: '1'
         run: >-
-          python3 scripts/publish_github_release.py
+          python3 "$RUNNER_TEMP/recover_github_upload.py" --source "$GITHUB_WORKSPACE"
           --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
           --artifacts "$RUNNER_TEMP/release-artifacts"
           --output "$RUNNER_TEMP/release-assets" --apply

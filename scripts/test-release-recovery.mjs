@@ -21,6 +21,6 @@ test('expired, mismatched, extra or missing artifacts cannot be used',()=>{
 });
 test('recovery workflow checks original immutable source and never rebuilds or clobbers',()=>{
   const source=readFileSync(new URL('../.github/workflows/recover-release.yml',import.meta.url),'utf8');
-  for(const pattern of [/github\.ref == 'refs\/heads\/main'/,/node scripts\/inspect-release-recovery\.mjs/,/ref: \$\{\{ steps\.original\.outputs\.commit \}\}/,/run-id: \$\{\{ inputs\.source_run_id \}\}/,/GODEBUG: http2client=0/,/python3 scripts\/publish_github_release\.py/])assert.match(source,pattern);
+  for(const pattern of [/github\.ref == 'refs\/heads\/main'/,/node scripts\/inspect-release-recovery\.mjs/,/ref: \$\{\{ steps\.original\.outputs\.commit \}\}/,/run-id: \$\{\{ inputs\.source_run_id \}\}/,/GODEBUG: http2client=0/,/python3 "\$RUNNER_TEMP\/recover_github_upload\.py" --source "\$GITHUB_WORKSPACE"/])assert.match(source,pattern);
   assert.doesNotMatch(source,/--clobber|tauri build|TAURI_SIGNING_PRIVATE_KEY|--insecure/);
 });
