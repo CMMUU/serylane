@@ -1,6 +1,6 @@
 [package]
 name = "serylane"
-version = "0.7.15"
+version = "0.7.16"
 license = "GPL-3.0-only"
 description = "Serylane: lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]
@@ -58,13 +58,16 @@ hyper-util = { version = "0.1.20", features = ["client-proxy"] }
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 fontdue = "0.9.4"
 block2 = "0.6"
 libc = "0.2"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAttributedString", "NSButton", "NSCell", "NSControl", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSText", "NSView", "objc2-core-foundation"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSDictionary", "NSGeometry", "NSRange", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSApplication", "block2", "libc", "NSAttributedString", "NSButton", "NSCell", "NSControl", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSText", "NSView", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSDate", "NSError", "NSFileManager", "NSPropertyList", "NSURL", "NSAttributedString", "NSDictionary", "NSGeometry", "NSRange", "NSString", "NSValue"] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAppearance", "NSApplication", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSStringDrawing"] }

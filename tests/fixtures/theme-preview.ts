@@ -19,9 +19,10 @@ import type { CostSnapshot, CostInput } from "../../src/openai-costs";
 
 const STORAGE_KEY = "routedeck:test-fixture:theme-preview:v1";
 const RULES_STORAGE_KEY = "routedeck:test-fixture:user-rules:v1";
-const PROGRAMS_STORAGE_KEY = "routedeck:test-fixture:proxy-programs:v1";
 const previewQuery = new URLSearchParams(location.search);
-const previewWindows = previewQuery.get("platform") === "windows";
+const previewPlatform = ["windows", "macos", "linux"].includes(previewQuery.get("platform") ?? "") ? previewQuery.get("platform")! : "macos";
+const previewWindows = previewPlatform === "windows";
+const PROGRAMS_STORAGE_KEY = `routedeck:test-fixture:proxy-programs:v1:${previewPlatform}`;
 // Screenshot-only layout; synthetic version labels and the fail-closed bridge remain.
 if (previewQuery.get("presentation") === "1" || previewQuery.get("glass") === "1") {
   document.documentElement.dataset.fixturePresentation = "true";
@@ -53,24 +54,66 @@ let rulesSaveCount = 0;
 let rulesRollbackCount = 0;
 let rulesApplyCount = 0;
 
-let programs: ProgramState = { revision: 0, supported: true, proxyEndpoint: "http://127.0.0.1:17890", coreRunning: true, programs: [] };
+let programs: ProgramState = { platform: previewPlatform, revision: 0, supported: true, proxyEndpoint: "http://127.0.0.1:17890", coreRunning: true, programs: [] };
 try {
   const saved = JSON.parse(localStorage.getItem(PROGRAMS_STORAGE_KEY) ?? "null") as ProgramState | null;
-  if (saved && Array.isArray(saved.programs)) programs = { ...programs, revision: saved.revision, programs: saved.programs.map((program) => ({ ...program, runningPid: null })) };
+  if (saved && Array.isArray(saved.programs)) programs = { ...programs, revision: saved.revision, programs: saved.programs.map((program) => ({ ...program, runningPid: null, launchPending: false })) };
 } catch { /* Isolated fixture only; never read actual application data. */ }
 let installedAppVersion = "1.0.0.0";
 let installedAppStatus: AppAvailability = "ready";
 function fixtureInstalledApplication(): InstalledApplication {
+  const detail = installedAppStatus === "ready" ? "已关联应用，启动前重新定位当前安装版本。" : installedAppStatus === "updating" ? "应用正在更新，完成后请刷新重试。" : "应用信息待重新关联；原代理参数已保留。";
+  if (previewPlatform === "macos") return {
+    binding: { kind: "macos", bundleId: "invalid.fixture.Codex", location: "/Applications/Fixture Codex.app", requirement: 'identifier "invalid.fixture.Codex"' },
+    name: "Codex（合成应用）", version: installedAppVersion, packageFullName: "invalid.fixture.Codex", packageRoot: "/Applications/Fixture Codex.app",
+    executable: "/Applications/Fixture Codex.app/Contents/MacOS/Codex", availability: installedAppStatus, detail,
+  };
+  if (previewPlatform === "linux") return {
+    binding: { kind: "linux", desktopId: "invalid.fixture.Codex.desktop", location: "/usr/share/applications/invalid.fixture.Codex.desktop" },
+    name: "Codex（合成应用）", version: "", packageFullName: "invalid.fixture.Codex.desktop", packageRoot: "/usr/share/applications",
+    executable: "/opt/fixture-codex/codex", availability: installedAppStatus, detail,
+  };
   return { binding: { packageFamilyName: "Fixture.Codex_123456789abcd", applicationId: "App" }, name: "Codex（合成应用）", version: installedAppVersion,
     packageFullName: `Fixture.Codex_${installedAppVersion}_x64__123456789abcd`, packageRoot: `C:\\Program Files\\WindowsApps\\Fixture.Codex_${installedAppVersion}`,
     executable: `C:\\Program Files\\WindowsApps\\Fixture.Codex_${installedAppVersion}\\app\\Codex.exe`, availability: installedAppStatus,
     detail: installedAppStatus === "ready" ? "已关联应用，更新后自动定位当前安装版本。" : installedAppStatus === "updating" ? "Windows 正在更新此应用，完成后请刷新重试。" : "应用信息待重新关联；原代理参数已保留。" };
 }
+let catalogDelayMs = 0;
+let catalogFail = false;
+let catalogCheckedAt: number | null = null;
+let catalogReadyAt: number | null = null;
+let catalogCached: InstalledApplication[] = [];
+let catalogReadCount = 0;
+let catalogForceCount = 0;
+let programPickerPath: string | null = null;
+function fixtureApplications() {
+  const ready = fixtureInstalledApplication();
+  return [ready, { ...ready, name: "特殊激活入口（合成应用）", availability: "unsupported_launch" as const,
+    detail: "此入口需要特殊激活，暂未适配代理启动。", version: "", binding: previewPlatform === "macos"
+      ? { kind: "macos" as const, bundleId: "invalid.fixture.Hosted", location: "/Applications/Fixture Hosted.app", requirement: null }
+      : previewPlatform === "linux" ? { kind: "linux" as const, desktopId: "invalid.fixture.Hosted.desktop", location: "/usr/share/applications/invalid.fixture.Hosted.desktop" }
+      : { packageFamilyName: "Fixture.Hosted_123456789abcd", applicationId: "App" } }];
+}
 window.addEventListener("serylane-fixture-app-binding", (event) => {
-  const detail = (event as CustomEvent<{ version?: string; status?: AppAvailability }>).detail;
+  const detail = (event as CustomEvent<{ version?: string; status?: AppAvailability; catalogDelayMs?: number; catalogFail?: boolean; pickerPath?: string | null }>).detail;
   installedAppVersion = detail.version ?? installedAppVersion;
   installedAppStatus = detail.status ?? installedAppStatus;
+  catalogDelayMs = detail.catalogDelayMs ?? catalogDelayMs;
+  catalogFail = detail.catalogFail ?? catalogFail;
+  if (detail.pickerPath !== undefined) programPickerPath = detail.pickerPath;
 });
+function fixtureCatalog(refresh: boolean) {
+  catalogReadCount++;
+  if (refresh) catalogForceCount++;
+  document.documentElement.dataset.fixtureCatalogReads = String(catalogReadCount);
+  document.documentElement.dataset.fixtureCatalogForces = String(catalogForceCount);
+  if (catalogFail) throw new Error("合成应用目录读取失败");
+  if (catalogReadyAt === null && (refresh || catalogCheckedAt === null)) catalogReadyAt = Date.now() + catalogDelayMs;
+  if (catalogReadyAt !== null && Date.now() >= catalogReadyAt) {
+    catalogCached = fixtureApplications(); catalogCheckedAt = Date.now(); catalogReadyAt = null;
+  }
+  return { applications: structuredClone(catalogCached), warnings: [], refreshing: catalogReadyAt !== null, checkedAt: catalogCheckedAt };
+}
 let programLaunches = 0;
 let failProgramSave = false;
 let cancelProgramPicker = false;
@@ -263,12 +306,19 @@ window.addEventListener("routedeck-fixture-programs", (event) => {
     if (programs.programs[0]) programs.programs[0].name = "其他窗口更新的名称";
   }
   if (detail.missing && programs.programs[0]) programs.programs[0].available = false;
-  if (detail.exited) programs.programs.forEach((program) => { program.runningPid = null; });
+  if (detail.exited) programs.programs.forEach((program) => { program.runningPid = null; program.launchPending = false; });
+  if (typeof detail.launchPending === "boolean") programs.programs.forEach((program) => {
+    program.launchPending = detail.launchPending;
+    if (detail.launchPending) program.runningPid = null;
+  });
+  if (typeof detail.launchReceiptPid === "number" && detail.launchReceiptPid > 0) programs.programs.forEach((program) => {
+    program.runningPid = detail.launchReceiptPid; program.launchPending = false;
+  });
 });
 function programState() {
   for (const program of programs.programs) {
     if (program.binding) {
-      const app = fixtureInstalledApplication();
+      const app = fixtureApplications().find((entry) => JSON.stringify(entry.binding) === JSON.stringify(program.binding)) ?? fixtureInstalledApplication();
       program.executable = app.executable;
       program.available = app.availability === "ready";
       program.resolution = { availability: app.availability, detail: app.detail, application: app };
@@ -754,7 +804,7 @@ function fixtureHealthProbe() {
 }
 const readonlyReplies: Record<string, () => unknown> = {
   connection_feedback: () => structuredClone({ ...fixtureFeedback, elapsedMs: fixtureFeedback.health === "checking" ? performance.now() - feedbackStartedAt : fixtureFeedback.elapsedMs }),
-  app_info: () => ({ productName: "Serylane", version: `${packageInfo.version} · 合成预览`, targetOs: previewWindows ? "windows" : "macos", targetArch: previewWindows ? "x86_64" : "aarch64" }),
+  app_info: () => ({ productName: "Serylane", version: `${packageInfo.version} · 合成预览`, targetOs: previewPlatform, targetArch: previewWindows ? "x86_64" : "aarch64" }),
   app_update_status: () => structuredClone(fixtureUpdate),
   get_settings: settings,
   get_session_resume_status: () => fixtureResumeStatus,
@@ -770,7 +820,6 @@ const readonlyReplies: Record<string, () => unknown> = {
   }),
   get_user_rules: userRulesState,
   list_proxy_programs: programState,
-  list_installed_proxy_applications: () => ({ applications: [fixtureInstalledApplication()], warnings: [] }),
   check_system_proxy_compatibility: () => ({ supported: true, systemConfigured: true, compatible: true, expectedProxy: programs.proxyEndpoint, resolvedHttp: programs.proxyEndpoint, resolvedHttps: programs.proxyEndpoint, detail: "合成检查：HTTP/HTTPS 解析已指向本地代理；未读取真实注册表，也未验证真实长连接。" }),
   probe_mihomo: () => ({ available: true, path: "/fixture-only/mihomo", version: "v0.0.0-fixture", message: "纯合成状态，真实内核未启动" }),
   runtime_status: () => ({
@@ -1140,8 +1189,15 @@ mockIPC(async (command, payload) => {
     fixtureUpdate.phase = "installing";
     return; // Synthetic receipt only; no processes, files, proxy changes or exit.
   }
+  if (command === "list_installed_proxy_applications") return fixtureCatalog(args.refresh === true);
+  if (command === "inspect_proxy_application") {
+    const app = fixtureInstalledApplication();
+    document.documentElement.dataset.fixtureInspectedApplication = String(args.path);
+    if ("kind" in app.binding) app.binding.location = String(args.path);
+    return app;
+  }
   if (command === "choose_proxy_program") {
-    return cancelProgramPicker ? null : "C:\\Program Files\\Example App\\Example.exe";
+    return cancelProgramPicker ? null : programPickerPath ?? (previewPlatform === "macos" ? "/Applications/Fixture Codex.app" : previewPlatform === "linux" ? "/usr/share/applications/invalid.fixture.Codex.desktop" : "C:\\Program Files\\Example App\\Example.exe");
   }
   if (command === "save_proxy_program" || command === "delete_proxy_program") {
     await new Promise((resolve) => window.setTimeout(resolve, 100));
@@ -1149,10 +1205,11 @@ mockIPC(async (command, payload) => {
     if (command === "save_proxy_program") {
       if (failProgramSave) { failProgramSave = false; throw ruleError("IO_ERROR", "模拟保存失败；原清单未变化"); }
       const input = args.input as ProgramInput;
-      if (!input.name.trim() || (!input.binding && !/^[a-z]:\\.+\.exe$/i.test(input.executable))) throw ruleError("INVALID_INPUT", "请选择存在的 .exe 文件");
+      if (!input.name.trim() || (!input.binding && !(previewWindows ? /^[a-z]:\\.+\.exe$/i.test(input.executable) : input.executable.startsWith("/")))) throw ruleError("INVALID_INPUT", "请选择有效的应用或程序文件");
+      if (input.binding && "kind" in input.binding && input.binding.kind === "macos" && (input.workingDirectory || input.workingDirectoryRelative)) throw ruleError("INVALID_INPUT", "macOS .app 使用系统原生工作目录，请切换为默认工作目录。");
       const old = programs.programs.find((program) => program.id === input.id);
       if (input.id && !old) throw ruleError("NOT_FOUND", "程序条目已被删除");
-      const entry = { ...input, id: input.id ?? crypto.randomUUID(), available: true, runningPid: old?.runningPid ?? null };
+      const entry = { ...input, id: input.id ?? crypto.randomUUID(), available: true, runningPid: old?.runningPid ?? null, launchPending: old?.launchPending ?? false };
       if (old) programs.programs[programs.programs.indexOf(old)] = entry;
       else programs.programs.push(entry);
     } else {
@@ -1165,8 +1222,9 @@ mockIPC(async (command, payload) => {
   if (command === "launch_proxy_program") {
     if (args.expectedRevision !== programs.revision) throw ruleError("STATE_CONFLICT", "程序清单已更新，未启动程序，请刷新后重新确认");
     const program = programs.programs.find((entry) => entry.id === args.programId);
-    if (!program || !program.available || !programs.coreRunning || program.runningPid) throw ruleError("STATE_CONFLICT", "合成启动条件不满足");
+    if (!program || !program.available || !programs.coreRunning || program.runningPid || program.launchPending) throw ruleError("STATE_CONFLICT", "合成启动条件不满足");
     program.runningPid = 4567;
+    program.launchPending = false;
     document.documentElement.dataset.fixtureProgramLaunches = String(++programLaunches);
     return programState(); // Simulation only. No native process or network calls.
   }

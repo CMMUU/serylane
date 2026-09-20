@@ -59,6 +59,10 @@ for (const [route, html] of htmls) {
     checkedLinks++;
   }
 }
+assert.match(htmls.get('/docs/'), /v0\.7\.16：三平台应用快选与更新跟随/);
+assert.match(htmls.get('/docs/'), /NSWorkspace/);
+assert.match(htmls.get('/docs/'), /Flatpak\/Snap/);
+assert.match(htmls.get('/'), /缓存清单先显示、后台刷新不打断编辑/);
 assert.match(htmls.get('/docs/'), /v0\.7\.9：更清晰的 macOS 双行网速/);
 assert.match(htmls.get('/'), /macOS 原生双行网速/);
 const sitemap = await readFile(join(root, 'sitemap.xml'), 'utf8');

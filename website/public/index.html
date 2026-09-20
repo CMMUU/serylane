@@ -97,7 +97,7 @@
           <p class="section-description">清晰的信息，独立的操作。macOS 原生双行网速，等宽数字更易扫读。</p>
           <div class="feature-rail">
             <article><svg class="feature-icon icon"><use href="#i-usage"/></svg><h3>订阅，心中有数。</h3><p>查看服务商返回的用量与到期时间。<br>缺失数据明确标注，不把未知显示为零。</p></article>
-            <article><svg class="feature-icon icon"><use href="#i-split"/></svg><h3>分流，各行其道。</h3><p>管理节点、规则与程序代理。<br>配置与规则保留版本与回滚入口。</p></article>
+            <article><svg class="feature-icon icon"><use href="#i-split"/></svg><h3>分流，各行其道。</h3><p>管理节点、规则与三平台应用快选。<br>按身份跟随更新，清单后台刷新。</p></article>
             <article><svg class="feature-icon icon"><use href="#i-update"/></svg><h3>更新，有据可查。</h3><p>自动更新：同版本优先国内渠道，GitHub 备用。<br>应用内更新校验项目签名与 SHA-256。</p></article>
           </div>
         </div>
@@ -130,7 +130,7 @@
         </div>
       </section>
 
-      <section class="faq-section page-width" aria-labelledby="faq-title"><h2 id="faq-title">开始前，你可能想知道。</h2><div class="faq-list"><details><summary>Codex 更新后，程序代理里的旧路径失效怎么办？</summary><p>v0.7.12 起，Windows 程序代理可从已安装 MSIX / Store 应用选择，保存应用身份并自动跟随安装版本。旧条目点「重新关联」后保留代理方式和参数；便携软件继续选择 .exe。<a href="/docs/#app-binding">查看应用绑定说明</a>；实际可用版本以下载区查询为准。</p></details><details><summary>开启系统代理时，还需要等待网络检查吗？</summary><p>v0.7.11 起，本地接管完成后即可使用，外网检查在后台继续。页面会分别显示代理开关和联网状态。<a href="/docs/#fast-proxy-start">查看启动与提示说明</a>；实际可用版本以下载区查询为准。</p></details>
+      <section class="faq-section page-width" aria-labelledby="faq-title"><h2 id="faq-title">开始前，你可能想知道。</h2><div class="faq-list"><details><summary>应用更新后，程序代理里的路径失效怎么办？</summary><p>v0.7.16 支持 Windows MSIX / Store、macOS .app 和 Linux .desktop 应用绑定。正常升级后重新定位当前入口，缓存清单先显示、后台刷新不打断编辑；多副本或身份变化时提示重新关联。macOS 使用原生启动，Linux 特殊激活／沙箱入口会明确标记待适配。<a href="/docs/#app-binding">查看平台说明与使用步骤</a>；实际可用版本以下载区查询为准。</p></details><details><summary>开启系统代理时，还需要等待网络检查吗？</summary><p>v0.7.11 起，本地接管完成后即可使用，外网检查在后台继续。页面会分别显示代理开关和联网状态。<a href="/docs/#fast-proxy-start">查看启动与提示说明</a>；实际可用版本以下载区查询为准。</p></details>
         <details open><summary>登录后会弹出主页吗？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>选择“登录后后台恢复上次状态”即可只在托盘运行。v0.7.10 修正旧设置缺少静默选项时仍弹窗的问题，<a href="/docs/#quiet-startup">查看静默启动与选点说明</a>。</p></details>
         <details open><summary>是否提供代理节点或订阅？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>没有。你需要自行准备订阅或本地配置。</p></details>
         <details><summary>遇到 502 或模型重连时，如何判断问题？</summary><p>v0.7.13 提供分类诊断、ChatGPT / OpenAI API 双目标检查和限频故障反馈。基础可达不等于模型完成；尊重手动选点与倍率预算，不自动重发请求。<a href="/docs/routing#stability">查看诊断与稳定策略</a>，实际可用版本以下载区为准。</p></details>

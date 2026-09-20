@@ -1,6 +1,56 @@
 //! Version-independent application identity. Resolved paths are runtime data,
 //! never the identity of a packaged application.
 use serde::{Deserialize, Serialize};
+#[path = "app_binding/desktop.rs"]
+pub mod desktop;
+#[cfg(any(target_os = "linux", all(test, unix)))]
+#[path = "app_binding/linux.rs"]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod linux;
+#[cfg(target_os = "macos")]
+#[path = "app_binding/macos.rs"]
+pub mod macos;
+#[path = "app_binding/picker_cache.rs"]
+pub mod picker_cache;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum AppBinding {
+    Windows(WindowsBinding),
+    Desktop(desktop::DesktopBinding),
+}
+impl From<WindowsBinding> for AppBinding {
+    fn from(value: WindowsBinding) -> Self {
+        Self::Windows(value)
+    }
+}
+impl AppBinding {
+    pub fn windows(&self) -> Option<&WindowsBinding> {
+        match self {
+            Self::Windows(w) => Some(w),
+            _ => None,
+        }
+    }
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Windows(w) => w.valid(),
+            Self::Desktop(d) => d.valid(),
+        }
+    }
+    pub fn platform(&self) -> &'static str {
+        match self {
+            Self::Windows(_) => "windows",
+            Self::Desktop(d) => d.platform(),
+        }
+    }
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn aumid(&self) -> String {
+        match self {
+            Self::Windows(w) => w.aumid(),
+            Self::Desktop(d) => serde_json::to_string(d).unwrap_or_default(),
+        }
+    }
+}
 
 #[cfg(windows)]
 #[path = "app_binding/windows.rs"]
@@ -12,12 +62,12 @@ pub use windows::ApplicationCatalog;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AppBinding {
+pub struct WindowsBinding {
     pub package_family_name: String,
     pub application_id: String,
 }
 
-impl AppBinding {
+impl WindowsBinding {
     pub fn valid(&self) -> bool {
         let Some((name, publisher)) = self.package_family_name.rsplit_once('_') else {
             return false;
@@ -107,6 +157,9 @@ impl ApplicationResolution {
 
 pub fn resolve(binding: &AppBinding, catalog: &CatalogSnapshot) -> ApplicationResolution {
     use AppAvailability::*;
+    let Some(binding) = binding.windows() else {
+        return ApplicationResolution::state(UnsupportedLaunch, "请使用对应平台的应用入口。");
+    };
     let packages: Vec<_> = catalog
         .packages
         .iter()
@@ -144,7 +197,10 @@ pub fn resolve(binding: &AppBinding, catalog: &CatalogSnapshot) -> ApplicationRe
         .filter(|app| {
             app.package_full_name
                 .eq_ignore_ascii_case(&package.full_name)
-                && app.binding.application_id == binding.application_id
+                && app
+                    .binding
+                    .windows()
+                    .is_some_and(|w| w.application_id == binding.application_id)
         })
         .collect();
     if apps.len() != 1 {
@@ -223,7 +279,11 @@ pub struct ApplicationCatalog;
 #[cfg(not(windows))]
 impl ApplicationCatalog {
     pub fn query(&self, _family: Option<&str>, _fresh: bool) -> Result<CatalogSnapshot, String> {
-        Err("已安装应用选择目前仅支持 Windows。".into())
+        Ok(CatalogSnapshot {
+            applications: desktop::collect()?.into_iter().map(Into::into).collect(),
+            packages: vec![],
+            warnings: vec![],
+        })
     }
 }
 
@@ -231,10 +291,11 @@ impl ApplicationCatalog {
 mod tests {
     use super::*;
     fn binding() -> AppBinding {
-        AppBinding {
+        WindowsBinding {
             package_family_name: "Example.App_123456789abcd".into(),
             application_id: "App".into(),
         }
+        .into()
     }
     fn catalog(version: &str) -> CatalogSnapshot {
         let full = format!("Example.App_{version}_x64__123456789abcd");
@@ -251,7 +312,7 @@ mod tests {
                 detail: "已关联".into(),
             }],
             packages: vec![PackageRecord {
-                family: binding().package_family_name,
+                family: binding().windows().unwrap().package_family_name.clone(),
                 full_name: full,
                 availability: AppAvailability::Ready,
                 detail: String::new(),
@@ -281,7 +342,9 @@ mod tests {
             AppAvailability::NeedsRelink
         );
         let mut c = catalog("1.0.0.0");
-        c.applications[0].binding.application_id = "Other".into();
+        if let AppBinding::Windows(w) = &mut c.applications[0].binding {
+            w.application_id = "Other".into();
+        }
         assert_eq!(
             resolve(&binding(), &c).availability,
             AppAvailability::NeedsRelink

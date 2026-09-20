@@ -79,7 +79,7 @@ impl AppStorage {
 
     pub fn save_programs(&self, document: &crate::program_proxy::ProgramDocument) -> AppResult<()> {
         let mut document = document.clone();
-        document.schema_version = 2;
+        document.schema_version = 3;
         document.validate()?;
         if serde_json::to_vec_pretty(&document)
             .map_err(|error| AppError::Io(error.to_string()))?
@@ -91,14 +91,17 @@ impl AppStorage {
         let path = self.root.join("proxy-programs.json");
         if path.exists() {
             let old = self.programs()?;
-            if old.schema_version == 1 {
-                // Preserve the exact old bytes before the first v2 write. A
+            if old.schema_version < 3 {
+                // Preserve the exact old bytes before the first v3 write. A
                 // failed backup aborts migration; an existing backup is retained.
-                let backup = self.root.join("proxy-programs.v1.backup.json");
+                let backup = self.root.join(format!(
+                    "proxy-programs.v{}.backup.json",
+                    old.schema_version
+                ));
                 if !backup.exists() {
                     let bytes = fs::read(&path)?;
                     let mut file = tempfile::Builder::new()
-                        .prefix(".programs-v1-")
+                        .prefix(".programs-backup-")
                         .tempfile_in(&self.root)?;
                     file.write_all(&bytes)?;
                     file.as_file().sync_all()?;
