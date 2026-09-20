@@ -44,7 +44,7 @@ jobs:
           PUBLISH_CURRENT: ${{ inputs.publish_current }}
         shell: bash
         run: |
-          node scripts/version.mjs
+          node scripts/version.mjs --release-ready
           if [ "$PUBLISH_CURRENT" = "true" ]; then
             if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ "$GITHUB_REF" != "refs/heads/main" ] || [ -n "$RELEASE_TAG" ]; then
               echo 'Publishing current source requires trusted main and no separate release_tag.'

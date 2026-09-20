@@ -62,6 +62,7 @@ jobs:
             librsvg2-dev
       - run: npm ci
       - run: npm run version:check
+      - run: node scripts/version.mjs --release-ready
       - run: npm run test:branding
       - run: npm run test:licenses
       - run: npm run test:theme
