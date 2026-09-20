@@ -205,7 +205,7 @@ fn collect(family: Option<&str>, updating: &Updating) -> Result<CatalogSnapshot,
         if output.packages.len() >= 4096 {
             return Err("已安装应用数量超过读取上限。".into());
         }
-        if let Err(error) = read_package(&package, updating, &mut output) {
+        if let Err(error) = read_package(&package, updating, family.is_none(), &mut output) {
             output.warnings.push(error);
         }
         iterator.MoveNext().map_err(|e| e.to_string())?;
@@ -235,6 +235,7 @@ fn collect(family: Option<&str>, updating: &Updating) -> Result<CatalogSnapshot,
 fn read_package(
     package: &Package,
     updating: &Updating,
+    display_names: bool,
     out: &mut CatalogSnapshot,
 ) -> Result<(), String> {
     let read = || -> ::windows::core::Result<_> {
@@ -301,7 +302,15 @@ fn read_package(
         }
         let xml = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
         let mut names = BTreeMap::new();
-        if let Ok(entries) = package.GetAppListEntriesAsync().and_then(|op| op.get()) {
+        if let Some(entries) = display_names
+            .then(|| {
+                package
+                    .GetAppListEntriesAsync()
+                    .and_then(|op| op.get())
+                    .ok()
+            })
+            .flatten()
+        {
             for entry in entries {
                 if let (Ok(aumid), Ok(name)) = (
                     entry.AppUserModelId(),
@@ -353,7 +362,7 @@ fn manifest_apps(
         for index in 0..nodes.Length()? {
             let element: XmlElement = nodes.Item(index)?.cast()?;
             let attr = |name: &str| element.SelectSingleNode(&HSTRING::from(format!("@*[local-name()='{name}']"))).and_then(|n| n.InnerText()).map(|s| s.to_string()).unwrap_or_default();
-            let binding = AppBinding { package_family_name: family.into(), application_id: attr("Id") };
+            let binding = WindowsBinding { package_family_name: family.into(), application_id: attr("Id") };
             if !binding.valid() { continue; }
             let relative = attr("Executable");
             let behavior = attr("RuntimeBehavior");
@@ -375,13 +384,13 @@ fn manifest_apps(
                 (AppAvailability::MissingFile, "应用入口文件暂未就绪，请刷新或检查安装状态。")
             } else { (AppAvailability::Ready, "已关联应用，更新后自动定位当前安装版本。") };
             let name = names.get(&binding.aumid()).cloned().unwrap_or_else(|| format!("{fallback} · {}", binding.application_id));
-            apps.push(InstalledApplication { binding, name, version: version.into(), package_full_name: full_name.into(), package_root: root.into(), executable, availability, detail: detail.into() });
+            apps.push(InstalledApplication { binding: binding.into(), name, version: version.into(), package_full_name: full_name.into(), package_root: root.into(), executable, availability, detail: detail.into() });
         }
         Ok(apps)
     })().map_err(|e| e.to_string())
 }
 
-pub fn running_bound(binding: &AppBinding) -> Option<u32> {
+pub fn running_bound(binding: &WindowsBinding) -> Option<u32> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
     let mut system = System::new();
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());

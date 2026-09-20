@@ -24,6 +24,7 @@ import type {
   ProgramInput,
   ProgramState,
   InstalledApplications,
+  InstalledApplication,
   ProxyCompatibility,
   RoutingMode,
   RuntimeLog,
@@ -112,7 +113,8 @@ export const api = {
   systemProxy: () => invoke<SystemProxyStatus>("system_proxy_status"),
   systemProxyCompatibility: () => invoke<ProxyCompatibility>("check_system_proxy_compatibility"),
   proxyPrograms: (refresh = false) => invoke<ProgramState>("list_proxy_programs", { refresh }),
-  installedProxyApplications: () => invoke<InstalledApplications>("list_installed_proxy_applications"),
+  installedProxyApplications: (refresh = false) => invoke<InstalledApplications>("list_installed_proxy_applications", { refresh }),
+  inspectProxyApplication: (path: string) => invoke<InstalledApplication>("inspect_proxy_application", { path }),
   saveProxyProgram: (input: ProgramInput, expectedRevision: number) =>
     invoke<ProgramState>("save_proxy_program", { input, expectedRevision }),
   deleteProxyProgram: (programId: string, expectedRevision: number) =>

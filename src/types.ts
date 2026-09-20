@@ -321,14 +321,17 @@ export type ProxyCompatibility = {
 };
 
 export type ProgramProxyMode = "environment" | "chromium";
-export type AppBinding = { packageFamilyName: string; applicationId: string };
+export type AppBinding =
+  | { packageFamilyName: string; applicationId: string }
+  | { kind: "macos"; bundleId: string; location: string; requirement: string | null }
+  | { kind: "linux"; desktopId: string; location: string };
 export type AppAvailability = "ready" | "not_installed" | "updating" | "maintenance" | "needs_relink" | "missing_file" | "unsupported_launch" | "read_error";
 export type InstalledApplication = {
   binding: AppBinding; name: string; version: string; packageFullName: string;
   packageRoot: string; executable: string; availability: AppAvailability; detail: string;
 };
 export type ApplicationResolution = { availability: AppAvailability; detail: string; application: InstalledApplication | null };
-export type InstalledApplications = { applications: InstalledApplication[]; warnings: string[] };
+export type InstalledApplications = { applications: InstalledApplication[]; warnings: string[]; refreshing?: boolean; checkedAt?: number | null };
 export type ProxyProgram = {
   id: string;
   name: string;
@@ -341,9 +344,11 @@ export type ProxyProgram = {
   mode: ProgramProxyMode;
   available: boolean;
   runningPid: number | null;
+  launchPending: boolean;
 };
-export type ProgramInput = Omit<ProxyProgram, "id" | "available" | "runningPid" | "resolution"> & { id: string | null };
+export type ProgramInput = Omit<ProxyProgram, "id" | "available" | "runningPid" | "launchPending" | "resolution"> & { id: string | null };
 export type ProgramState = {
+  platform: string;
   revision: number;
   supported: boolean;
   proxyEndpoint: string;

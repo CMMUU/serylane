@@ -1970,3 +1970,9 @@ td small { color: var(--muted); }
 .program-association { color: var(--accent); font-size: 12px; line-height: 1.6; margin-bottom: 10px; }
 .program-path-details summary { color: var(--muted); cursor: pointer; font-size: 12px; }
 #program-binding-info { overflow-wrap: anywhere; }
+
+.program-picker-actions { margin-top: 8px; flex-wrap: wrap; gap: 6px; }
+.program-picker-actions .button { min-height: 30px; padding: 5px 9px; font-size: 11px; }
+#program-directory-fields { display: grid; gap: 8px; }
+#program-directory-fields.is-hidden { display: none; }
+#program-directory-clear { margin-top: 6px; }

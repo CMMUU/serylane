@@ -1239,6 +1239,7 @@ pub fn run() {
             program_proxy::delete_proxy_program,
             program_proxy::launch_proxy_program,
             program_proxy::choose_proxy_program,
+            program_proxy::inspect_proxy_application,
             program_proxy::list_installed_proxy_applications,
             tun_helper_status,
             install_tun_helper,
