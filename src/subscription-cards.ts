@@ -1,4 +1,13 @@
-import type { OpenAiPolicyTask, SubscriptionOverview, SubscriptionUsage } from "./types";
+import type { OpenAiPolicyTask, SubscriptionOverview, SubscriptionUsage, SubscriptionStatus } from "./types";
+
+// A delayed full-page read must not replace a newer background quota event.
+export function newestSubscriptionStatus(previous: SubscriptionStatus | null | undefined, incoming: SubscriptionStatus | null | undefined) {
+  const time = (status: SubscriptionStatus | null | undefined) => {
+    const value = Date.parse(status?.checkedAt ?? "");
+    return Number.isFinite(value) ? value : -Infinity;
+  };
+  return time(previous) > time(incoming) ? previous : incoming;
+}
 
 const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 const byteValue = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;

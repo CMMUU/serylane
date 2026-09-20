@@ -5,7 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const read = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
-const { subscriptionBytes, subscriptionDate, describeSubscriptionUsage, subscriptionCardMarkup } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-cards.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
+const { newestSubscriptionStatus, subscriptionBytes, subscriptionDate, describeSubscriptionUsage, subscriptionCardMarkup } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-cards.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
 const { subscriptionImportMarkup, describeSubscriptionImport } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-import.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
 const now = Date.parse("2026-09-07T00:00:00Z");
 const GiB = 1024 ** 3;
@@ -223,4 +223,13 @@ test("generation failure stays a saved-subscription warning and does not steal f
   assert.match(f.element("#subscriptions-feedback").textContent, /订阅已添加.*task busy/);
   assert.equal(f.element("#subscriptions-feedback").className, "subscription-feedback is-warning");
   assert.equal(f.notices[0].tone, "info");
+});
+
+test("a late full list read never overwrites a newer quota observation", () => {
+  const old = {checkedAt: "2026-09-20T00:00:00Z", usage: sample()};
+  const fresh = {checkedAt: "2026-09-20T00:05:00Z", usage: sample({downloadBytes: 35 * GiB})};
+  assert.equal(newestSubscriptionStatus(fresh, old), fresh);
+  assert.equal(newestSubscriptionStatus(old, fresh), fresh);
+  assert.equal(newestSubscriptionStatus(fresh, null), fresh);
+  assert.equal(newestSubscriptionStatus(null, fresh), fresh);
 });
