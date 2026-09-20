@@ -2723,6 +2723,16 @@ window.setInterval(() => {
   void refreshProxies(true).finally(() => { proxyPolling = false; });
 }, 10_000);
 
+void listen<{ profileId: string; status: import("./types").SubscriptionStatus }>("subscription-usage-updated", (event) => {
+  const record = store.subscriptions.find(s => s.profile.id === event.payload.profileId);
+  if (!record) return;
+  const incoming = event.payload.status;
+  if (Date.parse(incoming.checkedAt ?? "") < Date.parse(record.status?.checkedAt ?? "")) return;
+  if (JSON.stringify(record.status) === JSON.stringify(incoming)) return;
+  record.status = incoming;
+  renderSubscriptions();
+});
+
 void listen<GlobalTrafficSnapshot>("global-traffic", (event) => {
   store.globalTraffic = event.payload;
   renderGlobalTraffic();

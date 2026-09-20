@@ -1,6 +1,6 @@
 [package]
 name = "serylane"
-version = "0.7.13"
+version = "0.7.14"
 license = "GPL-3.0-only"
 description = "Serylane: lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]

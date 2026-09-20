@@ -25,6 +25,16 @@ test("zero is a real usage value while missing, negative and unsafe numbers stay
   assert.equal(describeSubscriptionUsage(sample({ uploadBytes: 0, downloadBytes: 0 }), now).progress, 0);
   assert.equal(describeSubscriptionUsage(sample({ downloadBytes: null }), now).used, null);
 });
+test("remaining quota is primary and periodic observations cannot apply or switch configuration", () => {
+  const card = subscriptionCardMarkup(subscription(), null, now);
+  assert.match(card, /剩余流量/);
+  assert.match(card, /subscription-usage-value"><strong>70 GiB/);
+  assert.match(card, /每 5 分钟直接检查订阅用量/);
+  const poller = readFileSync(new URL('../src-tauri/src/subscription_quota.rs', import.meta.url), 'utf8');
+  assert.match(poller, /POLL_SECONDS: i64 = 300/);
+  assert.match(poller, /fetch_usage/);
+  assert.doesNotMatch(poller, /activate_profile|refresh_profile|start_runtime|save_revision|apply_configuration/);
+});
 test("unknown or zero allowance never claims unlimited nor draws a made-up percentage", () => {
   for (const totalBytes of [null, 0]) {
     const record = subscription(); record.status.usage.totalBytes = totalBytes;

@@ -12,6 +12,7 @@ mod mihomo_api;
 mod models;
 mod network_safety;
 mod node_details;
+mod node_metadata;
 mod node_selection;
 mod openai_cost;
 mod openai_policy;
@@ -25,6 +26,7 @@ mod session_resume;
 mod startup;
 mod storage;
 mod subscription;
+mod subscription_quota;
 mod traffic_monitor;
 pub mod tun_service;
 mod user_rules;
@@ -1160,6 +1162,7 @@ pub fn run() {
                     let _ = window.show();
                 }
             }
+            subscription_quota::start(app.handle().clone());
             let pruning_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {

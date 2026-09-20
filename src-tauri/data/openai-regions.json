@@ -1,0 +1,2440 @@
+{
+  "version": "2026-09-20.1",
+  "checkedAt": "2026-09-20",
+  "source": "https://developers.openai.com/api/docs/supported-countries",
+  "scope": "OpenAI API; country names are not egress verification",
+  "regions": [
+    {
+      "code": "AL",
+      "name": "Albania",
+      "status": "supported",
+      "aliases": [
+        "AL",
+        "Albania",
+        "阿尔巴尼亚",
+        "阿爾巴尼亞"
+      ]
+    },
+    {
+      "code": "DZ",
+      "name": "Algeria",
+      "status": "supported",
+      "aliases": [
+        "DZ",
+        "Algeria",
+        "阿尔及利亚",
+        "阿爾及利亞"
+      ]
+    },
+    {
+      "code": "AF",
+      "name": "Afghanistan",
+      "status": "supported",
+      "aliases": [
+        "AF",
+        "Afghanistan",
+        "阿富汗"
+      ]
+    },
+    {
+      "code": "AX",
+      "name": "Aland Islands",
+      "status": "supported",
+      "aliases": [
+        "AX",
+        "Åland Islands",
+        "奥兰群岛",
+        "奧蘭群島",
+        "Aland Islands"
+      ]
+    },
+    {
+      "code": "AD",
+      "name": "Andorra",
+      "status": "supported",
+      "aliases": [
+        "AD",
+        "Andorra",
+        "安道尔",
+        "安道爾"
+      ]
+    },
+    {
+      "code": "AO",
+      "name": "Angola",
+      "status": "supported",
+      "aliases": [
+        "AO",
+        "Angola",
+        "安哥拉"
+      ]
+    },
+    {
+      "code": "AG",
+      "name": "Antigua and Barbuda",
+      "status": "supported",
+      "aliases": [
+        "AG",
+        "Antigua & Barbuda",
+        "安提瓜和巴布达",
+        "安地卡及巴布達",
+        "Antigua and Barbuda"
+      ]
+    },
+    {
+      "code": "AR",
+      "name": "Argentina",
+      "status": "supported",
+      "aliases": [
+        "AR",
+        "Argentina",
+        "阿根廷"
+      ]
+    },
+    {
+      "code": "AM",
+      "name": "Armenia",
+      "status": "supported",
+      "aliases": [
+        "AM",
+        "Armenia",
+        "亚美尼亚",
+        "亞美尼亞"
+      ]
+    },
+    {
+      "code": "AW",
+      "name": "Aruba",
+      "status": "supported",
+      "aliases": [
+        "AW",
+        "Aruba",
+        "阿鲁巴",
+        "荷屬阿魯巴"
+      ]
+    },
+    {
+      "code": "AU",
+      "name": "Australia",
+      "status": "supported",
+      "aliases": [
+        "AU",
+        "Australia",
+        "澳大利亚",
+        "澳洲",
+        "Sydney",
+        "Melbourne",
+        "悉尼",
+        "墨尔本",
+        "墨爾本"
+      ]
+    },
+    {
+      "code": "AT",
+      "name": "Austria",
+      "status": "supported",
+      "aliases": [
+        "AT",
+        "Austria",
+        "奥地利",
+        "奧地利"
+      ]
+    },
+    {
+      "code": "AZ",
+      "name": "Azerbaijan",
+      "status": "supported",
+      "aliases": [
+        "AZ",
+        "Azerbaijan",
+        "阿塞拜疆",
+        "亞塞拜然"
+      ]
+    },
+    {
+      "code": "BS",
+      "name": "Bahamas",
+      "status": "supported",
+      "aliases": [
+        "BS",
+        "Bahamas",
+        "巴哈马",
+        "巴哈馬"
+      ]
+    },
+    {
+      "code": "BH",
+      "name": "Bahrain",
+      "status": "supported",
+      "aliases": [
+        "BH",
+        "Bahrain",
+        "巴林"
+      ]
+    },
+    {
+      "code": "BD",
+      "name": "Bangladesh",
+      "status": "supported",
+      "aliases": [
+        "BD",
+        "Bangladesh",
+        "孟加拉国",
+        "孟加拉"
+      ]
+    },
+    {
+      "code": "BB",
+      "name": "Barbados",
+      "status": "supported",
+      "aliases": [
+        "BB",
+        "Barbados",
+        "巴巴多斯",
+        "巴貝多"
+      ]
+    },
+    {
+      "code": "BE",
+      "name": "Belgium",
+      "status": "supported",
+      "aliases": [
+        "BE",
+        "Belgium",
+        "比利时",
+        "比利時"
+      ]
+    },
+    {
+      "code": "BZ",
+      "name": "Belize",
+      "status": "supported",
+      "aliases": [
+        "BZ",
+        "Belize",
+        "伯利兹",
+        "貝里斯"
+      ]
+    },
+    {
+      "code": "BM",
+      "name": "Bermuda",
+      "status": "supported",
+      "aliases": [
+        "BM",
+        "Bermuda",
+        "百慕大",
+        "百慕達"
+      ]
+    },
+    {
+      "code": "BJ",
+      "name": "Benin",
+      "status": "supported",
+      "aliases": [
+        "BJ",
+        "Benin",
+        "贝宁",
+        "貝南"
+      ]
+    },
+    {
+      "code": "BT",
+      "name": "Bhutan",
+      "status": "supported",
+      "aliases": [
+        "BT",
+        "Bhutan",
+        "不丹"
+      ]
+    },
+    {
+      "code": "BO",
+      "name": "Bolivia",
+      "status": "supported",
+      "aliases": [
+        "BO",
+        "Bolivia",
+        "玻利维亚",
+        "玻利維亞"
+      ]
+    },
+    {
+      "code": "BA",
+      "name": "Bosnia and Herzegovina",
+      "status": "supported",
+      "aliases": [
+        "BA",
+        "Bosnia & Herzegovina",
+        "波斯尼亚和黑塞哥维那",
+        "波士尼亞與赫塞哥維納",
+        "Bosnia and Herzegovina"
+      ]
+    },
+    {
+      "code": "BW",
+      "name": "Botswana",
+      "status": "supported",
+      "aliases": [
+        "BW",
+        "Botswana",
+        "博茨瓦纳",
+        "波札那"
+      ]
+    },
+    {
+      "code": "BR",
+      "name": "Brazil",
+      "status": "supported",
+      "aliases": [
+        "BR",
+        "Brazil",
+        "巴西"
+      ]
+    },
+    {
+      "code": "BN",
+      "name": "Brunei",
+      "status": "supported",
+      "aliases": [
+        "BN",
+        "Brunei",
+        "文莱",
+        "汶萊"
+      ]
+    },
+    {
+      "code": "BG",
+      "name": "Bulgaria",
+      "status": "supported",
+      "aliases": [
+        "BG",
+        "Bulgaria",
+        "保加利亚",
+        "保加利亞"
+      ]
+    },
+    {
+      "code": "BF",
+      "name": "Burkina Faso",
+      "status": "supported",
+      "aliases": [
+        "BF",
+        "Burkina Faso",
+        "布基纳法索",
+        "布吉納法索"
+      ]
+    },
+    {
+      "code": "BI",
+      "name": "Burundi",
+      "status": "supported",
+      "aliases": [
+        "BI",
+        "Burundi",
+        "布隆迪",
+        "蒲隆地"
+      ]
+    },
+    {
+      "code": "CV",
+      "name": "Cabo Verde",
+      "status": "supported",
+      "aliases": [
+        "CV",
+        "Cape Verde",
+        "佛得角",
+        "維德角",
+        "Cabo Verde"
+      ]
+    },
+    {
+      "code": "KH",
+      "name": "Cambodia",
+      "status": "supported",
+      "aliases": [
+        "KH",
+        "Cambodia",
+        "柬埔寨"
+      ]
+    },
+    {
+      "code": "CM",
+      "name": "Cameroon",
+      "status": "supported",
+      "aliases": [
+        "CM",
+        "Cameroon",
+        "喀麦隆",
+        "喀麥隆"
+      ]
+    },
+    {
+      "code": "CA",
+      "name": "Canada",
+      "status": "supported",
+      "aliases": [
+        "CA",
+        "Canada",
+        "加拿大",
+        "Toronto",
+        "Vancouver",
+        "多伦多",
+        "多倫多",
+        "温哥华",
+        "溫哥華"
+      ]
+    },
+    {
+      "code": "KY",
+      "name": "Cayman Islands",
+      "status": "supported",
+      "aliases": [
+        "KY",
+        "Cayman Islands",
+        "开曼群岛",
+        "開曼群島"
+      ]
+    },
+    {
+      "code": "CF",
+      "name": "Central African Republic",
+      "status": "supported",
+      "aliases": [
+        "CF",
+        "Central African Republic",
+        "中非共和国",
+        "中非共和國"
+      ]
+    },
+    {
+      "code": "TD",
+      "name": "Chad",
+      "status": "supported",
+      "aliases": [
+        "TD",
+        "Chad",
+        "乍得",
+        "查德"
+      ]
+    },
+    {
+      "code": "CL",
+      "name": "Chile",
+      "status": "supported",
+      "aliases": [
+        "CL",
+        "Chile",
+        "智利"
+      ]
+    },
+    {
+      "code": "CO",
+      "name": "Colombia",
+      "status": "supported",
+      "aliases": [
+        "CO",
+        "Colombia",
+        "哥伦比亚",
+        "哥倫比亞"
+      ]
+    },
+    {
+      "code": "KM",
+      "name": "Comoros",
+      "status": "supported",
+      "aliases": [
+        "KM",
+        "Comoros",
+        "科摩罗",
+        "葛摩"
+      ]
+    },
+    {
+      "code": "CG",
+      "name": "Congo (Brazzaville)",
+      "status": "supported",
+      "aliases": [
+        "CG",
+        "Congo - Brazzaville",
+        "刚果（布）",
+        "剛果（布拉薩）",
+        "Congo"
+      ]
+    },
+    {
+      "code": "CD",
+      "name": "Congo (DRC)",
+      "status": "supported",
+      "aliases": [
+        "CD",
+        "Congo - Kinshasa",
+        "刚果（金）",
+        "剛果（金夏沙）",
+        "Congo"
+      ]
+    },
+    {
+      "code": "CR",
+      "name": "Costa Rica",
+      "status": "supported",
+      "aliases": [
+        "CR",
+        "Costa Rica",
+        "哥斯达黎加",
+        "哥斯大黎加"
+      ]
+    },
+    {
+      "code": "CI",
+      "name": "Côte d’Ivoire",
+      "status": "supported",
+      "aliases": [
+        "CI",
+        "Côte d’Ivoire",
+        "科特迪瓦",
+        "象牙海岸"
+      ]
+    },
+    {
+      "code": "HR",
+      "name": "Croatia",
+      "status": "supported",
+      "aliases": [
+        "HR",
+        "Croatia",
+        "克罗地亚",
+        "克羅埃西亞"
+      ]
+    },
+    {
+      "code": "CY",
+      "name": "Cyprus",
+      "status": "supported",
+      "aliases": [
+        "CY",
+        "Cyprus",
+        "塞浦路斯",
+        "賽普勒斯"
+      ]
+    },
+    {
+      "code": "CZ",
+      "name": "Czechia (Czech Republic)",
+      "status": "supported",
+      "aliases": [
+        "CZ",
+        "Czechia",
+        "捷克"
+      ]
+    },
+    {
+      "code": "DK",
+      "name": "Denmark",
+      "status": "supported",
+      "aliases": [
+        "DK",
+        "Denmark",
+        "丹麦",
+        "丹麥"
+      ]
+    },
+    {
+      "code": "DJ",
+      "name": "Djibouti",
+      "status": "supported",
+      "aliases": [
+        "DJ",
+        "Djibouti",
+        "吉布提",
+        "吉布地"
+      ]
+    },
+    {
+      "code": "DM",
+      "name": "Dominica",
+      "status": "supported",
+      "aliases": [
+        "DM",
+        "Dominica",
+        "多米尼克"
+      ]
+    },
+    {
+      "code": "DO",
+      "name": "Dominican Republic",
+      "status": "supported",
+      "aliases": [
+        "DO",
+        "Dominican Republic",
+        "多米尼加共和国",
+        "多明尼加共和國"
+      ]
+    },
+    {
+      "code": "EC",
+      "name": "Ecuador",
+      "status": "supported",
+      "aliases": [
+        "EC",
+        "Ecuador",
+        "厄瓜多尔",
+        "厄瓜多"
+      ]
+    },
+    {
+      "code": "EG",
+      "name": "Egypt",
+      "status": "supported",
+      "aliases": [
+        "EG",
+        "Egypt",
+        "埃及"
+      ]
+    },
+    {
+      "code": "SV",
+      "name": "El Salvador",
+      "status": "supported",
+      "aliases": [
+        "SV",
+        "El Salvador",
+        "萨尔瓦多",
+        "薩爾瓦多"
+      ]
+    },
+    {
+      "code": "GQ",
+      "name": "Equatorial Guinea",
+      "status": "supported",
+      "aliases": [
+        "GQ",
+        "Equatorial Guinea",
+        "赤道几内亚",
+        "赤道幾內亞"
+      ]
+    },
+    {
+      "code": "ER",
+      "name": "Eritrea",
+      "status": "supported",
+      "aliases": [
+        "ER",
+        "Eritrea",
+        "厄立特里亚",
+        "厄利垂亞"
+      ]
+    },
+    {
+      "code": "EE",
+      "name": "Estonia",
+      "status": "supported",
+      "aliases": [
+        "EE",
+        "Estonia",
+        "爱沙尼亚",
+        "愛沙尼亞"
+      ]
+    },
+    {
+      "code": "SZ",
+      "name": "Eswatini (Swaziland)",
+      "status": "supported",
+      "aliases": [
+        "SZ",
+        "Eswatini",
+        "斯威士兰",
+        "史瓦帝尼"
+      ]
+    },
+    {
+      "code": "ET",
+      "name": "Ethiopia",
+      "status": "supported",
+      "aliases": [
+        "ET",
+        "Ethiopia",
+        "埃塞俄比亚",
+        "衣索比亞"
+      ]
+    },
+    {
+      "code": "FO",
+      "name": "Faroe Islands",
+      "status": "supported",
+      "aliases": [
+        "FO",
+        "Faroe Islands",
+        "法罗群岛",
+        "法羅群島"
+      ]
+    },
+    {
+      "code": "FJ",
+      "name": "Fiji",
+      "status": "supported",
+      "aliases": [
+        "FJ",
+        "Fiji",
+        "斐济",
+        "斐濟"
+      ]
+    },
+    {
+      "code": "FI",
+      "name": "Finland",
+      "status": "supported",
+      "aliases": [
+        "FI",
+        "Finland",
+        "芬兰",
+        "芬蘭"
+      ]
+    },
+    {
+      "code": "FR",
+      "name": "France",
+      "status": "supported",
+      "aliases": [
+        "FR",
+        "France",
+        "法国",
+        "法國",
+        "Paris",
+        "巴黎"
+      ]
+    },
+    {
+      "code": "GF",
+      "name": "French Guiana",
+      "status": "supported",
+      "aliases": [
+        "GF",
+        "French Guiana",
+        "法属圭亚那",
+        "法屬圭亞那"
+      ]
+    },
+    {
+      "code": "PF",
+      "name": "French Polynesia",
+      "status": "supported",
+      "aliases": [
+        "PF",
+        "French Polynesia",
+        "法属波利尼西亚",
+        "法屬玻里尼西亞"
+      ]
+    },
+    {
+      "code": "TF",
+      "name": "French Southern Territories",
+      "status": "supported",
+      "aliases": [
+        "TF",
+        "French Southern Territories",
+        "法属南部领地",
+        "法屬南部屬地"
+      ]
+    },
+    {
+      "code": "GA",
+      "name": "Gabon",
+      "status": "supported",
+      "aliases": [
+        "GA",
+        "Gabon",
+        "加蓬",
+        "加彭"
+      ]
+    },
+    {
+      "code": "GM",
+      "name": "Gambia",
+      "status": "supported",
+      "aliases": [
+        "GM",
+        "Gambia",
+        "冈比亚",
+        "甘比亞"
+      ]
+    },
+    {
+      "code": "GE",
+      "name": "Georgia",
+      "status": "supported",
+      "aliases": [
+        "GE",
+        "Georgia",
+        "格鲁吉亚",
+        "喬治亞"
+      ]
+    },
+    {
+      "code": "DD",
+      "name": "Germany",
+      "status": "supported",
+      "aliases": [
+        "DD",
+        "Germany",
+        "德国",
+        "德國"
+      ]
+    },
+    {
+      "code": "GH",
+      "name": "Ghana",
+      "status": "supported",
+      "aliases": [
+        "GH",
+        "Ghana",
+        "加纳",
+        "迦納"
+      ]
+    },
+    {
+      "code": "GR",
+      "name": "Greece",
+      "status": "supported",
+      "aliases": [
+        "GR",
+        "Greece",
+        "希腊",
+        "希臘"
+      ]
+    },
+    {
+      "code": "GD",
+      "name": "Grenada",
+      "status": "supported",
+      "aliases": [
+        "GD",
+        "Grenada",
+        "格林纳达",
+        "格瑞那達"
+      ]
+    },
+    {
+      "code": "GL",
+      "name": "Greenland",
+      "status": "supported",
+      "aliases": [
+        "GL",
+        "Greenland",
+        "格陵兰",
+        "格陵蘭"
+      ]
+    },
+    {
+      "code": "GT",
+      "name": "Guatemala",
+      "status": "supported",
+      "aliases": [
+        "GT",
+        "Guatemala",
+        "危地马拉",
+        "瓜地馬拉"
+      ]
+    },
+    {
+      "code": "GP",
+      "name": "Guadeloupe",
+      "status": "supported",
+      "aliases": [
+        "GP",
+        "Guadeloupe",
+        "瓜德罗普",
+        "瓜地洛普"
+      ]
+    },
+    {
+      "code": "GN",
+      "name": "Guinea",
+      "status": "supported",
+      "aliases": [
+        "GN",
+        "Guinea",
+        "几内亚",
+        "幾內亞"
+      ]
+    },
+    {
+      "code": "GW",
+      "name": "Guinea-Bissau",
+      "status": "supported",
+      "aliases": [
+        "GW",
+        "Guinea-Bissau",
+        "几内亚比绍",
+        "幾內亞比索"
+      ]
+    },
+    {
+      "code": "GY",
+      "name": "Guyana",
+      "status": "supported",
+      "aliases": [
+        "GY",
+        "Guyana",
+        "圭亚那",
+        "蓋亞那"
+      ]
+    },
+    {
+      "code": "HT",
+      "name": "Haiti",
+      "status": "supported",
+      "aliases": [
+        "HT",
+        "Haiti",
+        "海地"
+      ]
+    },
+    {
+      "code": "VA",
+      "name": "Holy See (Vatican City)",
+      "status": "supported",
+      "aliases": [
+        "VA",
+        "Vatican City",
+        "梵蒂冈",
+        "梵蒂岡",
+        "Holy See"
+      ]
+    },
+    {
+      "code": "HN",
+      "name": "Honduras",
+      "status": "supported",
+      "aliases": [
+        "HN",
+        "Honduras",
+        "洪都拉斯",
+        "宏都拉斯"
+      ]
+    },
+    {
+      "code": "HU",
+      "name": "Hungary",
+      "status": "supported",
+      "aliases": [
+        "HU",
+        "Hungary",
+        "匈牙利"
+      ]
+    },
+    {
+      "code": "IS",
+      "name": "Iceland",
+      "status": "supported",
+      "aliases": [
+        "IS",
+        "Iceland",
+        "冰岛",
+        "冰島"
+      ]
+    },
+    {
+      "code": "IN",
+      "name": "India",
+      "status": "supported",
+      "aliases": [
+        "IN",
+        "India",
+        "印度"
+      ]
+    },
+    {
+      "code": "ID",
+      "name": "Indonesia",
+      "status": "supported",
+      "aliases": [
+        "ID",
+        "Indonesia",
+        "印度尼西亚",
+        "印尼"
+      ]
+    },
+    {
+      "code": "IQ",
+      "name": "Iraq",
+      "status": "supported",
+      "aliases": [
+        "IQ",
+        "Iraq",
+        "伊拉克"
+      ]
+    },
+    {
+      "code": "IE",
+      "name": "Ireland",
+      "status": "supported",
+      "aliases": [
+        "IE",
+        "Ireland",
+        "爱尔兰",
+        "愛爾蘭"
+      ]
+    },
+    {
+      "code": "IL",
+      "name": "Israel",
+      "status": "supported",
+      "aliases": [
+        "IL",
+        "Israel",
+        "以色列"
+      ]
+    },
+    {
+      "code": "IT",
+      "name": "Italy",
+      "status": "supported",
+      "aliases": [
+        "IT",
+        "Italy",
+        "意大利",
+        "義大利"
+      ]
+    },
+    {
+      "code": "JM",
+      "name": "Jamaica",
+      "status": "supported",
+      "aliases": [
+        "JM",
+        "Jamaica",
+        "牙买加",
+        "牙買加"
+      ]
+    },
+    {
+      "code": "JP",
+      "name": "Japan",
+      "status": "supported",
+      "aliases": [
+        "JP",
+        "Japan",
+        "日本",
+        "Tokyo",
+        "Osaka",
+        "东京",
+        "東京",
+        "大阪"
+      ]
+    },
+    {
+      "code": "JO",
+      "name": "Jordan",
+      "status": "supported",
+      "aliases": [
+        "JO",
+        "Jordan",
+        "约旦",
+        "約旦"
+      ]
+    },
+    {
+      "code": "KZ",
+      "name": "Kazakhstan",
+      "status": "supported",
+      "aliases": [
+        "KZ",
+        "Kazakhstan",
+        "哈萨克斯坦",
+        "哈薩克"
+      ]
+    },
+    {
+      "code": "KE",
+      "name": "Kenya",
+      "status": "supported",
+      "aliases": [
+        "KE",
+        "Kenya",
+        "肯尼亚",
+        "肯亞"
+      ]
+    },
+    {
+      "code": "KI",
+      "name": "Kiribati",
+      "status": "supported",
+      "aliases": [
+        "KI",
+        "Kiribati",
+        "基里巴斯",
+        "吉里巴斯"
+      ]
+    },
+    {
+      "code": "KW",
+      "name": "Kuwait",
+      "status": "supported",
+      "aliases": [
+        "KW",
+        "Kuwait",
+        "科威特"
+      ]
+    },
+    {
+      "code": "KG",
+      "name": "Kyrgyzstan",
+      "status": "supported",
+      "aliases": [
+        "KG",
+        "Kyrgyzstan",
+        "吉尔吉斯斯坦",
+        "吉爾吉斯"
+      ]
+    },
+    {
+      "code": "LA",
+      "name": "Laos",
+      "status": "supported",
+      "aliases": [
+        "LA",
+        "Laos",
+        "老挝",
+        "寮國"
+      ]
+    },
+    {
+      "code": "LV",
+      "name": "Latvia",
+      "status": "supported",
+      "aliases": [
+        "LV",
+        "Latvia",
+        "拉脱维亚",
+        "拉脫維亞"
+      ]
+    },
+    {
+      "code": "LB",
+      "name": "Lebanon",
+      "status": "supported",
+      "aliases": [
+        "LB",
+        "Lebanon",
+        "黎巴嫩"
+      ]
+    },
+    {
+      "code": "LS",
+      "name": "Lesotho",
+      "status": "supported",
+      "aliases": [
+        "LS",
+        "Lesotho",
+        "莱索托",
+        "賴索托"
+      ]
+    },
+    {
+      "code": "LR",
+      "name": "Liberia",
+      "status": "supported",
+      "aliases": [
+        "LR",
+        "Liberia",
+        "利比里亚",
+        "賴比瑞亞"
+      ]
+    },
+    {
+      "code": "LY",
+      "name": "Libya",
+      "status": "supported",
+      "aliases": [
+        "LY",
+        "Libya",
+        "利比亚",
+        "利比亞"
+      ]
+    },
+    {
+      "code": "LI",
+      "name": "Liechtenstein",
+      "status": "supported",
+      "aliases": [
+        "LI",
+        "Liechtenstein",
+        "列支敦士登",
+        "列支敦斯登"
+      ]
+    },
+    {
+      "code": "LT",
+      "name": "Lithuania",
+      "status": "supported",
+      "aliases": [
+        "LT",
+        "Lithuania",
+        "立陶宛"
+      ]
+    },
+    {
+      "code": "LU",
+      "name": "Luxembourg",
+      "status": "supported",
+      "aliases": [
+        "LU",
+        "Luxembourg",
+        "卢森堡",
+        "盧森堡"
+      ]
+    },
+    {
+      "code": "MG",
+      "name": "Madagascar",
+      "status": "supported",
+      "aliases": [
+        "MG",
+        "Madagascar",
+        "马达加斯加",
+        "馬達加斯加"
+      ]
+    },
+    {
+      "code": "MW",
+      "name": "Malawi",
+      "status": "supported",
+      "aliases": [
+        "MW",
+        "Malawi",
+        "马拉维",
+        "馬拉威"
+      ]
+    },
+    {
+      "code": "MY",
+      "name": "Malaysia",
+      "status": "supported",
+      "aliases": [
+        "MY",
+        "Malaysia",
+        "马来西亚",
+        "馬來西亞"
+      ]
+    },
+    {
+      "code": "MV",
+      "name": "Maldives",
+      "status": "supported",
+      "aliases": [
+        "MV",
+        "Maldives",
+        "马尔代夫",
+        "馬爾地夫"
+      ]
+    },
+    {
+      "code": "ML",
+      "name": "Mali",
+      "status": "supported",
+      "aliases": [
+        "ML",
+        "Mali",
+        "马里",
+        "馬利"
+      ]
+    },
+    {
+      "code": "MT",
+      "name": "Malta",
+      "status": "supported",
+      "aliases": [
+        "MT",
+        "Malta",
+        "马耳他",
+        "馬爾他"
+      ]
+    },
+    {
+      "code": "MH",
+      "name": "Marshall Islands",
+      "status": "supported",
+      "aliases": [
+        "MH",
+        "Marshall Islands",
+        "马绍尔群岛",
+        "馬紹爾群島"
+      ]
+    },
+    {
+      "code": "MQ",
+      "name": "Martinique",
+      "status": "supported",
+      "aliases": [
+        "MQ",
+        "Martinique",
+        "马提尼克",
+        "馬丁尼克"
+      ]
+    },
+    {
+      "code": "MR",
+      "name": "Mauritania",
+      "status": "supported",
+      "aliases": [
+        "MR",
+        "Mauritania",
+        "毛里塔尼亚",
+        "茅利塔尼亞"
+      ]
+    },
+    {
+      "code": "MU",
+      "name": "Mauritius",
+      "status": "supported",
+      "aliases": [
+        "MU",
+        "Mauritius",
+        "毛里求斯",
+        "模里西斯"
+      ]
+    },
+    {
+      "code": "YT",
+      "name": "Mayotte",
+      "status": "supported",
+      "aliases": [
+        "YT",
+        "Mayotte",
+        "马约特",
+        "馬約特島"
+      ]
+    },
+    {
+      "code": "MX",
+      "name": "Mexico",
+      "status": "supported",
+      "aliases": [
+        "MX",
+        "Mexico",
+        "墨西哥"
+      ]
+    },
+    {
+      "code": "FM",
+      "name": "Micronesia",
+      "status": "supported",
+      "aliases": [
+        "FM",
+        "Micronesia",
+        "密克罗尼西亚",
+        "密克羅尼西亞"
+      ]
+    },
+    {
+      "code": "MD",
+      "name": "Moldova",
+      "status": "supported",
+      "aliases": [
+        "MD",
+        "Moldova",
+        "摩尔多瓦",
+        "摩爾多瓦"
+      ]
+    },
+    {
+      "code": "MC",
+      "name": "Monaco",
+      "status": "supported",
+      "aliases": [
+        "MC",
+        "Monaco",
+        "摩纳哥",
+        "摩納哥"
+      ]
+    },
+    {
+      "code": "MN",
+      "name": "Mongolia",
+      "status": "supported",
+      "aliases": [
+        "MN",
+        "Mongolia",
+        "蒙古"
+      ]
+    },
+    {
+      "code": "ME",
+      "name": "Montenegro",
+      "status": "supported",
+      "aliases": [
+        "ME",
+        "Montenegro",
+        "黑山",
+        "蒙特內哥羅"
+      ]
+    },
+    {
+      "code": "MA",
+      "name": "Morocco",
+      "status": "supported",
+      "aliases": [
+        "MA",
+        "Morocco",
+        "摩洛哥"
+      ]
+    },
+    {
+      "code": "MZ",
+      "name": "Mozambique",
+      "status": "supported",
+      "aliases": [
+        "MZ",
+        "Mozambique",
+        "莫桑比克",
+        "莫三比克"
+      ]
+    },
+    {
+      "code": "MM",
+      "name": "Myanmar",
+      "status": "supported",
+      "aliases": [
+        "MM",
+        "Myanmar (Burma)",
+        "缅甸",
+        "緬甸",
+        "Myanmar"
+      ]
+    },
+    {
+      "code": "NA",
+      "name": "Namibia",
+      "status": "supported",
+      "aliases": [
+        "NA",
+        "Namibia",
+        "纳米比亚",
+        "納米比亞"
+      ]
+    },
+    {
+      "code": "NR",
+      "name": "Nauru",
+      "status": "supported",
+      "aliases": [
+        "NR",
+        "Nauru",
+        "瑙鲁",
+        "諾魯"
+      ]
+    },
+    {
+      "code": "NP",
+      "name": "Nepal",
+      "status": "supported",
+      "aliases": [
+        "NP",
+        "Nepal",
+        "尼泊尔",
+        "尼泊爾"
+      ]
+    },
+    {
+      "code": "NL",
+      "name": "Netherlands",
+      "status": "supported",
+      "aliases": [
+        "NL",
+        "Netherlands",
+        "荷兰",
+        "荷蘭",
+        "Amsterdam",
+        "阿姆斯特丹"
+      ]
+    },
+    {
+      "code": "NC",
+      "name": "New Caledonia",
+      "status": "supported",
+      "aliases": [
+        "NC",
+        "New Caledonia",
+        "新喀里多尼亚",
+        "新喀里多尼亞"
+      ]
+    },
+    {
+      "code": "NZ",
+      "name": "New Zealand",
+      "status": "supported",
+      "aliases": [
+        "NZ",
+        "New Zealand",
+        "新西兰",
+        "紐西蘭"
+      ]
+    },
+    {
+      "code": "NI",
+      "name": "Nicaragua",
+      "status": "supported",
+      "aliases": [
+        "NI",
+        "Nicaragua",
+        "尼加拉瓜"
+      ]
+    },
+    {
+      "code": "NE",
+      "name": "Niger",
+      "status": "supported",
+      "aliases": [
+        "NE",
+        "Niger",
+        "尼日尔",
+        "尼日"
+      ]
+    },
+    {
+      "code": "NG",
+      "name": "Nigeria",
+      "status": "supported",
+      "aliases": [
+        "NG",
+        "Nigeria",
+        "尼日利亚",
+        "奈及利亞"
+      ]
+    },
+    {
+      "code": "MK",
+      "name": "North Macedonia",
+      "status": "supported",
+      "aliases": [
+        "MK",
+        "North Macedonia",
+        "北马其顿",
+        "北馬其頓"
+      ]
+    },
+    {
+      "code": "NO",
+      "name": "Norway",
+      "status": "supported",
+      "aliases": [
+        "NO",
+        "Norway",
+        "挪威"
+      ]
+    },
+    {
+      "code": "OM",
+      "name": "Oman",
+      "status": "supported",
+      "aliases": [
+        "OM",
+        "Oman",
+        "阿曼"
+      ]
+    },
+    {
+      "code": "PK",
+      "name": "Pakistan",
+      "status": "supported",
+      "aliases": [
+        "PK",
+        "Pakistan",
+        "巴基斯坦"
+      ]
+    },
+    {
+      "code": "PW",
+      "name": "Palau",
+      "status": "supported",
+      "aliases": [
+        "PW",
+        "Palau",
+        "帕劳",
+        "帛琉"
+      ]
+    },
+    {
+      "code": "PS",
+      "name": "Palestine",
+      "status": "supported",
+      "aliases": [
+        "PS",
+        "Palestinian Territories",
+        "巴勒斯坦领土",
+        "巴勒斯坦自治區",
+        "Palestine"
+      ]
+    },
+    {
+      "code": "PA",
+      "name": "Panama",
+      "status": "supported",
+      "aliases": [
+        "PA",
+        "Panama",
+        "巴拿马",
+        "巴拿馬"
+      ]
+    },
+    {
+      "code": "PG",
+      "name": "Papua New Guinea",
+      "status": "supported",
+      "aliases": [
+        "PG",
+        "Papua New Guinea",
+        "巴布亚新几内亚",
+        "巴布亞紐幾內亞"
+      ]
+    },
+    {
+      "code": "PY",
+      "name": "Paraguay",
+      "status": "supported",
+      "aliases": [
+        "PY",
+        "Paraguay",
+        "巴拉圭"
+      ]
+    },
+    {
+      "code": "PE",
+      "name": "Peru",
+      "status": "supported",
+      "aliases": [
+        "PE",
+        "Peru",
+        "秘鲁",
+        "秘魯"
+      ]
+    },
+    {
+      "code": "PH",
+      "name": "Philippines",
+      "status": "supported",
+      "aliases": [
+        "PH",
+        "Philippines",
+        "菲律宾",
+        "菲律賓"
+      ]
+    },
+    {
+      "code": "PL",
+      "name": "Poland",
+      "status": "supported",
+      "aliases": [
+        "PL",
+        "Poland",
+        "波兰",
+        "波蘭"
+      ]
+    },
+    {
+      "code": "PT",
+      "name": "Portugal",
+      "status": "supported",
+      "aliases": [
+        "PT",
+        "Portugal",
+        "葡萄牙"
+      ]
+    },
+    {
+      "code": "QA",
+      "name": "Qatar",
+      "status": "supported",
+      "aliases": [
+        "QA",
+        "Qatar",
+        "卡塔尔",
+        "卡達"
+      ]
+    },
+    {
+      "code": "RE",
+      "name": "Réunion",
+      "status": "supported",
+      "aliases": [
+        "RE",
+        "Réunion",
+        "留尼汪",
+        "留尼旺"
+      ]
+    },
+    {
+      "code": "RO",
+      "name": "Romania",
+      "status": "supported",
+      "aliases": [
+        "RO",
+        "Romania",
+        "罗马尼亚",
+        "羅馬尼亞"
+      ]
+    },
+    {
+      "code": "RW",
+      "name": "Rwanda",
+      "status": "supported",
+      "aliases": [
+        "RW",
+        "Rwanda",
+        "卢旺达",
+        "盧安達"
+      ]
+    },
+    {
+      "code": "BL",
+      "name": "Saint Barthelemy",
+      "status": "supported",
+      "aliases": [
+        "BL",
+        "St. Barthélemy",
+        "圣巴泰勒米",
+        "聖巴瑟米",
+        "Saint Barthelemy"
+      ]
+    },
+    {
+      "code": "SH",
+      "name": "Saint Helena",
+      "status": "supported",
+      "aliases": [
+        "SH",
+        "St. Helena",
+        "圣赫勒拿",
+        "聖赫勒拿島",
+        "Saint Helena"
+      ]
+    },
+    {
+      "code": "KN",
+      "name": "Saint Kitts and Nevis",
+      "status": "supported",
+      "aliases": [
+        "KN",
+        "St. Kitts & Nevis",
+        "圣基茨和尼维斯",
+        "聖克里斯多福及尼維斯",
+        "Saint Kitts and Nevis"
+      ]
+    },
+    {
+      "code": "LC",
+      "name": "Saint Lucia",
+      "status": "supported",
+      "aliases": [
+        "LC",
+        "St. Lucia",
+        "圣卢西亚",
+        "聖露西亞",
+        "Saint Lucia"
+      ]
+    },
+    {
+      "code": "MF",
+      "name": "Saint Martin (French part)",
+      "status": "supported",
+      "aliases": [
+        "MF",
+        "St. Martin",
+        "法属圣马丁",
+        "法屬聖馬丁",
+        "Saint Martin"
+      ]
+    },
+    {
+      "code": "PM",
+      "name": "Saint Pierre and Miquelon",
+      "status": "supported",
+      "aliases": [
+        "PM",
+        "St. Pierre & Miquelon",
+        "圣皮埃尔和密克隆群岛",
+        "聖皮埃與密克隆群島",
+        "Saint Pierre and Miquelon"
+      ]
+    },
+    {
+      "code": "VC",
+      "name": "Saint Vincent and the Grenadines",
+      "status": "supported",
+      "aliases": [
+        "VC",
+        "St. Vincent & Grenadines",
+        "圣文森特和格林纳丁斯",
+        "聖文森及格瑞那丁",
+        "Saint Vincent and the Grenadines"
+      ]
+    },
+    {
+      "code": "WS",
+      "name": "Samoa",
+      "status": "supported",
+      "aliases": [
+        "WS",
+        "Samoa",
+        "萨摩亚",
+        "薩摩亞"
+      ]
+    },
+    {
+      "code": "SM",
+      "name": "San Marino",
+      "status": "supported",
+      "aliases": [
+        "SM",
+        "San Marino",
+        "圣马力诺",
+        "聖馬利諾"
+      ]
+    },
+    {
+      "code": "ST",
+      "name": "Sao Tome and Principe",
+      "status": "supported",
+      "aliases": [
+        "ST",
+        "São Tomé & Príncipe",
+        "圣多美和普林西比",
+        "聖多美普林西比",
+        "Sao Tome and Principe"
+      ]
+    },
+    {
+      "code": "SA",
+      "name": "Saudi Arabia",
+      "status": "supported",
+      "aliases": [
+        "SA",
+        "Saudi Arabia",
+        "沙特阿拉伯",
+        "沙烏地阿拉伯"
+      ]
+    },
+    {
+      "code": "SN",
+      "name": "Senegal",
+      "status": "supported",
+      "aliases": [
+        "SN",
+        "Senegal",
+        "塞内加尔",
+        "塞內加爾"
+      ]
+    },
+    {
+      "code": "CS",
+      "name": "Serbia",
+      "status": "supported",
+      "aliases": [
+        "CS",
+        "Serbia",
+        "塞尔维亚",
+        "塞爾維亞"
+      ]
+    },
+    {
+      "code": "SC",
+      "name": "Seychelles",
+      "status": "supported",
+      "aliases": [
+        "SC",
+        "Seychelles",
+        "塞舌尔",
+        "塞席爾"
+      ]
+    },
+    {
+      "code": "SL",
+      "name": "Sierra Leone",
+      "status": "supported",
+      "aliases": [
+        "SL",
+        "Sierra Leone",
+        "塞拉利昂",
+        "獅子山"
+      ]
+    },
+    {
+      "code": "SG",
+      "name": "Singapore",
+      "status": "supported",
+      "aliases": [
+        "SG",
+        "Singapore",
+        "新加坡",
+        "狮城",
+        "獅城"
+      ]
+    },
+    {
+      "code": "SK",
+      "name": "Slovakia",
+      "status": "supported",
+      "aliases": [
+        "SK",
+        "Slovakia",
+        "斯洛伐克"
+      ]
+    },
+    {
+      "code": "SI",
+      "name": "Slovenia",
+      "status": "supported",
+      "aliases": [
+        "SI",
+        "Slovenia",
+        "斯洛文尼亚",
+        "斯洛維尼亞"
+      ]
+    },
+    {
+      "code": "SB",
+      "name": "Solomon Islands",
+      "status": "supported",
+      "aliases": [
+        "SB",
+        "Solomon Islands",
+        "所罗门群岛",
+        "索羅門群島"
+      ]
+    },
+    {
+      "code": "SO",
+      "name": "Somalia",
+      "status": "supported",
+      "aliases": [
+        "SO",
+        "Somalia",
+        "索马里",
+        "索馬利亞"
+      ]
+    },
+    {
+      "code": "ZA",
+      "name": "South Africa",
+      "status": "supported",
+      "aliases": [
+        "ZA",
+        "South Africa",
+        "南非"
+      ]
+    },
+    {
+      "code": "KR",
+      "name": "South Korea",
+      "status": "supported",
+      "aliases": [
+        "KR",
+        "South Korea",
+        "韩国",
+        "南韓",
+        "Korea",
+        "Seoul",
+        "韓國",
+        "首尔",
+        "首爾"
+      ]
+    },
+    {
+      "code": "SS",
+      "name": "South Sudan",
+      "status": "supported",
+      "aliases": [
+        "SS",
+        "South Sudan",
+        "南苏丹",
+        "南蘇丹"
+      ]
+    },
+    {
+      "code": "ES",
+      "name": "Spain",
+      "status": "supported",
+      "aliases": [
+        "ES",
+        "Spain",
+        "西班牙"
+      ]
+    },
+    {
+      "code": "LK",
+      "name": "Sri Lanka",
+      "status": "supported",
+      "aliases": [
+        "LK",
+        "Sri Lanka",
+        "斯里兰卡",
+        "斯里蘭卡"
+      ]
+    },
+    {
+      "code": "SR",
+      "name": "Suriname",
+      "status": "supported",
+      "aliases": [
+        "SR",
+        "Suriname",
+        "苏里南",
+        "蘇利南"
+      ]
+    },
+    {
+      "code": "SE",
+      "name": "Sweden",
+      "status": "supported",
+      "aliases": [
+        "SE",
+        "Sweden",
+        "瑞典"
+      ]
+    },
+    {
+      "code": "CH",
+      "name": "Switzerland",
+      "status": "supported",
+      "aliases": [
+        "CH",
+        "Switzerland",
+        "瑞士"
+      ]
+    },
+    {
+      "code": "SD",
+      "name": "Sudan",
+      "status": "supported",
+      "aliases": [
+        "SD",
+        "Sudan",
+        "苏丹",
+        "蘇丹"
+      ]
+    },
+    {
+      "code": "SJ",
+      "name": "Svalbard and Jan Mayen",
+      "status": "supported",
+      "aliases": [
+        "SJ",
+        "Svalbard & Jan Mayen",
+        "斯瓦尔巴和扬马延",
+        "挪威屬斯瓦巴及尖棉",
+        "Svalbard and Jan Mayen"
+      ]
+    },
+    {
+      "code": "TW",
+      "name": "Taiwan",
+      "status": "supported",
+      "aliases": [
+        "TW",
+        "Taiwan",
+        "台湾",
+        "台灣",
+        "臺灣",
+        "Taipei",
+        "台北",
+        "臺北"
+      ]
+    },
+    {
+      "code": "TJ",
+      "name": "Tajikistan",
+      "status": "supported",
+      "aliases": [
+        "TJ",
+        "Tajikistan",
+        "塔吉克斯坦",
+        "塔吉克"
+      ]
+    },
+    {
+      "code": "TZ",
+      "name": "Tanzania",
+      "status": "supported",
+      "aliases": [
+        "TZ",
+        "Tanzania",
+        "坦桑尼亚",
+        "坦尚尼亞"
+      ]
+    },
+    {
+      "code": "TH",
+      "name": "Thailand",
+      "status": "supported",
+      "aliases": [
+        "TH",
+        "Thailand",
+        "泰国",
+        "泰國"
+      ]
+    },
+    {
+      "code": "TL",
+      "name": "Timor-Leste (East Timor)",
+      "status": "supported",
+      "aliases": [
+        "TL",
+        "Timor-Leste",
+        "东帝汶",
+        "東帝汶"
+      ]
+    },
+    {
+      "code": "TG",
+      "name": "Togo",
+      "status": "supported",
+      "aliases": [
+        "TG",
+        "Togo",
+        "多哥"
+      ]
+    },
+    {
+      "code": "TO",
+      "name": "Tonga",
+      "status": "supported",
+      "aliases": [
+        "TO",
+        "Tonga",
+        "汤加",
+        "東加"
+      ]
+    },
+    {
+      "code": "TT",
+      "name": "Trinidad and Tobago",
+      "status": "supported",
+      "aliases": [
+        "TT",
+        "Trinidad & Tobago",
+        "特立尼达和多巴哥",
+        "千里達及托巴哥",
+        "Trinidad and Tobago"
+      ]
+    },
+    {
+      "code": "TN",
+      "name": "Tunisia",
+      "status": "supported",
+      "aliases": [
+        "TN",
+        "Tunisia",
+        "突尼斯",
+        "突尼西亞"
+      ]
+    },
+    {
+      "code": "TR",
+      "name": "Turkey",
+      "status": "supported",
+      "aliases": [
+        "TR",
+        "Türkiye",
+        "土耳其",
+        "Turkey"
+      ]
+    },
+    {
+      "code": "TM",
+      "name": "Turkmenistan",
+      "status": "supported",
+      "aliases": [
+        "TM",
+        "Turkmenistan",
+        "土库曼斯坦",
+        "土庫曼"
+      ]
+    },
+    {
+      "code": "TV",
+      "name": "Tuvalu",
+      "status": "supported",
+      "aliases": [
+        "TV",
+        "Tuvalu",
+        "图瓦卢",
+        "吐瓦魯"
+      ]
+    },
+    {
+      "code": "UG",
+      "name": "Uganda",
+      "status": "supported",
+      "aliases": [
+        "UG",
+        "Uganda",
+        "乌干达",
+        "烏干達"
+      ]
+    },
+    {
+      "code": "UA",
+      "name": "Ukraine (with certain exceptions)",
+      "status": "restricted",
+      "aliases": [
+        "UA",
+        "Ukraine",
+        "乌克兰",
+        "烏克蘭"
+      ]
+    },
+    {
+      "code": "AE",
+      "name": "United Arab Emirates",
+      "status": "supported",
+      "aliases": [
+        "AE",
+        "United Arab Emirates",
+        "阿拉伯联合酋长国",
+        "阿拉伯聯合大公國"
+      ]
+    },
+    {
+      "code": "GB",
+      "name": "United Kingdom",
+      "status": "supported",
+      "aliases": [
+        "GB",
+        "United Kingdom",
+        "英国",
+        "英國",
+        "UK",
+        "Britain",
+        "London",
+        "伦敦",
+        "倫敦"
+      ]
+    },
+    {
+      "code": "US",
+      "name": "United States of America",
+      "status": "supported",
+      "aliases": [
+        "US",
+        "United States",
+        "美国",
+        "美國",
+        "United States of America",
+        "USA",
+        "Los Angeles",
+        "San Jose",
+        "Seattle",
+        "New York",
+        "洛杉矶",
+        "洛杉磯",
+        "圣何塞",
+        "聖荷西",
+        "西雅图",
+        "西雅圖",
+        "纽约",
+        "紐約"
+      ]
+    },
+    {
+      "code": "UY",
+      "name": "Uruguay",
+      "status": "supported",
+      "aliases": [
+        "UY",
+        "Uruguay",
+        "乌拉圭",
+        "烏拉圭"
+      ]
+    },
+    {
+      "code": "UZ",
+      "name": "Uzbekistan",
+      "status": "supported",
+      "aliases": [
+        "UZ",
+        "Uzbekistan",
+        "乌兹别克斯坦",
+        "烏茲別克"
+      ]
+    },
+    {
+      "code": "NH",
+      "name": "Vanuatu",
+      "status": "supported",
+      "aliases": [
+        "NH",
+        "Vanuatu",
+        "瓦努阿图",
+        "萬那杜"
+      ]
+    },
+    {
+      "code": "VD",
+      "name": "Vietnam",
+      "status": "supported",
+      "aliases": [
+        "VD",
+        "Vietnam",
+        "越南"
+      ]
+    },
+    {
+      "code": "WF",
+      "name": "Wallis and Futuna",
+      "status": "supported",
+      "aliases": [
+        "WF",
+        "Wallis & Futuna",
+        "瓦利斯和富图纳",
+        "瓦利斯群島和富圖那群島",
+        "Wallis and Futuna"
+      ]
+    },
+    {
+      "code": "YD",
+      "name": "Yemen",
+      "status": "supported",
+      "aliases": [
+        "YD",
+        "Yemen",
+        "也门",
+        "葉門"
+      ]
+    },
+    {
+      "code": "ZM",
+      "name": "Zambia",
+      "status": "supported",
+      "aliases": [
+        "ZM",
+        "Zambia",
+        "赞比亚",
+        "尚比亞"
+      ]
+    },
+    {
+      "code": "RH",
+      "name": "Zimbabwe",
+      "status": "supported",
+      "aliases": [
+        "RH",
+        "Zimbabwe",
+        "津巴布韦",
+        "辛巴威"
+      ]
+    },
+    {
+      "code": "CN",
+      "name": "China",
+      "status": "unsupported",
+      "aliases": [
+        "CN",
+        "China",
+        "中国",
+        "中國",
+        "中国大陆",
+        "中國大陸",
+        "大陆",
+        "大陸",
+        "Beijing",
+        "Shanghai",
+        "北京",
+        "上海"
+      ]
+    },
+    {
+      "code": "HK",
+      "name": "Hong Kong SAR China",
+      "status": "unsupported",
+      "aliases": [
+        "HK",
+        "Hong Kong SAR China",
+        "中国香港特别行政区",
+        "中國香港特別行政區",
+        "Hong Kong",
+        "香港"
+      ]
+    },
+    {
+      "code": "MO",
+      "name": "Macao SAR China",
+      "status": "unsupported",
+      "aliases": [
+        "MO",
+        "Macao SAR China",
+        "中国澳门特别行政区",
+        "中國澳門特別行政區",
+        "Macau",
+        "澳门",
+        "澳門"
+      ]
+    },
+    {
+      "code": "RU",
+      "name": "Russia",
+      "status": "unsupported",
+      "aliases": [
+        "RU",
+        "Russia",
+        "俄罗斯",
+        "俄羅斯",
+        "Moscow",
+        "莫斯科"
+      ]
+    },
+    {
+      "code": "IR",
+      "name": "Iran",
+      "status": "unsupported",
+      "aliases": [
+        "IR",
+        "Iran",
+        "伊朗"
+      ]
+    },
+    {
+      "code": "KP",
+      "name": "North Korea",
+      "status": "unsupported",
+      "aliases": [
+        "KP",
+        "North Korea",
+        "朝鲜",
+        "北韓"
+      ]
+    },
+    {
+      "code": "CU",
+      "name": "Cuba",
+      "status": "unsupported",
+      "aliases": [
+        "CU",
+        "Cuba",
+        "古巴"
+      ]
+    },
+    {
+      "code": "BY",
+      "name": "Belarus",
+      "status": "unsupported",
+      "aliases": [
+        "BY",
+        "Belarus",
+        "白俄罗斯",
+        "白俄羅斯"
+      ]
+    },
+    {
+      "code": "SY",
+      "name": "Syria",
+      "status": "unsupported",
+      "aliases": [
+        "SY",
+        "Syria",
+        "叙利亚",
+        "敘利亞"
+      ]
+    }
+  ]
+}

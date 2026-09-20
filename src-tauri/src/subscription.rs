@@ -134,6 +134,69 @@ pub struct SubscriptionFetcher {
 }
 
 impl SubscriptionFetcher {
+    /// Quota is response metadata, independent of the YAML/ETag. HEAD first;
+    /// services without HEAD metadata get a bounded GET whose body is dropped.
+    /// This path never validates, persists or applies a configuration.
+    pub async fn fetch_usage(
+        &self,
+        url: &str,
+        user_agent: &str,
+    ) -> AppResult<Option<SubscriptionUsage>> {
+        let parsed = validate_subscription_url(url)?;
+        let configured = if user_agent.trim().is_empty() {
+            DEFAULT_SUBSCRIPTION_USER_AGENT
+        } else {
+            user_agent.trim()
+        };
+        let mut agents = vec![configured];
+        for agent in COMPATIBLE_USER_AGENTS {
+            if !agents.contains(&agent) {
+                agents.push(agent);
+            }
+        }
+        let deadline = tokio::time::Instant::now() + self.total_timeout;
+        for method in [reqwest::Method::HEAD, reqwest::Method::GET] {
+            for agent in &agents {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(subscription_timeout_error());
+                }
+                let response = tokio::time::timeout(
+                    remaining,
+                    self.client
+                        .request(method.clone(), parsed.clone())
+                        .header(reqwest::header::USER_AGENT, *agent)
+                        .header(ACCEPT, SUBSCRIPTION_ACCEPT)
+                        .header(CACHE_CONTROL, "no-cache")
+                        .send(),
+                )
+                .await
+                .map_err(|_| subscription_timeout_error())?
+                .map_err(subscription_transport_error)?;
+                if response.status() == reqwest::StatusCode::FORBIDDEN {
+                    continue;
+                }
+                if method == reqwest::Method::HEAD
+                    && matches!(response.status().as_u16(), 405 | 501)
+                {
+                    break;
+                }
+                if !response.status().is_success() {
+                    return Err(AppError::Subscription(format!(
+                        "HTTP {}",
+                        response.status().as_u16()
+                    )));
+                }
+                let usage = response_usage(response.headers());
+                if usage.is_some() || method == reqwest::Method::GET {
+                    return Ok(usage);
+                }
+                break;
+            }
+        }
+        Err(AppError::Subscription("HTTP 403".into()))
+    }
+
     pub fn new() -> AppResult<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
@@ -436,6 +499,51 @@ mod tests {
     fn rejects_remote_http_and_file_urls() {
         assert!(validate_subscription_url("http://example.com/sub").is_err());
         assert!(validate_subscription_url("file:///tmp/sub.yaml").is_err());
+    }
+
+    #[tokio::test]
+    async fn quota_head_and_get_fallback_do_not_require_or_consume_yaml() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for head_has_metadata in [true, false] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                for method in if head_has_metadata {
+                    vec!["HEAD"]
+                } else {
+                    vec!["HEAD", "GET"]
+                } {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = [0; 2048];
+                    let n = stream.read(&mut request).await.unwrap();
+                    let request = String::from_utf8_lossy(&request[..n]);
+                    assert!(request.starts_with(method));
+                    assert!(!request.to_lowercase().contains("if-none-match"));
+                    let headers = if method == "HEAD" && !head_has_metadata {
+                        "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    } else {
+                        // Deliberately no body: a quota-only GET must return on headers.
+                        "HTTP/1.1 200 OK\r\nSubscription-Userinfo: upload=2; download=28; total=100\r\nContent-Length: 99999\r\nConnection: close\r\n\r\n"
+                    };
+                    stream.write_all(headers.as_bytes()).await.unwrap();
+                }
+            });
+            let usage = SubscriptionFetcher::new()
+                .unwrap()
+                .fetch_usage(&format!("http://{address}/quota"), "clash.meta")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                usage.total_bytes.unwrap()
+                    - usage.upload_bytes.unwrap()
+                    - usage.download_bytes.unwrap(),
+                70
+            );
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]

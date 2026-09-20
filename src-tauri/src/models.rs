@@ -364,6 +364,7 @@ pub struct SubscriptionUsage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SubscriptionStatus {
+    pub request_started_at: Option<DateTime<Utc>>,
     pub checked_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub usage: Option<SubscriptionUsage>,

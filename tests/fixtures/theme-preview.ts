@@ -14,8 +14,8 @@ import type {
   SubscriptionMetadata, SubscriptionOverview, SubscriptionStatus, NetworkMode, OpenAiPolicyTask,
 } from "../../src/types";
 import type { ThemePreference } from "../../src/theme";
-import type { ProxyMap } from "../../src/node-selection";
-import type { CostSnapshot } from "../../src/openai-costs";
+import type { ProxyMap, NodeMetadata } from "../../src/node-selection";
+import type { CostSnapshot, CostInput } from "../../src/openai-costs";
 
 const STORAGE_KEY = "routedeck:test-fixture:theme-preview:v1";
 const RULES_STORAGE_KEY = "routedeck:test-fixture:user-rules:v1";
@@ -326,18 +326,19 @@ const policy = {
   benchmarkVersion: 1,
 };
 const nodeScenario = previewQuery.get("nodeScenario");
+const fixtureMetadata = (index: number): NodeMetadata => ({regions: [index ? "SG" : "JP"], regionStatus: "supported", eligible: true, regionReason: "名称地区在 API 支持名单内", ruleVersion: "2026-09-20.1", checkedAt: "2026-09-20", ruleSource: "https://developers.openai.com/api/docs/supported-countries", nameMultiplier: null, multiplierSource: "manual"});
 const fixtureNodes: ProxyMap = {
   "演示节点选择": { type: "Selector", all: policy.selectedNodes.map(node => node.name), now: policy.selectedNodes[0].name, udp: true },
   "演示自动测速": { type: "URLTest", all: policy.selectedNodes.map(node => node.name), now: policy.selectedNodes[0].name, fixed: "", udp: true },
   "GLOBAL": { type: "Selector", all: ["演示节点选择", ...policy.selectedNodes.map(node => node.name)], now: "演示节点选择" },
   "🤖 OpenAI 自动灾备": { type: policy.stabilityEnabled ? "Selector" : "Fallback", all: policy.selectedNodes.map(node => node.name), now: policy.selectedNodes[0].name, udp: true, fixed: "", manualNode: null },
-  ...Object.fromEntries(policy.selectedNodes.map((node, index) => [node.name, { type: index === 0 ? "Trojan" : "Shadowsocks", alive: index === 0 ? true : undefined, udp: true, trafficMultiplier: 1 }])),
+  ...Object.fromEntries(policy.selectedNodes.map((node, index) => [node.name, { type: index === 0 ? "Trojan" : "Shadowsocks", alive: index === 0 ? true : undefined, udp: true, trafficMultiplier: 1, metadata: fixtureMetadata(index) }])),
 };
 if (nodeScenario === "ordinary") { policy.enabled = false; delete fixtureNodes["🤖 OpenAI 自动灾备"]; }
 const nodeCalls: { command: string; group: string; proxy?: string }[] = [];
 let fixtureCosts: CostSnapshot | null = null;
 let costFailure = false;
-const costCalls: CostSnapshot[] = [];
+const costCalls: CostInput[] = [];
 window.addEventListener("serylane-fixture-costs", ((event: CustomEvent) => { if (nodeScenario === "costs") costFailure = Boolean(event.detail?.fail); }) as EventListener);
 let failNodeChoice = false, failNodeRead = false;
 window.addEventListener("serylane-fixture-nodes", ((event: CustomEvent) => {
@@ -827,13 +828,13 @@ mockIPC(async (command, payload) => {
   if (command === "get_openai_costs") {
     const p = profileDetails(String(args.profileId)).profile;
     return structuredClone(fixtureCosts ?? { profileId: p.id, profileRevision: p.activeRevisionId, revision: 0, mode: "quality", maxMultiplier: null, allowUnknown: false,
-      nodes: policy.selectedNodes.map((n,i) => ({ name: n.name, multiplier: i ? 5 : 1 })) });
+      nodes: policy.selectedNodes.map((n,i) => ({ name: n.name, multiplier: i ? 5 : 1, manualMultiplier: i ? 5 : 1, metadata: fixtureMetadata(i) })) });
   }
   if (command === "save_openai_costs" && nodeScenario === "costs") {
-    const input = args.input as CostSnapshot;
+    const input = args.input as CostInput;
     if (!args.confirmed || input.profileId !== activeProfileId || input.revision !== (fixtureCosts?.revision ?? 0)) throw new Error("合成成本版本冲突");
     if (costFailure) { costFailure = false; throw new Error("合成成本保存失败"); }
-    fixtureCosts = structuredClone({ ...input, revision: input.revision + 1 });
+    fixtureCosts = structuredClone({ ...input, revision: input.revision + 1, nodes: input.nodes.map((n,i) => ({...n, manualMultiplier: n.multiplier, metadata: {...fixtureMetadata(i), multiplierSource: n.multiplier == null ? "unknown" : "manual"}})) });
     costCalls.push(structuredClone(input));
     document.documentElement.dataset.fixtureCostCalls = JSON.stringify(costCalls);
     for (const row of fixtureCosts.nodes) {

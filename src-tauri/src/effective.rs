@@ -293,16 +293,20 @@ fn apply_openai_policy(
         if selected.len() >= usize::from(policy.max_nodes.clamp(2, 10)) {
             break;
         }
-        if available_nodes.contains(&node.name) && seen.insert(node.name.clone()) {
+        if available_nodes.contains(&node.name)
+            && crate::node_metadata::eligible(&node.name)
+            && seen.insert(node.name.clone())
+        {
             selected.push(node.name.clone());
         }
     }
 
-    if selected.len() < 2 {
-        summary
-            .warnings
-            .push("OpenAI 自动灾备的有效节点少于 2 个，本轮未注入托管策略".to_string());
-        return Ok(());
+    let insufficient = selected.len() < 2;
+    if insufficient {
+        summary.warnings.push(
+            "OpenAI 支持地区的有效节点少于 2 个；托管路径拒绝新请求，请重新生成灾备".to_string(),
+        );
+        selected.clear();
     }
 
     let groups_key = Value::String("proxy-groups".to_string());
@@ -329,7 +333,7 @@ fn apply_openai_policy(
         &mut group,
         "type",
         Value::String(
-            if policy.stability_enabled {
+            if policy.stability_enabled || insufficient {
                 "select"
             } else {
                 "fallback"
@@ -343,7 +347,7 @@ fn apply_openai_policy(
         Value::Sequence(
             selected
                 .into_iter()
-                .chain(policy.stability_enabled.then(|| "REJECT".to_string()))
+                .chain((policy.stability_enabled || insufficient).then(|| "REJECT".to_string()))
                 .map(Value::String)
                 .collect(),
         ),
@@ -603,7 +607,7 @@ rules:
         let mut policy = OpenAiPolicy {
             enabled: true,
             auto_maintain: true,
-            selected_nodes: vec![node("sample", 96.0), node("sample-2", 88.0)],
+            selected_nodes: vec![node("JP sample", 96.0), node("JP sample-2", 88.0)],
             candidate_count: 2,
             healthy_count: 2,
             last_benchmarked_at: Some(Utc::now()),
@@ -613,6 +617,9 @@ rules:
             "  - name: sample\n    type: socks5\n    server: 127.0.0.1\n    port: 1080",
             "  - name: sample\n    type: socks5\n    server: 127.0.0.1\n    port: 1080\n  - name: sample-2\n    type: socks5\n    server: 127.0.0.1\n    port: 1081",
         );
+        let source = source
+            .replace("name: sample", "name: JP sample")
+            .replace("proxies: [sample]", "proxies: [JP sample]");
         let effective = build_effective_config_with_policy(
             &source,
             &AppSettings::default(),
@@ -690,7 +697,7 @@ rules:
     }
 
     #[test]
-    fn skips_policy_when_fewer_than_two_nodes_still_exist() {
+    fn rejects_new_requests_when_fewer_than_two_eligible_nodes_still_exist() {
         let policy = OpenAiPolicy {
             enabled: true,
             selected_nodes: vec![node("sample", 90.0), node("removed", 80.0)],
@@ -708,7 +715,16 @@ rules:
             .warnings
             .iter()
             .any(|warning| warning.contains("少于 2 个")));
-        assert!(!effective.yaml.contains(OPENAI_GROUP_NAME));
+        assert!(effective.yaml.contains(OPENAI_GROUP_NAME));
+        let doc: Value = serde_yaml::from_str(&effective.yaml).unwrap();
+        assert_eq!(
+            doc["proxy-groups"][0]["proxies"],
+            serde_yaml::to_value(vec!["REJECT"]).unwrap()
+        );
+        assert!(doc["rules"][0]
+            .as_str()
+            .unwrap()
+            .contains(OPENAI_GROUP_NAME));
     }
 
     #[test]

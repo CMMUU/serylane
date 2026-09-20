@@ -60,7 +60,8 @@ impl CostPreferences {
                         .nodes
                         .get(name)
                         .filter(|n| &n.identity == identity)
-                        .map(|n| n.multiplier);
+                        .map(|n| n.multiplier)
+                        .or_else(|| crate::node_metadata::parse(name).name_multiplier);
                     (name.clone(), rate)
                 })
                 .collect(),
@@ -72,23 +73,24 @@ fn valid_rate(n: f64) -> bool {
 }
 
 // Only the name and an opaque fingerprint leave this parsing layer. Names are
-// not parsed for "1x" or prices; quota headers cannot supply per-node rates.
+// parsed separately for explicit rates; quota headers never supply per-node rates.
 fn identities(source: &str) -> AppResult<BTreeMap<String, String>> {
     let doc: serde_yaml::Value = serde_yaml::from_str(source)
         .map_err(|_| AppError::Config("无法读取节点成本清单".into()))?;
-    let candidates = crate::openai_policy::candidate_names(source)?;
+    let candidates: std::collections::BTreeSet<_> = crate::openai_policy::candidate_names(source)?
+        .into_iter()
+        .collect();
     let mut result = BTreeMap::new();
     for node in doc["proxies"].as_sequence().into_iter().flatten() {
         if let Some(name) = node["name"]
             .as_str()
-            .filter(|name| candidates.iter().any(|c| c == name))
+            .filter(|name| candidates.contains(*name))
         {
             let bytes = serde_yaml::to_string(node)
                 .map_err(|_| AppError::Config("无法识别节点身份".into()))?;
-            result.insert(
-                name.into(),
-                format!("{:x}", Sha256::digest(bytes.as_bytes())),
-            );
+            result
+                .entry(name.into())
+                .or_insert_with(|| format!("{:x}", Sha256::digest(bytes.as_bytes())));
         }
     }
     Ok(result)
@@ -137,6 +139,39 @@ pub struct CostRow {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CostSnapshotRow {
+    pub name: String,
+    pub multiplier: Option<f64>,
+    pub manual_multiplier: Option<f64>,
+    pub metadata: crate::node_metadata::NodeMetadata,
+}
+
+pub fn resolved_rows(prefs: &CostPreferences, source: &str) -> AppResult<Vec<CostSnapshotRow>> {
+    prefs.validate()?;
+    Ok(identities(source)?
+        .into_iter()
+        .map(|(name, identity)| {
+            let manual_multiplier = prefs
+                .nodes
+                .get(&name)
+                .filter(|n| n.identity == identity)
+                .map(|n| n.multiplier);
+            let mut metadata = crate::node_metadata::parse(&name);
+            if manual_multiplier.is_some() {
+                metadata.multiplier_source = crate::node_metadata::RateSource::Manual;
+            }
+            CostSnapshotRow {
+                multiplier: manual_multiplier.or(metadata.name_multiplier),
+                name,
+                manual_multiplier,
+                metadata,
+            }
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CostSnapshot {
     pub profile_id: Uuid,
     pub profile_revision: Uuid,
@@ -144,7 +179,7 @@ pub struct CostSnapshot {
     pub mode: CostMode,
     pub max_multiplier: Option<f64>,
     pub allow_unknown: bool,
-    pub nodes: Vec<CostRow>,
+    pub nodes: Vec<CostSnapshotRow>,
 }
 fn snapshot(storage: &AppStorage, id: Uuid) -> AppResult<CostSnapshot> {
     let profile = storage.load_profile(id)?;
@@ -152,7 +187,7 @@ fn snapshot(storage: &AppStorage, id: Uuid) -> AppResult<CostSnapshot> {
         .active_revision_id
         .ok_or_else(|| AppError::Conflict("请先选用配置版本".into()))?;
     let prefs = storage.openai_costs(id)?;
-    let resolved = prefs.resolve(&storage.load_revision_source(id, revision)?)?;
+    let rows = resolved_rows(&prefs, &storage.load_revision_source(id, revision)?)?;
     Ok(CostSnapshot {
         profile_id: id,
         profile_revision: revision,
@@ -160,11 +195,7 @@ fn snapshot(storage: &AppStorage, id: Uuid) -> AppResult<CostSnapshot> {
         mode: prefs.mode,
         max_multiplier: prefs.max_multiplier,
         allow_unknown: prefs.allow_unknown,
-        nodes: resolved
-            .multipliers
-            .into_iter()
-            .map(|(name, multiplier)| CostRow { name, multiplier })
-            .collect(),
+        nodes: rows,
     })
 }
 
@@ -226,7 +257,7 @@ pub fn save_openai_costs(
             allow_unknown: input.allow_unknown,
             nodes: BTreeMap::new(),
         };
-        if input.nodes.len() > 300 {
+        if input.nodes.len() > identities.len() {
             return Err(AppError::InvalidInput("节点清单过长".into()));
         }
         let mut seen = std::collections::BTreeSet::new();
@@ -259,7 +290,7 @@ pub fn save_openai_costs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const SOURCE: &str = "proxies:\n - {name: good, type: socks5, server: example.invalid, port: 1080}\n - {name: premium, type: socks5, server: other.invalid, port: 1080}\n - {name: 'unknown 1x', type: socks5, server: third.invalid, port: 1080}";
+    const SOURCE: &str = "proxies:\n - {name: good, type: socks5, server: example.invalid, port: 1080}\n - {name: premium, type: socks5, server: other.invalid, port: 1080}\n - {name: 'unknown', type: socks5, server: third.invalid, port: 1080}";
     fn preferences() -> CostPreferences {
         let ids = identities(SOURCE).unwrap();
         CostPreferences {
@@ -283,15 +314,61 @@ mod tests {
     fn comparable_quality_rewards_lower_multiplier_without_guessing_names() {
         let resolved = preferences().resolve(SOURCE).unwrap();
         assert!(resolved.utility("good", 90.0) > resolved.utility("premium", 98.0));
-        assert_eq!(resolved.multiplier("unknown 1x"), None);
-        assert!(!resolved.allowed("unknown 1x"));
+        assert_eq!(resolved.multiplier("unknown"), None);
+        assert!(!resolved.allowed("unknown"));
         let mut prefs = preferences();
         prefs.allow_unknown = true;
         assert!(
-            prefs.resolve(SOURCE).unwrap().utility("unknown 1x", 100.0)
+            prefs.resolve(SOURCE).unwrap().utility("unknown", 100.0)
                 < resolved.utility("premium", 80.0)
         );
     }
+    #[test]
+    fn automatic_rates_overrides_and_clear_preserve_provenance() {
+        let source = SOURCE.replace("good", "JP 0.5x");
+        let mut prefs = CostPreferences::default();
+        assert_eq!(
+            prefs.resolve(&source).unwrap().multiplier("JP 0.5x"),
+            Some(0.5)
+        );
+        let row = resolved_rows(&prefs, &source)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == "JP 0.5x")
+            .unwrap();
+        assert!(row.manual_multiplier.is_none());
+        assert_eq!(
+            row.metadata.multiplier_source,
+            crate::node_metadata::RateSource::Name
+        );
+        prefs.nodes.insert(
+            "JP 0.5x".into(),
+            NodeCost {
+                identity: identities(&source).unwrap()["JP 0.5x"].clone(),
+                multiplier: 2.0,
+            },
+        );
+        assert_eq!(
+            prefs.resolve(&source).unwrap().multiplier("JP 0.5x"),
+            Some(2.0)
+        );
+        let changed = source.replace("server: example.invalid", "server: changed.invalid");
+        assert_eq!(
+            prefs.resolve(&changed).unwrap().multiplier("JP 0.5x"),
+            Some(0.5)
+        );
+        prefs.nodes.clear();
+        assert_eq!(
+            prefs.resolve(&source).unwrap().multiplier("JP 0.5x"),
+            Some(0.5)
+        );
+        let renamed = source.replace("JP 0.5x", "JP 3x");
+        assert_eq!(
+            prefs.resolve(&renamed).unwrap().multiplier("JP 3x"),
+            Some(3.0)
+        );
+    }
+
     #[test]
     fn cap_invalid_input_and_identity_changes_are_fail_closed() {
         let mut prefs = preferences();
@@ -306,7 +383,7 @@ mod tests {
         assert!(CostPreferences::default()
             .resolve(SOURCE)
             .unwrap()
-            .allowed("unknown 1x"));
+            .allowed("unknown"));
     }
 
     #[test]

@@ -498,7 +498,14 @@ impl StabilityManager {
             });
             s.snapshot.profile_id = active;
             s.snapshot.revision_id = revision;
-            s.snapshot.eligible = policy.is_some_and(|p| p.enabled && p.selected_nodes.len() >= 2);
+            s.snapshot.eligible = policy.is_some_and(|p| {
+                p.enabled
+                    && p.selected_nodes
+                        .iter()
+                        .filter(|n| crate::node_metadata::eligible(&n.name))
+                        .count()
+                        >= 2
+            });
             s.snapshot.enabled = policy.is_some_and(|p| p.enabled && p.stability_enabled);
             s.snapshot.running = false;
             s.snapshot.common_failure = false;
@@ -550,10 +557,17 @@ impl StabilityManager {
             }
             let live = api.proxies().await?;
             let valid = live["proxies"][GROUP]["type"] == "Selector"
+                && crate::node_metadata::eligible(&node)
                 && policy.selected_nodes.iter().any(|n| n.name == node)
                 && crate::node_selection::validate_choice(&live["proxies"][GROUP], &node).is_ok();
             if valid && live["proxies"][GROUP]["now"].as_str() != Some(&node) {
                 api.select_proxy(GROUP, &node).await?;
+            }
+            // Keep the invalid manual intent, but never route new requests via
+            // an unqualified historical pin or silently resume auto-selection.
+            if !valid && live["proxies"][GROUP]["type"] == "Selector" {
+                crate::node_selection::validate_choice(&live["proxies"][GROUP], "REJECT")?;
+                api.select_proxy(GROUP, "REJECT").await?;
             }
             let mut s = self
                 .inner
@@ -563,13 +577,13 @@ impl StabilityManager {
             s.current = if valid {
                 Some(node)
             } else {
-                live["proxies"][GROUP]["now"].as_str().map(str::to_string)
+                Some("REJECT".into())
             };
             s.snapshot.running = false;
             s.snapshot.message = if valid {
                 "手动选点中，稳定策略已暂停自动切换；可在代理页恢复自动"
             } else {
-                "手动节点已不在候选中，未恢复自动；请重新选点或恢复自动"
+                "手动节点地区或候选资格失效，新请求已拒绝；请重新选点或恢复自动"
             }
             .into();
             return Ok(());
@@ -580,11 +594,12 @@ impl StabilityManager {
             active.unwrap(),
             revision.ok_or_else(|| AppError::Conflict("无配置版本".into()))?,
         )?)?;
-        let allowed: Vec<String> = policy
+        let mut allowed: Vec<String> = policy
             .selected_nodes
             .iter()
             .filter(|n| {
                 costs.allowed(&n.name)
+                    && crate::node_metadata::eligible(&n.name)
                     && group["all"]
                         .as_array()
                         .is_some_and(|all| all.iter().any(|x| x.as_str() == Some(&n.name)))
@@ -592,6 +607,19 @@ impl StabilityManager {
             .take(10)
             .map(|n| n.name.clone())
             .collect();
+        let regional_candidates = policy
+            .selected_nodes
+            .iter()
+            .filter(|n| {
+                crate::node_metadata::eligible(&n.name)
+                    && group["all"]
+                        .as_array()
+                        .is_some_and(|all| all.iter().any(|x| x.as_str() == Some(&n.name)))
+            })
+            .count();
+        if regional_candidates < 2 {
+            allowed.clear();
+        }
         {
             let mut s = self
                 .inner
