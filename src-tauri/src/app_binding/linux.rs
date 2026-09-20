@@ -107,11 +107,11 @@ pub fn choose(
     let desktop = gtk::FileFilter::new();
     desktop.set_name(Some("桌面应用入口（.desktop）"));
     desktop.add_pattern("*.desktop");
-    dialog.add_filter(&desktop);
+    dialog.add_filter(desktop);
     let all = gtk::FileFilter::new();
     all.set_name(Some("所有文件（含无扩展名的可执行程序）"));
     all.add_pattern("*");
-    dialog.add_filter(&all);
+    dialog.add_filter(all.clone());
     dialog.set_filter(&all);
     // Keep the native dialog alive until response. Break this cycle on every
     // response, including cancel/delete; Gtk owns the response handler itself.

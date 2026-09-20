@@ -87,6 +87,7 @@ impl From<DesktopApplication> for InstalledApplication {
     }
 }
 
+#[cfg(not(windows))]
 pub fn collect() -> Result<Vec<DesktopApplication>, String> {
     #[cfg(target_os = "macos")]
     {
