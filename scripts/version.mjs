@@ -21,6 +21,14 @@ export function verifyVersions(base = root, tag) {
   if (tag && tag !== `v${expected}`) throw new Error(`Tag ${tag} does not match v${expected}`);
   return expected;
 }
+export function verifyReleaseReady(base = root) {
+  const version = verifyVersions(base);
+  const path = `docs/发布说明-v${version}.md`;
+  let notes;
+  try { notes = read(base, path); } catch { throw new Error(`Reviewed release notes are required: ${path}`); }
+  if (!notes.trim()) throw new Error(`Reviewed release notes are required: ${path}`);
+  return version;
+}
 export function setVersion(version, base = root) {
   if (!stable.test(version)) throw new Error("Expected stable X.Y.Z version");
   // Validate every input before writing any of them; no npm/cargo side effects.
@@ -39,6 +47,7 @@ export function setVersion(version, base = root) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   if (args[0] === "--set" && args.length === 2) setVersion(args[1]);
-  else if (args.length && !(args[0] === "--tag" && args.length === 2)) throw new Error("Usage: node scripts/version.mjs [--set X.Y.Z | --tag vX.Y.Z]");
+  else if (args[0] === "--release-ready" && args.length === 1) verifyReleaseReady();
+  else if (args.length && !(args[0] === "--tag" && args.length === 2)) throw new Error("Usage: node scripts/version.mjs [--set X.Y.Z | --tag vX.Y.Z | --release-ready]");
   console.log(`Serylane ${verifyVersions(root, args[0] === "--tag" ? args[1] : undefined)}: all six version fields agree`);
 }

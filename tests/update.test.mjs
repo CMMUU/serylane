@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { verifyUpdateSignature } from "../scripts/verify-update-signature.mjs";
-import { root, verifyVersions, setVersion } from "../scripts/version.mjs";
+import { root, verifyVersions, setVersion, verifyReleaseReady } from "../scripts/version.mjs";
 
 const source = readFileSync(new URL("../src/app-update.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
@@ -83,6 +83,12 @@ test("all version fields and tag are gated; a single command updates every versi
     mkdirSync(join(fixture, "src-tauri"));
     for (const path of ["package.json", "package-lock.json", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/tauri.conf.json"]) writeFileSync(join(fixture, path), readFileSync(join(root, path)));
     assert.equal(setVersion("1.23.4", fixture), "1.23.4");
+    assert.throws(() => verifyReleaseReady(fixture), /Reviewed release notes are required/);
+    mkdirSync(join(fixture, "docs"));
+    writeFileSync(join(fixture, "docs/发布说明-v1.23.4.md"), " \n");
+    assert.throws(() => verifyReleaseReady(fixture), /Reviewed release notes are required/);
+    writeFileSync(join(fixture, "docs/发布说明-v1.23.4.md"), "# Serylane v1.23.4\n\nSynthetic release notes.\n");
+    assert.equal(verifyReleaseReady(fixture), "1.23.4");
     const lock = JSON.parse(readFileSync(join(fixture, "package-lock.json")));
     lock.version = "0.0.1";
     writeFileSync(join(fixture, "package-lock.json"), JSON.stringify(lock));
@@ -92,4 +98,11 @@ test("all version fields and tag are gated; a single command updates every versi
     assert.ok(fixture.startsWith(join(tmpdir(), "routedeck-version-test-")));
     rmSync(fixture, { recursive: true });
   }
+});
+
+test("release notes are present and checked before the bundle/tag pipeline", () => {
+  assert.equal(verifyReleaseReady(), verifyVersions());
+  const workflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
+  const sourceJob = workflow.slice(workflow.indexOf("  source:"), workflow.indexOf("  bundle:"));
+  assert.match(sourceJob, /node scripts\/version\.mjs --release-ready/);
 });
