@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CostSnapshot } from "./openai-costs";
+import type { CostSnapshot, CostInput } from "./openai-costs";
 import type { ThemePreference } from "./theme";
 import type {
   ConnectionFeedback,
@@ -147,7 +147,7 @@ export const api = {
   selectProxy: (group: string, proxy: string, profileId: string, revisionId: string) =>
     invoke<void>("select_proxy", { group, proxy, profileId, revisionId }),
   openAiCosts: (profileId: string) => invoke<CostSnapshot>("get_openai_costs", { profileId }),
-  saveOpenAiCosts: (input: CostSnapshot) => invoke<CostSnapshot>("save_openai_costs", { input, confirmed: true }),
+  saveOpenAiCosts: (input: CostInput) => invoke<CostSnapshot>("save_openai_costs", { input, confirmed: true }),
   clearProxySelection: (group: string, profileId: string, revisionId: string) =>
     invoke<void>("clear_proxy_selection", { group, profileId, revisionId }),
   testProxyDelay: (proxy: string, url?: string, timeoutMs = 5_000) =>

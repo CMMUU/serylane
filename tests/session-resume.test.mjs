@@ -9,6 +9,10 @@ const source = ts.transpileModule(read("src/session-resume.ts"), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 }).outputText;
 const { sessionResumeHelp, sessionResumePresentation, canStopSession, startupModeFromSettings, startupModeSettings, startupModeHelp, startupRegistrationPresentation } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const subscriptionSource = ts.transpileModule(read("src/subscription-cards.ts"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
+}).outputText;
+const { newestSubscriptionStatus } = await import(`data:text/javascript;base64,${Buffer.from(subscriptionSource).toString("base64")}`);
 
 test("startup modes preserve legacy intent and unrelated settings", () => {
   const legacy = { launchAtLogin: false, silentStartup: true, restoreLastSession: false, networkMode: "tun", controllerPort: 9090 };
@@ -104,13 +108,19 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
   const first = new Promise(resolve => { finishFirst = resolve; });
   let calls = 0;
   const noop = () => {};
+  const oldQuota = { checkedAt: "2026-09-20T01:00:00Z", usage: { downloadBytes: 10 } };
+  const newQuota = { checkedAt: "2026-09-20T01:05:00Z", usage: { downloadBytes: 20 } };
+  const subscription = status => ({ profile: { id: "quota-fixture" }, status });
   const context = {
     baseReadSequence: 0, runtimeMutationRevision: 0, proxyReadSequence: 0, overviewNodeDetails: {}, refreshProxies: async () => {}, openAiCosts: { refresh: async () => {} },
     runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false,
     sessionResumeReadBusy: true,
     themeController: { mutationRevision: 0, sync: () => true },
-    store: {}, action: async (_message, run) => run(),
-    api: new Proxy({ settings: () => ++calls === 1 ? first : Promise.resolve({ networkMode: "tun" }) }, {
+    store: { subscriptions: [] }, action: async (_message, run) => run(), newestSubscriptionStatus,
+    api: new Proxy({
+      settings: () => ++calls === 1 ? first : Promise.resolve({ networkMode: "tun" }),
+      subscriptions: async () => [subscription(oldQuota)],
+    }, {
       get: (target, key) => target[key] ?? (async () => null),
     }),
     renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
@@ -121,8 +131,12 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
   vm.createContext(context);
   vm.runInContext(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
   const old = context.refreshBase();
+  // Simulate a background quota event while the older full-page read is pending.
+  context.store.subscriptions = [subscription(newQuota)];
   assert.equal(await context.refreshBase(), true);
+  assert.equal(context.store.subscriptions[0].status, newQuota);
   finishFirst({ networkMode: "manual" });
   assert.equal(await old, false);
   assert.equal(context.store.settings.networkMode, "tun");
+  assert.equal(context.store.subscriptions[0].status, newQuota);
 });

@@ -170,6 +170,7 @@ export type SubscriptionUsage = {
 };
 
 export type SubscriptionStatus = {
+  requestStartedAt?: string | null;
   checkedAt: string | null;
   lastError: string | null;
   usage: SubscriptionUsage | null;

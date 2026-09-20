@@ -55,9 +55,14 @@ pub async fn proxies(app: &AppHandle) -> AppResult<Value> {
     payload["revisionId"] = serde_json::to_value(state.active_revision_id).unwrap_or(Value::Null);
     if let Some(id) = state.active_profile_id {
         if let Some(revision) = state.active_revision_id {
-            let costs = storage
-                .openai_costs(id)?
-                .resolve(&storage.load_revision_source(id, revision)?)?;
+            let source = storage.load_revision_source(id, revision)?;
+            let preferences = storage.openai_costs(id)?;
+            let costs = preferences.resolve(&source)?;
+            let metadata: std::collections::BTreeMap<_, _> =
+                crate::openai_cost::resolved_rows(&preferences, &source)?
+                    .into_iter()
+                    .map(|row| (row.name, row.metadata))
+                    .collect();
             payload["costMode"] =
                 serde_json::to_value(costs.preferences.mode).unwrap_or(Value::Null);
             if let Some(proxies) = payload["proxies"].as_object_mut() {
@@ -68,6 +73,12 @@ pub async fn proxies(app: &AppHandle) -> AppResult<Value> {
                             serde_json::to_value(costs.multiplier(name)).unwrap_or(Value::Null),
                         );
                         node.insert("withinCostBudget".into(), Value::Bool(costs.allowed(name)));
+                        if let Some(metadata) = metadata.get(name) {
+                            node.insert(
+                                "metadata".into(),
+                                serde_json::to_value(metadata).unwrap_or(Value::Null),
+                            );
+                        }
                     }
                 }
             }
@@ -105,6 +116,11 @@ pub async fn select(
         && runtime_group["type"] == "Selector";
     if let Some(node) = node {
         validate_choice(runtime_group, node)?;
+        if group == GROUP && !crate::node_metadata::eligible(node) {
+            return Err(AppError::InvalidInput(
+                crate::node_metadata::parse(node).region_reason,
+            ));
+        }
         if group == GROUP
             && (!profile.openai_policy.enabled
                 || !profile

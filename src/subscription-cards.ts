@@ -1,4 +1,13 @@
-import type { OpenAiPolicyTask, SubscriptionOverview, SubscriptionUsage } from "./types";
+import type { OpenAiPolicyTask, SubscriptionOverview, SubscriptionUsage, SubscriptionStatus } from "./types";
+
+// A delayed full-page read must not replace a newer background quota event.
+export function newestSubscriptionStatus(previous: SubscriptionStatus | null | undefined, incoming: SubscriptionStatus | null | undefined) {
+  const time = (status: SubscriptionStatus | null | undefined) => {
+    const value = Date.parse(status?.checkedAt ?? "");
+    return Number.isFinite(value) ? value : -Infinity;
+  };
+  return time(previous) > time(incoming) ? previous : incoming;
+}
 
 const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 const byteValue = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -34,7 +43,7 @@ export function describeSubscriptionUsage(usage: SubscriptionUsage | null | unde
     upload, download, total, used, quota, percent, remaining, expired, exhausted,
     progress: percent === null ? null : Math.max(0, Math.min(100, percent)),
     expires: validExpiry ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(validExpiry) : "服务商未提供有效时间",
-    state: exhausted ? "额度已用尽" : percent !== null && percent >= 90 ? "额度即将用尽" : used === null || quota === null ? "用量信息不完整" : "已用流量",
+    state: exhausted ? "额度已用尽" : percent !== null && percent >= 90 ? "额度即将用尽" : used === null || quota === null ? "用量信息不完整" : "剩余流量",
   };
 }
 
@@ -53,7 +62,7 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
   const configuration = !latestValidation ? "尚未验证配置" : latestValidation.valid ? "配置校验通过" : "配置校验未通过";
   const mode = profile.routingMode === "global" ? "全局" : profile.routingMode === "direct" ? "直连" : "规则";
   const warning = usage.exhausted || usage.expired;
-  const usageNote = !usageData ? "刷新订阅以获取用量；服务商未提供时显示 —。" : noCurrentSample ? "本次检查未获取新用量，保留上次采样。" : "服务商返回的套餐用量，非本机实时网速。";
+  const usageNote = !usageData ? "刷新订阅以获取用量；服务商未提供时显示 —。" : noCurrentSample ? "本次检查未获取新用量，保留上次采样。" : "每 5 分钟直接检查订阅用量；余额变化即更新，不切换订阅或重载配置。";
   const quotaLabel = usage.quota === null ? "额度未提供" : `共 ${subscriptionBytes(usage.quota)}`;
   const progress = usage.progress === null
     ? '<div class="subscription-usage-track is-unknown" aria-hidden="true"></div>'
@@ -66,10 +75,10 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
       <span class="subscription-state${subscription.active ? " is-active" : ""}">${subscription.active ? "已选用" : "未选用"}</span>
     </div>
     <section class="subscription-usage" aria-label="套餐流量">
-      <div class="subscription-usage-label"><span>${usageData ? usage.state : "流量信息未提供"}</span>${usage.percent === null ? "" : `<span>${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(usage.percent)}%</span>`}</div>
-      <div class="subscription-usage-value"><strong>${subscriptionBytes(usage.used)}</strong><span>${quotaLabel}</span></div>
+      <div class="subscription-usage-label"><span>${usageData ? usage.state : "流量信息未提供"}</span>${usage.percent === null ? "" : `<span>${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(usage.percent)}% 已用</span>`}</div>
+      <div class="subscription-usage-value"><strong>${subscriptionBytes(usage.remaining)}</strong><span>${quotaLabel}</span></div>
       ${progress}
-      <div class="subscription-transfer"><span>上传 ${subscriptionBytes(usage.upload)}</span><span>下载 ${subscriptionBytes(usage.download)}</span><span>剩余 ${subscriptionBytes(usage.remaining)}</span></div>
+      <div class="subscription-transfer"><span>上传 ${subscriptionBytes(usage.upload)}</span><span>下载 ${subscriptionBytes(usage.download)}</span><span>已用 ${subscriptionBytes(usage.used)}</span></div>
     </section>
     <dl class="subscription-facts"><div><dt>到期时间${usage.expired ? " · 已到期" : ""}</dt><dd class="${usage.expired ? "is-expired" : ""}">${usage.expires}</dd></div><div><dt>当前配置</dt><dd>${summary ? `${summary.nodeCount} 节点 · ${summary.proxyProviderCount} 提供器` : "尚未读取"}</dd></div></dl>
     <div class="subscription-observation"><p class="${status?.lastError ? "is-error" : ""}">${status?.lastError ? `刷新失败 · ${escape(status.lastError)}` : status?.checkedAt ? `最近检查 ${subscriptionDate(status.checkedAt)}` : "尚未检查用量"}</p><p>${usageNote}</p></div>

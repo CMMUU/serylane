@@ -418,13 +418,24 @@ pub async fn refresh_profile(
     let ProfileSource::RemoteSubscription { url, user_agent } = &profile.source else {
         return Err(AppError::Conflict("该配置不是远程订阅".to_string()));
     };
+    let request_started = chrono::Utc::now();
     match refresh_subscription_candidate(app, &storage, &profile, url, user_agent).await {
         Ok((result, usage)) => {
-            save_subscription_observation(&storage, profile_id, usage.as_ref(), None)?;
+            storage.record_subscription_check_since(
+                profile_id,
+                usage.as_ref(),
+                None,
+                request_started,
+            )?;
             Ok(result)
         }
         Err(error) => {
-            save_subscription_observation(&storage, profile_id, None, Some(&error))?;
+            storage.record_subscription_check_since(
+                profile_id,
+                None,
+                Some(&error),
+                request_started,
+            )?;
             Err(error)
         }
     }

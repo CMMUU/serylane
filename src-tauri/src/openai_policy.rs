@@ -294,20 +294,32 @@ async fn generate_and_apply(
     let costs = cost_preferences.resolve(&source)?;
     let candidates: Vec<_> = extract_candidates(&source)?
         .into_iter()
-        .filter(|node| costs.allowed(&node.name))
+        .filter(|node| costs.allowed(&node.name) && crate::node_metadata::eligible(&node.name))
+        .take(MAX_CANDIDATES)
         .collect();
     if candidates.len() < MIN_HEALTHY_NODES {
         return Err(AppError::Config(
             if costs.value_mode() {
-                "符合当前成本策略的显式节点少于 2 个；请填写倍率、调整上限或明确允许未知倍率"
+                "符合地区及成本策略的显式节点少于 2 个；请检查名称地区、倍率与上限"
             } else {
-                "可用于 OpenAI 灾备的显式节点少于 2 个；请检查当前订阅"
+                "支持地区的显式节点少于 2 个；未知、多地区冲突或受限制地区不进入 OpenAI 灾备"
             }
             .to_string(),
         ));
     }
     check_cancelled(app)?;
 
+    let excluded = extract_candidates(&source)?
+        .iter()
+        .filter(|n| !crate::node_metadata::eligible(&n.name))
+        .count();
+    update_progress(
+        app,
+        OpenAiTaskPhase::Preparing,
+        0,
+        candidates.len(),
+        format!("地区筛选排除 {excluded} 个节点；继续按质量和预算筛选"),
+    )?;
     let mut policy = benchmark_nodes(app, &source, candidates, auto_maintain, &costs).await?;
     if !costs.value_mode() && profile.openai_policy.last_benchmarked_at.is_some() {
         policy.stability_enabled = profile.openai_policy.stability_enabled;
@@ -896,9 +908,6 @@ fn extract_candidates(source: &str) -> AppResult<Vec<CandidateNode>> {
             name: name.to_string(),
             server_group,
         });
-        if candidates.len() >= MAX_CANDIDATES {
-            break;
-        }
     }
     Ok(candidates)
 }
@@ -1140,6 +1149,26 @@ rules:
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].name, "node-a");
         assert_eq!(candidates[1].server_group, "b.example.com");
+    }
+
+    #[test]
+    fn region_and_budget_filters_precede_the_candidate_limit() {
+        let mut source = "proxies:\n".to_string();
+        for i in 0..305 {
+            source.push_str(&format!(
+                " - {{name: 'HK-{i} 0.1x', type: socks5, server: example.invalid, port: 1080}}\n"
+            ));
+        }
+        source.push_str(" - {name: 'JP-01 1x', type: socks5, server: example.invalid, port: 1080}\n - {name: 'US-01 2x', type: socks5, server: example.invalid, port: 1080}\n");
+        let candidates: Vec<_> = extract_candidates(&source)
+            .unwrap()
+            .into_iter()
+            .filter(|n| crate::node_metadata::eligible(&n.name))
+            .take(super::MAX_CANDIDATES)
+            .collect();
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].name, "JP-01 1x");
+        assert_eq!(super::candidate_names(&source).unwrap().len(), 307);
     }
 
     #[test]

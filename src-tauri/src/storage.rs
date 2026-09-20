@@ -268,14 +268,32 @@ impl AppStorage {
         usage: Option<&SubscriptionUsage>,
         error: Option<&AppError>,
     ) -> AppResult<()> {
+        self.record_subscription_check_since(profile_id, usage, error, Utc::now())
+    }
+
+    pub fn record_subscription_check_since(
+        &self,
+        profile_id: Uuid,
+        usage: Option<&SubscriptionUsage>,
+        error: Option<&AppError>,
+        request_started: chrono::DateTime<Utc>,
+    ) -> AppResult<()> {
         static OBSERVATION_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _permit = OBSERVATION_WRITE
             .lock()
             .map_err(|_| AppError::Io("订阅检查记录暂时无法保存".into()))?;
         self.load_profile(profile_id)?;
         let mut status = self.subscription_status(profile_id).unwrap_or_default();
+        if status
+            .request_started_at
+            .or(status.checked_at)
+            .is_some_and(|started| started > request_started)
+        {
+            return Ok(());
+        }
         let now = Utc::now();
         status.checked_at = Some(now);
+        status.request_started_at = Some(request_started);
         status.last_error = error.map(crate::subscription::safe_subscription_error);
         if error.is_none() {
             if let Some(usage) = usage {
@@ -719,6 +737,18 @@ mod tests {
         storage
             .record_subscription_check(profile.id, None, Some(&failure))
             .expect("failure status");
+        // Late quota responses must not overwrite a newer manual observation.
+        storage
+            .record_subscription_check_since(
+                profile.id,
+                Some(&SubscriptionUsage {
+                    total_bytes: Some(999),
+                    ..Default::default()
+                }),
+                None,
+                chrono::Utc::now() - chrono::Duration::minutes(1),
+            )
+            .unwrap();
         let failed = storage.subscription_status(profile.id).expect("failure");
         assert!(failed
             .last_error

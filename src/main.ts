@@ -7,7 +7,7 @@ import "./subscription-cards.css";
 import "./node-selection.css";
 import { generalGroups, currentNodeMarkup, nodeSelectionMarkup, type ProxyMap } from "./node-selection";
 import { mountOpenAiCosts, openAiCostsMarkup } from "./openai-costs";
-import { subscriptionCardMarkup } from "./subscription-cards";
+import { subscriptionCardMarkup, newestSubscriptionStatus } from "./subscription-cards";
 import { subscriptionImportMarkup, describeSubscriptionImport } from "./subscription-import";
 import { NAV_ITEMS, navigationMarkup, type ViewName } from "./ui";
 import { preferencesMarkup } from "./settings-view";
@@ -692,6 +692,9 @@ async function refreshBase() {
       proxyReadSequence++;
       store.proxies = null;
       overviewNodeDetails = {};
+    }
+    for (const subscription of subscriptions) {
+      subscription.status = newestSubscriptionStatus(store.subscriptions.find(s => s.profile.id === subscription.profile.id)?.status, subscription.status);
     }
     Object.assign(store, {
       appInfo,
@@ -2722,6 +2725,15 @@ window.setInterval(() => {
   proxyPolling = true;
   void refreshProxies(true).finally(() => { proxyPolling = false; });
 }, 10_000);
+
+void listen<{ profileId: string; status: import("./types").SubscriptionStatus }>("subscription-usage-updated", (event) => {
+  const record = store.subscriptions.find(s => s.profile.id === event.payload.profileId);
+  if (!record) return;
+  const incoming = newestSubscriptionStatus(record.status, event.payload.status);
+  if (JSON.stringify(record.status) === JSON.stringify(incoming)) return;
+  record.status = incoming;
+  renderSubscriptions();
+});
 
 void listen<GlobalTrafficSnapshot>("global-traffic", (event) => {
   store.globalTraffic = event.payload;

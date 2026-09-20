@@ -41,3 +41,4 @@
   .overview-node-details { grid-template-columns: minmax(0, 1fr); }
   .node-choice label { flex-basis: 100%; }
 }
+.cost-node-evidence { display: block; margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.5; }
