@@ -1,6 +1,6 @@
 import "./styles.css";
 import "./connection-feedback.css";
-import { connectionFeedbackMarkup, mountConnectionFeedback } from "./connection-feedback";
+import { connectionFeedbackMarkup, mountConnectionFeedback, friendlyError } from "./connection-feedback";
 import "./desktop-theme.css";
 import "./local-routing.css";
 import "./subscription-cards.css";
@@ -15,6 +15,7 @@ import { mountLogs } from "./log-view";
 import { installContinuousScrolling } from "./scrolling";
 import { sessionResumePresentation, canStopSession, startupModeFromSettings, startupModeSettings, startupModeHelp, startupRegistrationPresentation, type StartupMode } from "./session-resume";
 import { canStartRuntime, startRuntimeInMode, type RuntimeStartMode } from "./runtime-start";
+import { prepareTunForStart } from "./tun-preflight";
 import { api, errorMessage, revisionLabel } from "./api";
 import { describeAppUpdate } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
@@ -809,7 +810,7 @@ function renderHeader() {
   tunButton.classList.toggle("is-active", tunActive);
   tunButton.setAttribute("aria-pressed", String(tunActive));
   tunButton.title = store.tunHelper?.message ?? "TUN 使用最小权限 Helper 接管系统流量";
-  tunButton.disabled = controlsBusy || !store.settings || !store.activeProfile;
+  tunButton.disabled = controlsBusy || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
   ($("#global-start") as HTMLButtonElement).disabled = !canStartRuntime(store.runtime) || !store.settings || !store.activeProfile || controlsBusy;
   ($("#global-stop") as HTMLButtonElement).disabled = !canStopSession(store.runtime?.phase, sessionResumeStatus, startupStatus) || controlsBusy;
   $("#about-app")!.textContent = store.appInfo?.version ?? "—";
@@ -845,7 +846,8 @@ function renderOverview() {
   systemProxySwitch.checked = store.settings?.networkMode === "system_proxy";
   tunSwitch.checked = store.settings?.networkMode === "tun";
   systemProxySwitch.disabled = networkModeSwitching || runtimeActionInFlight || !store.settings || !store.activeProfile;
-  tunSwitch.disabled = networkModeSwitching || runtimeActionInFlight || !store.settings || !store.activeProfile;
+  tunSwitch.disabled = networkModeSwitching || runtimeActionInFlight || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
+  tunSwitch.title = store.tunHelper?.message ?? "正在读取此平台的 TUN 支持情况";
   const routingMode = store.activeProfile?.profile.routingMode ?? "rule";
   $$("#home-routing-mode button").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.routingMode === routingMode);
@@ -1191,6 +1193,7 @@ function tunHelperStateLabel(state: TunHelperStatus["state"] | undefined): strin
     not_installed: "未安装",
     requires_approval: "等待批准",
     ready: "已就绪",
+    checking: "正在确认服务",
     outdated: "需要更新",
     unreachable: "连接异常",
   };
@@ -1201,6 +1204,7 @@ function renderTunHelper() {
   const helper = store.tunHelper;
   const state = helper?.state;
   const windows = store.appInfo?.targetOs === "windows";
+  const macos = store.appInfo?.targetOs === "macos";
   const stateElement = $("#tun-helper-state")!;
   stateElement.textContent = windows && state === "requires_approval" ? "需要管理员权限" : tunHelperStateLabel(state);
   stateElement.classList.toggle("is-running", state === "ready");
@@ -1208,13 +1212,17 @@ function renderTunHelper() {
     "is-warning",
     state === "requires_approval" || state === "outdated" || state === "unreachable",
   );
-  $("#tun-panel-heading")!.textContent = windows ? "Windows TUN 权限" : "TUN 权限服务";
+  $("#tun-panel-heading")!.textContent = windows ? "Windows TUN 权限" : macos ? "macOS TUN 权限服务" : "TUN 平台支持";
   $("#network-mode-help")!.textContent = windows
     ? "Windows TUN 需要先从托盘退出应用，再右键以管理员身份运行。关闭窗口会保留托盘运行；停止内核或退出应用才会关闭 TUN。使用系统代理前，请先关闭其他代理客户端的系统代理。"
-    : "切换网络模式和端口前需要先停止 Mihomo。首次开启 TUN 会先安装最小权限 Helper，并在旧网络模式仍运行时完成预检。";
+    : macos ? "首次使用需安装并批准 TUN 权限服务；预检通过后才切换模式。服务正在检查时请稍候；升级后若需要更新，请在停止代理后主动点击“更新辅助服务”。"
+    : "Linux 暂未提供 TUN 网络接管。可使用本地端口、系统代理或程序代理；已安装应用快选不代表已支持 TUN。";
   $("#tun-helper-title")!.textContent = windows
     ? state === "ready" ? "管理员会话已就绪" : "以管理员身份运行后可开启 TUN"
-    : state === "ready" ? "最小权限 TUN Helper 已就绪" : tunHelperStateLabel(state);
+    : !macos ? "此平台尚未提供 TUN 网络接管" : state === "ready" ? "最小权限 TUN Helper 已就绪" : tunHelperStateLabel(state);
+  const tunUnsupported = store.appInfo?.targetOs === "linux" || helper?.supported === false;
+  ($('[name="settings-network-mode"][value="tun"]') as HTMLInputElement).disabled = tunUnsupported;
+  ($('#settings-mode option[value="tun"]') as HTMLOptionElement).disabled = tunUnsupported;
   $("#tun-helper-message")!.textContent =
     helper?.message ?? "正在读取当前系统的 TUN 运行方式。";
   $("#tun-helper-protocol-label")!.textContent = windows ? "运行方式" : "协议版本";
@@ -1223,26 +1231,28 @@ function renderTunHelper() {
     : "—";
   $("#tun-helper-runtime")!.textContent = helper?.runtimeRunning
     ? `运行中 · PID ${helper.runtimePid ?? "—"}`
-    : "未运行";
+    : state === "checking" || state === "unreachable" ? "待确认" : !helper?.supported ? "此平台未提供" : "未运行";
   const running = store.runtime?.phase === "running";
   const install = $("#tun-helper-install") as HTMLButtonElement;
   const repair = $("#tun-helper-repair") as HTMLButtonElement;
   const open = $("#tun-helper-open-settings") as HTMLButtonElement;
   const uninstall = $("#tun-helper-uninstall") as HTMLButtonElement;
-  install.classList.toggle("is-hidden", windows || state !== "not_installed");
+  install.classList.toggle("is-hidden", !macos || state !== "not_installed");
   repair.classList.toggle(
     "is-hidden",
-    windows || (state !== "outdated" && state !== "unreachable"),
+    !macos || (state !== "outdated" && state !== "unreachable"),
   );
-  open.classList.toggle("is-hidden", windows || state !== "requires_approval");
+  open.classList.toggle("is-hidden", !macos || state !== "requires_approval");
   uninstall.classList.toggle(
     "is-hidden",
-    windows || !state || state === "unsupported" || state === "not_installed",
+    !macos || !state || state === "unsupported" || state === "not_installed",
   );
-  install.disabled = networkModeSwitching;
-  repair.disabled = networkModeSwitching || running;
+  const helperBusy = networkModeSwitching || runtimeActionInFlight || settingsSaving || !canStartRuntime(store.runtime);
+  install.disabled = helperBusy;
+  repair.textContent = state === "outdated" ? "更新辅助服务" : "修复 Helper";
+  repair.disabled = helperBusy || running;
   open.disabled = networkModeSwitching;
-  uninstall.disabled = networkModeSwitching || running;
+  uninstall.disabled = helperBusy || running;
 }
 
 const systemAppearance = window.matchMedia("(prefers-color-scheme: dark)");
@@ -1369,10 +1379,12 @@ async function startRuntime(mode: RuntimeStartMode) {
     toast("请先创建并激活一个配置档案", "error");
     navigate("profiles");
   } else if (result.kind === "failed") {
-    let message = errorMessage(result.error);
-    if (result.restored) message += "；已恢复之前的网络模式，未重新启动代理";
-    if (result.rollbackError) message += `；回滚失败：${errorMessage(result.rollbackError)}`;
-    connectionFeedback.showError(result.error);
+    const issue = friendlyError(result.error);
+    connectionFeedback.showError({ userMessage: {
+      ...issue,
+      description: [issue.description, result.restored ? "已恢复之前的网络模式，未重新启动代理。" : "", result.rollbackError ? "恢复原模式时遇到问题，请查看详情。" : ""].filter(Boolean).join(" "),
+      details: [issue.details, result.rollbackError ? errorMessage(result.rollbackError) : ""].filter(Boolean).join("\n"),
+    } });
   } else if (result.refreshError) {
     connectionFeedback.showError({ userMessage: { title: "暂时未获取到最新状态", description: "请刷新确认代理是否已开启。", action: "refresh", details: "" } });
   } else if (result.kind === "started") {
@@ -1421,14 +1433,16 @@ function toggleGlobalNetworkMode(mode: "system_proxy" | "tun") {
 async function switchNetworkMode(mode: NetworkMode) {
   if (!store.settings) return;
   if (networkModeSwitching || runtimeActionInFlight || settingsSaving) return;
-  const wasRunning = store.runtime?.phase === "running";
-  const currentMode = store.settings.networkMode;
-  if (mode === currentMode && (mode !== "system_proxy" || store.systemProxy?.active)) return;
-  const keepCore = wasRunning && mode !== "tun" && currentMode !== "tun";
+  let wasRunning = false;
+  let currentMode = store.settings.networkMode;
+  let keepCore = false;
   connectionFeedback.clearIssue();
   const systemSwitch = $("#home-system-proxy") as HTMLInputElement;
   const tunSwitch = $("#home-tun") as HTMLInputElement;
   let modeChanged = false;
+  let stoppedPrevious = false;
+  let completed = false;
+  let failureIssue: ReturnType<typeof friendlyError> | null = null;
   networkModeSwitching = true;
   runtimeMutationRevision++;
   renderAppearance(themeController.snapshot);
@@ -1436,77 +1450,112 @@ async function switchNetworkMode(mode: NetworkMode) {
   tunSwitch.disabled = true;
   renderHeader();
   try {
+    // Use fresh state before deciding whether an existing session may be
+    // stopped. A cached toolbar snapshot is not a runtime ownership check.
+    const [settings, runtime] = await Promise.all([api.settings(), api.runtime()]);
+    store.settings = settings;
+    store.runtime = runtime;
+    currentMode = settings.networkMode;
+    wasRunning = runtime.phase === "running";
+    if (!wasRunning && !canStartRuntime(runtime)) {
+      throw new Error("代理正在处理其他操作，请等待状态更新后重试。");
+    }
+    if (mode === currentMode && wasRunning && (mode !== "system_proxy" || store.systemProxy?.active)) return;
+    keepCore = wasRunning && mode !== "tun" && currentMode !== "tun";
     if (mode === "tun" && !(await ensureTunHelperReady())) return;
-    if (wasRunning && !keepCore) await api.stop();
+    if (wasRunning && !keepCore) {
+      await api.stop();
+      stoppedPrevious = true;
+    }
     store.settings = await api.setNetworkMode(mode);
     modeChanged = true;
     if (!keepCore && store.activeProfile && (wasRunning || mode !== "manual")) {
       store.runtime = await api.startActive();
+      if (store.runtime.phase !== "running") throw new Error("代理尚未进入运行状态，请查看启动详情。");
     }
-    toast(
-      mode === "system_proxy"
-        ? "系统代理已开启"
-        : mode === "tun"
-          ? "TUN 模式已开启"
-          : "已切换为 Manual 模式",
-      "success",
-    );
+    completed = true;
   } catch (error) {
-    let message = errorMessage(error);
-    if (modeChanged && !keepCore) {
+    let recovery = "";
+    let rollbackError: unknown;
+    if (!keepCore && (modeChanged || stoppedPrevious)) {
       try {
+        const observed = await api.runtime();
+        if (!canStartRuntime(observed)) {
+          throw new Error("核心仍在运行或状态变化中，已保留现场，请刷新确认后再操作。");
+        }
         store.settings = await api.setNetworkMode(currentMode);
         if (store.activeProfile && wasRunning) {
           store.runtime = await api.startActive();
+          if (store.runtime.phase !== "running") throw new Error("原模式尚未恢复运行。");
         }
-        message += "；已恢复之前的网络模式";
-      } catch (rollbackError) {
-        message += `；回滚失败：${errorMessage(rollbackError)}`;
+        recovery = wasRunning ? "已恢复之前的网络模式与运行状态。" : "已恢复之前的网络模式，代理保持停止。";
+      } catch (failure) {
+        rollbackError = failure;
+        recovery = "恢复原模式时遇到问题，请刷新状态并查看详情。";
       }
     }
-    connectionFeedback.showError(error);
+    const issue = friendlyError(error);
+    failureIssue = {
+      ...issue,
+      description: [issue.description, recovery].filter(Boolean).join(" "),
+      details: [issue.details, rollbackError ? errorMessage(rollbackError) : ""].filter(Boolean).join("\n"),
+    };
   } finally {
-    networkModeSwitching = false;
-    runtimeMutationRevision++;
-    renderAppearance(themeController.snapshot);
-    store.settings = await api.settings().catch(() => store.settings!);
-    try { await refreshRuntimeOnly(); } catch (error) { connectionFeedback.showError(error); }
-    await refreshConnectionFeedback();
-    void refreshBase();
+    // Keep the mutation lock through readback; late timer reads and a second
+    // click cannot cross the final refresh of this operation.
+    try {
+      store.settings = await api.settings().catch(() => store.settings!);
+      await refreshRuntimeOnly(true);
+      await refreshConnectionFeedback();
+      if (completed) {
+        const expectedRunning = keepCore || Boolean(store.activeProfile && (wasRunning || mode !== "manual"));
+        if (store.settings?.networkMode !== mode || (expectedRunning && store.runtime?.phase !== "running")
+          || (mode === "system_proxy" && expectedRunning && !store.systemProxy?.active)) {
+          failureIssue = { title: "切换后状态需要确认", description: "尚未确认代理持续运行或模式接管，请刷新核对；本次未自动重启。", action: "refresh", details: "" };
+        }
+      }
+    } catch (error) {
+      failureIssue ??= friendlyError(error);
+    } finally {
+      networkModeSwitching = false;
+      runtimeMutationRevision++;
+      renderAppearance(themeController.snapshot);
+      renderHeader();
+      renderOverview();
+      if (failureIssue) connectionFeedback.showError({ userMessage: failureIssue });
+      else if (completed) toast(mode === "system_proxy" ? "系统代理已开启" : mode === "tun" ? "TUN 模式已开启" : "已切换为 Manual 模式", "success");
+      void refreshBase();
+    }
   }
 }
 
 async function ensureTunHelperReady(): Promise<boolean> {
-  let helper = await action("", () => api.tunHelperStatus());
-  if (!helper) return false;
-  store.tunHelper = helper;
-  renderTunHelper();
-
-  if (helper.state === "not_installed") {
-    helper = await action("TUN Helper 已提交安装", () => api.installTunHelper());
-  } else if (helper.state === "outdated" || helper.state === "unreachable") {
-    helper = await action("TUN Helper 已修复", () => api.repairTunHelper());
+  const result = await prepareTunForStart({
+    platform: store.appInfo?.targetOs ?? "unknown",
+    status: api.tunHelperStatus,
+    install: api.installTunHelper,
+    openApproval: api.openTunHelperSettings,
+    prepare: api.prepareTun,
+    observed(helper) { store.tunHelper = helper; renderTunHelper(); },
+  });
+  if (result.kind === "ready") {
+    toast("TUN 权限与配置检查通过；尚未切换网络", "info");
+    return true;
   }
-  if (!helper) return false;
-  store.tunHelper = helper;
-  renderTunHelper();
-
-  if (helper.state === "requires_approval") {
-    if (store.appInfo?.targetOs === "windows") {
-      toast(helper.message, "info");
-      navigate("settings");
-      return false;
-    }
-    await action("", () => api.openTunHelperSettings());
-    toast("请在系统设置中批准 Serylane TUN Helper，然后再次开启 TUN", "error");
-    return false;
+  if (result.kind === "failed") {
+    const issue = friendlyError(result.error);
+    connectionFeedback.showError({ userMessage: { ...issue, title: "TUN 预检尚未通过", description: `${issue.description} 本次尚未切换网络模式。` } });
+  } else {
+    const helper = result.status;
+    connectionFeedback.showError({ userMessage: {
+      title: helper.state === "requires_approval" ? "TUN 还需要系统授权" : !helper.supported ? "当前平台尚未支持 TUN" : "TUN 服务尚未就绪",
+      description: `${helper.message} 本次未切换网络模式。`,
+      action: ["unreachable", "checking"].includes(helper.state) ? "refresh" : "settings",
+      details: helper.lastError ?? "",
+    } });
+    if (helper.state === "requires_approval") navigate("settings");
   }
-  if (helper.state !== "ready") {
-    toast(helper.message, "error");
-    return false;
-  }
-  const prepared = await action("TUN 环境预检完成", () => api.prepareTun());
-  return prepared !== null;
+  return false;
 }
 
 async function switchRoutingMode(mode: "global" | "rule" | "direct") {
@@ -2562,23 +2611,32 @@ $("#connections-body")!.addEventListener("click", async (event) => {
 });
 
 
-$("#tun-helper-install")!.addEventListener("click", async () => {
-  const helper = await action("TUN Helper 已提交安装", () => api.installTunHelper());
-  if (helper) store.tunHelper = helper;
-  await refreshBase();
-});
+async function manageTunHelper(operation: () => Promise<unknown>, message: string) {
+  if (store.appInfo?.targetOs !== "macos" || networkModeSwitching || runtimeActionInFlight || settingsSaving || !canStartRuntime(store.runtime)) return;
+  runtimeActionInFlight = true;
+  runtimeMutationRevision++;
+  renderHeader(); renderOverview(); renderTunHelper();
+  try {
+    await action(message, operation);
+    store.tunHelper = await api.tunHelperStatus();
+  } catch (error) {
+    connectionFeedback.showError(error);
+  } finally {
+    runtimeActionInFlight = false;
+    runtimeMutationRevision++;
+    renderHeader(); renderOverview(); renderTunHelper();
+    void refreshBase();
+  }
+}
 
-$("#tun-helper-repair")!.addEventListener("click", async () => {
-  const helper = await action("TUN Helper 已修复", () => api.repairTunHelper());
-  if (helper) store.tunHelper = helper;
-  await refreshBase();
-});
-
+$("#tun-helper-install")!.addEventListener("click", () => manageTunHelper(api.installTunHelper, "TUN 辅助服务已提交安装，请核对授权状态"));
+$("#tun-helper-repair")!.addEventListener("click", () => manageTunHelper(api.repairTunHelper, "TUN 辅助服务已重新注册，请核对授权状态"));
 $("#tun-helper-open-settings")!.addEventListener("click", async () => {
+  if (store.appInfo?.targetOs !== "macos") return;
   await action("", () => api.openTunHelperSettings());
 });
-
 $("#tun-helper-uninstall")!.addEventListener("click", async (event) => {
+  if (store.appInfo?.targetOs !== "macos" || networkModeSwitching || runtimeActionInFlight || settingsSaving || !canStartRuntime(store.runtime)) return;
   const confirmed = await confirmAction({
     title: "卸载 TUN Helper",
     message: "卸载后 TUN 模式将停止使用，Manual 与系统代理不受影响。",
@@ -2586,8 +2644,8 @@ $("#tun-helper-uninstall")!.addEventListener("click", async (event) => {
     returnFocus: event.currentTarget as HTMLElement,
   });
   if (!confirmed) return;
-  await action("TUN Helper 已卸载", () => api.uninstallTunHelper());
-  await refreshBase();
+  // Check the mutation gate again after the user-facing confirmation.
+  await manageTunHelper(api.uninstallTunHelper, "TUN 辅助服务已卸载");
 });
 
 $("#app-update-check")!.addEventListener("click", () => {
@@ -2685,12 +2743,9 @@ $("#settings-form")!.addEventListener("submit", async (event) => {
     if (mode === "tun" && mode !== store.settings.networkMode) {
       if (!(await ensureTunHelperReady())) return;
     }
-    const updated = await action("设置已保存", async () => {
-      if (mode !== store.settings!.networkMode) {
-        await api.setNetworkMode(mode);
-      }
-      return api.updateSettings(settings);
-    });
+    // Validate and persist all fields together; a separate mode write could
+    // otherwise succeed before invalid new ports reject the remaining fields.
+    const updated = await action("设置已保存", () => api.updateSettings(settings));
     if (updated) {
       store.settings = updated;
       startupModeDraft = null;

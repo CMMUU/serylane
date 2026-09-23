@@ -1,5 +1,6 @@
 use super::client;
 use super::codesign;
+use super::lifecycle::ProbeRead;
 use super::protocol::{PLIST_NAME, PROTOCOL_VERSION};
 use super::{TunHelperState, TunHelperStatus};
 use objc2::msg_send;
@@ -108,32 +109,49 @@ pub fn open_approval_settings() -> Result<(), String> {
 }
 
 fn enabled_status() -> TunHelperStatus {
-    match client::status_probe() {
-        Ok(snapshot) if snapshot.protocol_version == PROTOCOL_VERSION => TunHelperStatus {
-            supported: true,
-            state: TunHelperState::Ready,
-            message: if snapshot.running {
-                "TUN Helper 已授权，特权内核正在运行".to_string()
-            } else {
-                "TUN Helper 已授权并可用".to_string()
-            },
-            protocol_version: snapshot.protocol_version,
-            runtime_running: snapshot.running,
-            runtime_pid: snapshot.pid,
-            runtime_version: snapshot.version,
-            last_error: snapshot.last_error,
-        },
-        Ok(snapshot) => TunHelperStatus {
+    status_from_probe(client::status_probe())
+}
+
+fn status_from_probe(probe: ProbeRead<client::RuntimeSnapshot>) -> TunHelperStatus {
+    match probe {
+        ProbeRead::Complete(Ok(snapshot)) if snapshot.protocol_version == PROTOCOL_VERSION => {
+            TunHelperStatus {
+                supported: true,
+                state: TunHelperState::Ready,
+                message: if snapshot.running {
+                    "TUN Helper 已授权，特权内核正在运行".to_string()
+                } else {
+                    "TUN Helper 已授权并可用".to_string()
+                },
+                protocol_version: snapshot.protocol_version,
+                runtime_running: snapshot.running,
+                runtime_pid: snapshot.pid,
+                runtime_version: snapshot.version,
+                last_error: snapshot.last_error,
+            }
+        }
+        ProbeRead::Complete(Ok(snapshot)) => TunHelperStatus {
             supported: true,
             state: TunHelperState::Outdated,
-            message: "TUN Helper 协议版本不匹配，需要修复".to_string(),
+            message: "需要一次性更新 TUN 辅助服务；请先停止代理，再在设置中更新辅助服务"
+                .to_string(),
             protocol_version: snapshot.protocol_version,
             runtime_running: snapshot.running,
             runtime_pid: snapshot.pid,
             runtime_version: snapshot.version,
             last_error: snapshot.last_error,
         },
-        Err(error) => TunHelperStatus {
+        ProbeRead::Checking => TunHelperStatus {
+            supported: true,
+            state: TunHelperState::Checking,
+            message: "正在等待 TUN Helper 响应，请稍后重试；暂时无需重新授权或修复".to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            runtime_running: false,
+            runtime_pid: None,
+            runtime_version: None,
+            last_error: None,
+        },
+        ProbeRead::Complete(Err(error)) => TunHelperStatus {
             supported: true,
             state: TunHelperState::Unreachable,
             message: format!("TUN Helper 已注册但连接失败：{error}"),
@@ -188,4 +206,38 @@ unsafe fn ns_error_message(error: *mut AnyObject) -> String {
         return "未知的 ServiceManagement 错误".to_string();
     }
     CStr::from_ptr(utf8).to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_probe_is_not_a_connection_failure() {
+        let status = status_from_probe(ProbeRead::Checking);
+        assert_eq!(status.state, TunHelperState::Checking);
+        assert!(status.last_error.is_none());
+        assert!(!status.ready());
+    }
+
+    #[test]
+    fn old_helper_requires_upgrade_before_lease_scoped_operations() {
+        let status = status_from_probe(ProbeRead::Complete(Ok(client::RuntimeSnapshot {
+            protocol_version: 1,
+            running: false,
+            pid: None,
+            version: None,
+            config_path: None,
+            last_error: None,
+        })));
+        assert_eq!(status.state, TunHelperState::Outdated);
+        assert!(!status.ready());
+    }
+
+    #[test]
+    fn real_connection_failure_is_unreachable() {
+        let status = status_from_probe(ProbeRead::Complete(Err("connection rejected".to_string())));
+        assert_eq!(status.state, TunHelperState::Unreachable);
+        assert_eq!(status.last_error.as_deref(), Some("connection rejected"));
+    }
 }

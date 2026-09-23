@@ -167,6 +167,13 @@ unsafe fn handle_request(event: XpcObject) {
         })
     } else if operation == OP_STOP {
         runtime_stop(uid).and_then(|_| runtime_status(uid).map(|snapshot| (snapshot, None)))
+    } else if operation == OP_STOP_LEASE {
+        let lease = read_string(event, KEY_LEASE).ok_or_else(|| "缺少 TUN 运行 lease".to_string());
+        lease.and_then(|lease| {
+            validate_lease(&lease)?;
+            runtime_stop_lease(uid, &lease)?;
+            runtime_status(uid).map(|snapshot| (snapshot, None))
+        })
     } else if operation == OP_LOGS {
         let limit = xpc_dictionary_get_uint64(event, KEY_LIMIT.as_ptr()) as usize;
         runtime_status(uid).and_then(|snapshot| {
@@ -202,10 +209,12 @@ fn runtime_prepare(uid: u32, source: &[u8]) -> Result<(), String> {
     let mut guard = runtime()
         .lock()
         .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
+    prepare_locked(&mut guard, uid, source)
+}
+
+fn prepare_locked(guard: &mut HelperRuntime, uid: u32, source: &[u8]) -> Result<(), String> {
     guard.refresh_child();
-    if guard.child.is_some() && guard.owner_uid != Some(uid) {
-        return Err("另一个用户正在使用 TUN Helper".to_string());
-    }
+    ensure_prepare_allowed(guard.child.is_some(), guard.owner_uid, uid)?;
     let directory = secure_runtime_directory(uid)?;
     seed_runtime_assets(uid, &directory)?;
     let core = stage_core(&directory)?;
@@ -218,14 +227,13 @@ fn runtime_prepare(uid: u32, source: &[u8]) -> Result<(), String> {
 }
 
 fn runtime_start(uid: u32, source: &[u8], lease: String) -> Result<(), String> {
-    runtime_prepare(uid, source)?;
+    validate_config(source)?;
     let mut guard = runtime()
         .lock()
         .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
-    guard.refresh_child();
-    if guard.child.is_some() {
-        guard.stop_child("准备替换现有 TUN 内核");
-    }
+    // Keep preparation and spawn one transaction. An overlapping prepare/start
+    // must neither overwrite a running core nor swap its prepared configuration.
+    prepare_locked(&mut guard, uid, source)?;
     if let Ok(mut logs) = guard.logs.lock() {
         logs.clear();
     }
@@ -260,7 +268,7 @@ fn runtime_start(uid: u32, source: &[u8], lease: String) -> Result<(), String> {
     let pid = child.id();
     guard.child = Some(child);
     guard.owner_uid = Some(uid);
-    guard.lease = Some(lease);
+    guard.lease = Some(lease.clone());
     guard.last_heartbeat = Some(Instant::now());
     guard.last_error = None;
     guard.push_log("info", "helper", &format!("特权 Mihomo 已启动，PID {pid}"));
@@ -270,6 +278,9 @@ fn runtime_start(uid: u32, source: &[u8], lease: String) -> Result<(), String> {
     let mut guard = runtime()
         .lock()
         .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
+    if guard.child.is_some() && !owns_lease(guard.owner_uid, guard.lease.as_deref(), uid, &lease) {
+        return Err("TUN 会话已变化，已忽略旧会话的启动结果".to_string());
+    }
     guard.refresh_child();
     if guard.child.is_none() {
         return Err(guard
@@ -313,6 +324,35 @@ fn runtime_stop(uid: u32) -> Result<(), String> {
     }
     guard.stop_child("应用请求停止 TUN");
     Ok(())
+}
+
+fn runtime_stop_lease(uid: u32, lease: &str) -> Result<(), String> {
+    let mut guard = runtime()
+        .lock()
+        .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
+    guard.refresh_child();
+    if guard.child.is_none() {
+        return Ok(());
+    }
+    if !owns_lease(guard.owner_uid, guard.lease.as_deref(), uid, lease) {
+        return Err("TUN 会话已变化，已忽略旧会话的停止请求".to_string());
+    }
+    guard.stop_child("拥有该会话的应用请求停止 TUN");
+    Ok(())
+}
+
+fn owns_lease(owner_uid: Option<u32>, active_lease: Option<&str>, uid: u32, lease: &str) -> bool {
+    owner_uid == Some(uid) && active_lease == Some(lease)
+}
+
+fn ensure_prepare_allowed(running: bool, owner_uid: Option<u32>, uid: u32) -> Result<(), String> {
+    if !running {
+        return Ok(());
+    }
+    if owner_uid != Some(uid) {
+        return Err("另一个用户正在使用 TUN Helper".to_string());
+    }
+    Err("TUN 正在运行，请先停止后再预检或启动新会话；当前连接未更改".to_string())
 }
 
 fn runtime_status(uid: u32) -> Result<RuntimeSnapshot, String> {
@@ -663,46 +703,18 @@ fn write_config(directory: &Path, source: &[u8]) -> Result<PathBuf, String> {
 }
 
 fn native_validate(core: &Path, directory: &Path, config: &Path) -> Result<(), String> {
-    let mut child = Command::new(core)
+    let mut command = Command::new(core);
+    command
         .arg("-t")
         .arg("-d")
         .arg(directory)
         .arg("-f")
-        .arg(config)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait().map_err(|error| error.to_string())? {
-            Some(status) => break status,
-            None if started.elapsed() >= VALIDATION_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("TUN 配置预检超时".to_string());
-            }
-            None => std::thread::sleep(Duration::from_millis(100)),
-        }
-    };
-    let mut output = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut output);
-    }
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_string(&mut output);
-    }
-    if status.success() {
-        Ok(())
-    } else {
-        Err(crate::runtime::redact(
-            output
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("Mihomo TUN 配置预检失败"),
-        ))
-    }
+        .arg(config);
+    // Share the bounded private output file path used by ordinary validation.
+    // Waiting for a process with unread stdout/stderr pipes can deadlock once
+    // the native validator emits more than a pipe's capacity.
+    crate::runtime::run_validation_command(&mut command, directory, VALIDATION_TIMEOUT)
+        .map_err(|error| error.to_string())
 }
 
 fn core_version(core: &Path) -> Result<String, String> {
@@ -893,5 +905,47 @@ rules: []
     fn lease_is_bounded_hex() {
         assert!(validate_lease(&"a".repeat(64)).is_ok());
         assert!(validate_lease("not-a-lease").is_err());
+    }
+
+    #[test]
+    fn late_stop_lease_does_not_match_replacement_or_other_user() {
+        let old = "a".repeat(64);
+        let current = "b".repeat(64);
+        assert!(!owns_lease(Some(501), Some(&current), 501, &old));
+        assert!(!owns_lease(Some(501), Some(&current), 502, &current));
+        assert!(!owns_lease(None, None, 501, &current));
+        assert!(owns_lease(Some(501), Some(&current), 501, &current));
+    }
+
+    #[test]
+    fn prepare_requires_idle_helper_even_for_same_user() {
+        assert!(ensure_prepare_allowed(false, None, 501).is_ok());
+        assert!(ensure_prepare_allowed(true, Some(501), 501).is_err());
+        assert!(ensure_prepare_allowed(true, Some(502), 501).is_err());
+    }
+
+    #[test]
+    fn native_validation_drains_large_stdout_and_stderr_without_pipe_stall() {
+        let directory =
+            std::env::temp_dir().join(format!("serylane-helper-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let fixture = directory.join("fixture-core");
+        fs::write(
+            &fixture,
+            b"#!/bin/sh\nhead -c 196608 /dev/zero\nhead -c 196608 /dev/zero >&2\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700)).unwrap();
+        let started = Instant::now();
+        let result = native_validate(&fixture, &directory, &directory.join("unused.yaml"));
+        let files: Vec<_> = fs::read_dir(&directory).unwrap().collect();
+        fs::remove_dir_all(&directory).unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            files.len(),
+            1,
+            "private validation output should be cleaned up"
+        );
     }
 }

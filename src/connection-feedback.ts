@@ -80,8 +80,10 @@ export function mountConnectionFeedback(root: HTMLElement, action: (name: string
   return {
     accept(next: ConnectionFeedback) {
       if (state && next.revision < state.revision) return;
-      if (next.phase === "failed" || (["validating", "starting", "applying", "enabled"].includes(next.phase)
-        && (!state || next.operation > state.operation))) issue = null;
+      // The same backend operation must not erase a newer local preflight or
+      // recovery explanation. Only a new operation supersedes that issue.
+      if (state && next.operation > state.operation
+        && ["failed", "validating", "starting", "applying", "enabled"].includes(next.phase)) issue = null;
       state = next; receivedAt = performance.now(); render();
     },
     showError(error: unknown) { issue = friendlyError(error); render(); },

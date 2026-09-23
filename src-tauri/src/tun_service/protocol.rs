@@ -5,7 +5,8 @@ pub const PLIST_NAME: &CStr = c"com.cmmuu.mihomodesktop.tun-helper.plist";
 pub const APP_BINARY_NAME: &str = "serylane";
 pub const HELPER_BINARY_NAME: &str = "mihomo-tun-helper";
 pub const CORE_BINARY_NAME: &str = "mihomo";
-pub const PROTOCOL_VERSION: u32 = 1;
+// v2 requires lease-scoped stop and refuses preparation over an active core.
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_LOG_LINES: usize = 2_000;
 
@@ -28,6 +29,7 @@ pub const OP_PREPARE: &CStr = c"prepare";
 pub const OP_START: &CStr = c"start";
 pub const OP_HEARTBEAT: &CStr = c"heartbeat";
 pub const OP_STOP: &CStr = c"stop";
+pub const OP_STOP_LEASE: &CStr = c"stop_lease";
 pub const OP_LOGS: &CStr = c"logs";
 
 pub const STATUS_OK: i64 = 0;

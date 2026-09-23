@@ -10,6 +10,7 @@ mod client;
 mod codesign;
 #[cfg(target_os = "macos")]
 pub mod daemon;
+pub(crate) mod lifecycle;
 #[cfg(target_os = "macos")]
 mod protocol;
 #[cfg(windows)]
@@ -23,6 +24,7 @@ pub enum TunHelperState {
     Unsupported,
     NotInstalled,
     RequiresApproval,
+    Checking,
     Ready,
     Outdated,
     Unreachable,
@@ -178,6 +180,20 @@ pub fn stop() -> AppResult<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        Err(service_unavailable())
+    }
+}
+
+/// Stop only the lease owned by this runtime; late heartbeats must never stop
+/// a replacement session owned by the same logged-in user.
+pub fn stop_lease(lease: &str) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        client::stop_lease(lease).map_err(AppError::Runtime)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = lease;
         Err(service_unavailable())
     }
 }

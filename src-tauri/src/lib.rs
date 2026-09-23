@@ -525,7 +525,20 @@ async fn finish_runtime_start(
         tokio::time::sleep(Duration::from_millis(900)).await;
         #[cfg(not(windows))]
         {
-            let helper = tun_service::status();
+            // Concurrent readers share the same probe. Pending is not a
+            // failed Helper; give it a bounded chance to finish before rollback.
+            let mut helper = read_tun_helper_status().await.inspect_err(|_| {
+                let _ = state.stop(Some(app));
+            })?;
+            for _ in 0..3 {
+                if helper.state != tun_service::TunHelperState::Checking {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                helper = read_tun_helper_status().await.inspect_err(|_| {
+                    let _ = state.stop(Some(app));
+                })?;
+            }
             if !helper.ready() || !helper.runtime_running {
                 let _ = state.stop(Some(app));
                 return Err(dto(AppError::Runtime(
@@ -589,9 +602,18 @@ fn active_effective_config(
     )
 }
 
+async fn read_tun_helper_status() -> Result<TunHelperStatus, AppErrorDto> {
+    tauri::async_runtime::spawn_blocking(tun_service::status)
+        .await
+        .map_err(|error| dto(AppError::Platform(error.to_string())))
+}
+
 #[tauri::command]
-fn tun_helper_status(app: AppHandle, state: State<'_, MihomoRuntime>) -> TunHelperStatus {
-    let status = tun_service::status();
+async fn tun_helper_status(
+    app: AppHandle,
+    state: State<'_, MihomoRuntime>,
+) -> Result<TunHelperStatus, AppErrorDto> {
+    let status = read_tun_helper_status().await?;
     #[cfg(windows)]
     {
         let mut status = status;
@@ -605,29 +627,68 @@ fn tun_helper_status(app: AppHandle, state: State<'_, MihomoRuntime>) -> TunHelp
             status.runtime_version = runtime.version;
             status.last_error = runtime.last_error;
         }
-        status
+        Ok(status)
     }
     #[cfg(not(windows))]
     {
         let _ = (app, state);
-        status
+        Ok(status)
     }
 }
 
 #[tauri::command]
-async fn install_tun_helper() -> Result<TunHelperStatus, AppErrorDto> {
-    tauri::async_runtime::spawn_blocking(tun_service::install)
+async fn install_tun_helper(app: AppHandle) -> Result<TunHelperStatus, AppErrorDto> {
+    let configuration = session_resume::acquire_manual_configuration(&app)
         .await
-        .map_err(|error| dto(AppError::Platform(error.to_string())))?
-        .map_err(dto)
+        .map_err(dto)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _configuration = configuration;
+        tun_service::install()
+    })
+    .await
+    .map_err(|error| dto(AppError::Platform(error.to_string())))?
+    .map_err(dto)
+}
+
+async fn ensure_helper_management_idle(
+    app: &AppHandle,
+    state: &MihomoRuntime,
+) -> Result<(), AppErrorDto> {
+    if !matches!(
+        state.status(Some(app)).phase,
+        models::RuntimePhase::Uninitialized
+            | models::RuntimePhase::Stopped
+            | models::RuntimePhase::Crashed
+    ) {
+        return Err(dto(AppError::Conflict(
+            "请先停止代理，再更新或卸载 TUN 辅助服务".into(),
+        )));
+    }
+    let helper = read_tun_helper_status().await?;
+    if helper.runtime_running || helper.state == tun_service::TunHelperState::Checking {
+        return Err(dto(AppError::Conflict(
+            "TUN 辅助服务仍在运行或等待确认，请刷新状态后再操作".into(),
+        )));
+    }
+    Ok(())
 }
 
 #[tauri::command]
-async fn repair_tun_helper() -> Result<TunHelperStatus, AppErrorDto> {
-    tauri::async_runtime::spawn_blocking(tun_service::repair)
+async fn repair_tun_helper(
+    app: AppHandle,
+    state: State<'_, MihomoRuntime>,
+) -> Result<TunHelperStatus, AppErrorDto> {
+    let _configuration = session_resume::acquire_manual_configuration(&app)
         .await
-        .map_err(|error| dto(AppError::Platform(error.to_string())))?
-        .map_err(dto)
+        .map_err(dto)?;
+    ensure_helper_management_idle(&app, &state).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _configuration = _configuration;
+        tun_service::repair()
+    })
+    .await
+    .map_err(|error| dto(AppError::Platform(error.to_string())))?
+    .map_err(dto)
 }
 
 #[tauri::command]
@@ -635,15 +696,17 @@ async fn uninstall_tun_helper(
     app: AppHandle,
     state: State<'_, MihomoRuntime>,
 ) -> Result<(), AppErrorDto> {
-    if state.status(Some(&app)).phase == models::RuntimePhase::Running {
-        return Err(dto(AppError::Conflict(
-            "请先停止 Mihomo 再卸载 TUN Helper".to_string(),
-        )));
-    }
-    tauri::async_runtime::spawn_blocking(tun_service::uninstall)
+    let _configuration = session_resume::acquire_manual_configuration(&app)
         .await
-        .map_err(|error| dto(AppError::Platform(error.to_string())))?
-        .map_err(dto)
+        .map_err(dto)?;
+    ensure_helper_management_idle(&app, &state).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _configuration = _configuration;
+        tun_service::uninstall()
+    })
+    .await
+    .map_err(|error| dto(AppError::Platform(error.to_string())))?
+    .map_err(dto)
 }
 
 #[tauri::command]
@@ -653,26 +716,61 @@ fn open_tun_helper_settings() -> Result<(), AppErrorDto> {
 
 #[tauri::command]
 async fn prepare_tun_active_profile(app: AppHandle) -> Result<(), AppErrorDto> {
-    let helper = tun_service::status();
-    if !helper.ready() {
-        return Err(dto(AppError::Platform(helper.message)));
-    }
-    let storage = AppStorage::from_app(&app).map_err(dto)?;
-    let mut settings = storage.settings().map_err(dto)?;
-    settings.network_mode = NetworkMode::Tun;
-    let effective = active_effective_config(&app, &settings).map_err(dto)?;
-    runtime::validate_source(&app, &effective.yaml).map_err(dto)?;
-    #[cfg(windows)]
-    {
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        tauri::async_runtime::spawn_blocking(move || tun_service::prepare(&effective.yaml))
-            .await
-            .map_err(|error| dto(AppError::Runtime(error.to_string())))?
-            .map_err(dto)
-    }
+    let _configuration = session_resume::acquire_manual_configuration(&app)
+        .await
+        .map_err(dto)?;
+    // Permission checks and native validation can block. No current runtime or
+    // network mode is changed during this preflight.
+    tauri::async_runtime::spawn_blocking(move || {
+        let _configuration = _configuration;
+        let mut stage = "权限服务";
+        app_log::record(
+            0,
+            app_log::Area::Runtime,
+            "TUN 预检开始；当前网络模式保持不变",
+        );
+        let result = (|| -> Result<(), AppError> {
+            let helper = tun_service::status();
+            app_log::record(
+                0,
+                app_log::Area::Runtime,
+                &format!("TUN 权限状态：{:?}", helper.state),
+            );
+            if !helper.ready() {
+                return Err(AppError::Platform(helper.message));
+            }
+            stage = "读取配置";
+            let storage = AppStorage::from_app(&app)?;
+            let mut settings = storage.settings()?;
+            settings.network_mode = NetworkMode::Tun;
+            let effective = active_effective_config(&app, &settings)?;
+            stage = "核心配置校验";
+            runtime::validate_source(&app, &effective.yaml)?;
+            #[cfg(not(windows))]
+            {
+                stage = "特权服务配置校验";
+                tun_service::prepare(&effective.yaml)?;
+            }
+            Ok(())
+        })();
+        match &result {
+            Ok(()) => app_log::record(
+                0,
+                app_log::Area::Runtime,
+                "TUN 预检通过；等待启动，尚未接管网络",
+            ),
+            // Only fixed stage names and error codes enter the journal. The
+            // raw configuration/Helper output may contain subscription secrets.
+            Err(error) => app_log::record(
+                2,
+                app_log::Area::Runtime,
+                &format!("TUN 预检未通过：阶段={stage}；代码={}", error.code()),
+            ),
+        }
+        result.map_err(dto)
+    })
+    .await
+    .map_err(|error| dto(AppError::Runtime(error.to_string())))?
 }
 
 #[tauri::command]
