@@ -1,6 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::models::RuntimePhase;
 use crate::tun_service;
+use crate::tun_service::lifecycle::HeartbeatState;
 use chrono::{DateTime, Utc};
 #[cfg(not(windows))]
 use rand::RngCore;
@@ -77,7 +78,7 @@ pub struct MihomoRuntime {
     tun_lease: Mutex<Option<String>>,
     tun_pid: Mutex<Option<u32>>,
     tun_heartbeat_stop: Mutex<Option<Arc<AtomicBool>>>,
-    tun_heartbeat_error: Arc<Mutex<Option<String>>>,
+    tun_heartbeat_state: Arc<Mutex<HeartbeatState>>,
 }
 
 impl MihomoRuntime {
@@ -215,9 +216,6 @@ impl MihomoRuntime {
         *lock(&self.config_path, "config path")? = Some(config_path);
         *lock(&self.started_at, "started at")? = Some(started_at);
         *lock(&self.last_error, "last error")? = None;
-        if let Ok(mut error) = self.tun_heartbeat_error.lock() {
-            *error = None;
-        }
         self.start_tun_heartbeat(lease);
         self.set_phase(RuntimePhase::Running);
         self.push_log(
@@ -238,12 +236,12 @@ impl MihomoRuntime {
         }
         self.set_phase(RuntimePhase::Stopping);
         self.stop_tun_heartbeat();
-        let had_tun = lock(&self.tun_lease, "tun lease")?.take().is_some();
-        let tun_stop_result = if had_tun { tun_service::stop() } else { Ok(()) };
+        let lease = lock(&self.tun_lease, "tun lease")?.take();
+        let tun_stop_result = match lease {
+            Some(lease) => tun_service::stop_lease(&lease),
+            None => Ok(()),
+        };
         *lock(&self.tun_pid, "tun pid")? = None;
-        if let Ok(mut error) = self.tun_heartbeat_error.lock() {
-            *error = None;
-        }
         {
             let mut child_guard = lock(&self.child, "child")?;
             if let Some(child) = child_guard.as_mut() {
@@ -305,10 +303,10 @@ impl MihomoRuntime {
         if tun_active {
             pid = self.tun_pid.lock().ok().and_then(|value| *value);
             let heartbeat_error = self
-                .tun_heartbeat_error
+                .tun_heartbeat_state
                 .lock()
                 .ok()
-                .and_then(|value| value.clone());
+                .and_then(|value| value.error.clone());
             if let Some(error) = heartbeat_error {
                 if let Ok(mut last_error) = self.last_error.lock() {
                     *last_error = Some(error);
@@ -443,9 +441,10 @@ impl MihomoRuntime {
     fn is_running(&self) -> AppResult<bool> {
         if lock(&self.tun_lease, "tun lease")?.is_some()
             && self
-                .tun_heartbeat_error
+                .tun_heartbeat_state
                 .lock()
                 .map_err(|_| AppError::Runtime("tun heartbeat lock poisoned".to_string()))?
+                .error
                 .is_none()
         {
             return Ok(true);
@@ -486,7 +485,11 @@ impl MihomoRuntime {
         if let Ok(mut guard) = self.tun_heartbeat_stop.lock() {
             *guard = Some(stop.clone());
         }
-        let error_slot = self.tun_heartbeat_error.clone();
+        let heartbeat_state = self.tun_heartbeat_state.clone();
+        let generation = match heartbeat_state.lock() {
+            Ok(mut state) => state.begin(),
+            Err(_) => return,
+        };
         std::thread::spawn(move || {
             let mut failures = 0_u8;
             while !stop.load(Ordering::Acquire) {
@@ -494,15 +497,26 @@ impl MihomoRuntime {
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
-                match tun_service::heartbeat(&lease) {
+                let result = tun_service::heartbeat(&lease);
+                // The request can finish after stop/start. Fence both local
+                // reporting and the daemon stop separately, not just the sleep.
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                match result {
                     Ok(()) => failures = 0,
                     Err(error) => {
                         failures = failures.saturating_add(1);
                         if failures >= 3 {
-                            if let Ok(mut slot) = error_slot.lock() {
-                                *slot = Some(format!("TUN Helper 心跳失败：{error}"));
+                            let current = heartbeat_state.lock().is_ok_and(|mut state| {
+                                state.fail_if_current(
+                                    generation,
+                                    format!("TUN Helper 心跳失败：{error}"),
+                                )
+                            });
+                            if current {
+                                let _ = tun_service::stop_lease(&lease);
                             }
-                            let _ = tun_service::stop();
                             break;
                         }
                     }
@@ -512,6 +526,11 @@ impl MihomoRuntime {
     }
 
     fn stop_tun_heartbeat(&self) {
+        // Invalidate before stopping the worker, under the same lock used by
+        // late error publication. A replaced worker cannot poison a new run.
+        if let Ok(mut state) = self.tun_heartbeat_state.lock() {
+            state.invalidate();
+        }
         if let Ok(mut guard) = self.tun_heartbeat_stop.lock() {
             if let Some(stop) = guard.take() {
                 stop.store(true, Ordering::Release);
@@ -586,7 +605,7 @@ impl Drop for ValidationLogCleanup {
     }
 }
 
-fn run_validation_command(
+pub(crate) fn run_validation_command(
     command: &mut Command,
     data_dir: &Path,
     timeout: Duration,

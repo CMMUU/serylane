@@ -165,6 +165,7 @@ let fixtureSystemProxyActive = false;
 let fixtureRuntimeFailSave = false, fixtureRuntimeFailStart = false, fixtureRuntimeFailRollback = false;
 let fixtureRuntimeDelay = 120;
 let fixtureRuntimeHelperReady = true;
+let fixtureRuntimeHelperState: string | null = null;
 let fixtureRuntimeProxyConfirmed = true, fixtureRuntimeCrashAfterStart = false;
 const fixtureRuntimeCalls: { command: string; mode?: NetworkMode }[] = [];
 function reportRuntimeScenario() {
@@ -181,6 +182,7 @@ function setRuntimeScenario(detail: Record<string, unknown>) {
     fixtureRuntimeFailStart = detail.scenario === "start-failed";
     fixtureRuntimeFailRollback = false;
     fixtureRuntimeHelperReady = true;
+    fixtureRuntimeHelperState = null;
     fixtureRuntimeProxyConfirmed = detail.scenario !== "proxy-unconfirmed";
     fixtureRuntimeCrashAfterStart = detail.scenario === "crashed-after-start";
     fixtureRuntimeCalls.length = 0;
@@ -189,6 +191,7 @@ function setRuntimeScenario(detail: Record<string, unknown>) {
   if (typeof detail.failStart === "boolean") fixtureRuntimeFailStart = detail.failStart;
   if (typeof detail.failRollback === "boolean") fixtureRuntimeFailRollback = detail.failRollback;
   if (typeof detail.helperReady === "boolean") fixtureRuntimeHelperReady = detail.helperReady;
+  if (typeof detail.helperState === "string") fixtureRuntimeHelperState = detail.helperState;
   if (typeof detail.proxyActive === "boolean") fixtureRuntimeProxyConfirmed = detail.proxyActive;
   if (typeof detail.crashAfterStart === "boolean") fixtureRuntimeCrashAfterStart = detail.crashAfterStart;
   if (typeof detail.delayMs === "number" && Number.isInteger(detail.delayMs) && detail.delayMs >= 0 && detail.delayMs <= 3000) fixtureRuntimeDelay = detail.delayMs;
@@ -827,8 +830,8 @@ const readonlyReplies: Record<string, () => unknown> = {
     binaryPath: "/fixture-only/mihomo", version: "v0.0.0-fixture", configPath: "/fixture-only/config.yaml",
     message: "合成运行态仅用于展示界面；未启动真实内核。", pid: null, startedAt: stamp, lastError: null,
   }),
-  system_proxy_status: () => ({ active: fixtureSystemProxyActive, snapshotPath: null, platform: previewWindows ? "windows" : "macos" }),
-  tun_helper_status: () => ({ supported: true, state: runtimeScenarioEnabled ? fixtureRuntimeHelperReady ? "ready" : "requires_approval" : "not_installed", message: "合成预览不安装或调用 Helper", protocolVersion: 1, runtimeRunning: false, runtimePid: null, runtimeVersion: null, lastError: null }),
+  system_proxy_status: () => ({ active: fixtureSystemProxyActive, snapshotPath: null, platform: previewPlatform }),
+  tun_helper_status: () => ({ supported: previewPlatform !== "linux", state: previewPlatform === "linux" ? "unsupported" : fixtureRuntimeHelperState ?? (runtimeScenarioEnabled ? fixtureRuntimeHelperReady ? "ready" : "requires_approval" : "not_installed"), message: previewPlatform === "linux" ? "Linux 暂未提供 TUN 网络接管" : "合成预览不安装或调用 Helper", protocolVersion: previewPlatform === "macos" ? 2 : 0, runtimeRunning: false, runtimePid: null, runtimeVersion: null, lastError: null }),
   global_traffic_snapshot: () => ({ enabled: true, uploadBytesPerSecond: 32000, downloadBytesPerSecond: 2400000, sampledAt: stamp, interfaces: ["fixture-only"] }),
   list_profiles: () => structuredClone(profiles),
   list_subscriptions: () => { subscriptionCalls.reads++; reportSubscriptions(); return subscriptions(); },
@@ -979,7 +982,7 @@ mockIPC(async (command, payload) => {
     }
     if (command === "prepare_tun_active_profile") {
       if (!fixtureRuntimeHelperReady) throw routeError("STATE_CONFLICT", "合成 TUN 尚未批准。");
-      return;
+      return null;
     }
     if (command === "start_active_profile") {
       if (fixtureRuntimePhase === "running") throw routeError("STATE_CONFLICT", "合成核心已在运行，不允许重复启动。");

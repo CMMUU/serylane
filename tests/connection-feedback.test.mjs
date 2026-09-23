@@ -60,7 +60,7 @@ test('System Proxy acceptance is independent of the external probe and helper UI
   const main = read('src/main.ts');
   const refresh = main.slice(main.indexOf('async function refreshRuntimeOnly'), main.indexOf('async function startRuntime('));
   assert.doesNotMatch(refresh, /await.*tunHelperStatus/);
-  assert.match(main, /if \(wasRunning && !keepCore\) await api\.stop\(\)/);
+  assert.match(main, /if \(wasRunning && !keepCore\) \{\s*await api\.stop\(\);\s*stoppedPrevious = true;/);
   assert.match(main, /if \(!keepCore && store\.activeProfile/);
 });
 test('network health has cancellation and config/core attribution guards, no mutating work', () => {

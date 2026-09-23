@@ -361,6 +361,7 @@ export type TunHelperState =
   | "not_installed"
   | "requires_approval"
   | "ready"
+  | "checking"
   | "outdated"
   | "unreachable";
 

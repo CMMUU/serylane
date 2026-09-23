@@ -1,7 +1,7 @@
 {
   "name": "serylane",
   "private": true,
-  "version": "0.7.16",
+  "version": "0.7.17",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -20,7 +20,7 @@
     "test:branding": "node scripts/check-branding.mjs",
     "test:licenses": "node scripts/check-licenses.mjs",
     "test:theme": "node --test tests/theme.test.mjs",
-    "test:ui": "node --test tests/ui.test.mjs tests/session-resume.test.mjs tests/log-view.test.mjs tests/scrolling.test.mjs tests/node-selection.test.mjs tests/openai-costs.test.mjs tests/connection-feedback.test.mjs",
+    "test:ui": "node --test tests/ui.test.mjs tests/session-resume.test.mjs tests/log-view.test.mjs tests/scrolling.test.mjs tests/node-selection.test.mjs tests/openai-costs.test.mjs tests/connection-feedback.test.mjs tests/tun.test.mjs",
     "test:update": "node --test tests/update.test.mjs",
     "test:rules": "node --test tests/rules.test.mjs",
     "test:programs": "node --test tests/programs.test.mjs",

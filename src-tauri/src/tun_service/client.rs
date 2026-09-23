@@ -1,10 +1,11 @@
 use super::codesign;
+use super::lifecycle::{ProbeRead, SharedProbe};
 use super::protocol::*;
 use super::xpc::*;
 use super::{TunRuntimeLog, TunRuntimeStart};
 use block2::RcBlock;
 use std::ffi::{c_void, CStr, CString};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -17,40 +18,21 @@ pub struct RuntimeSnapshot {
     pub last_error: Option<String>,
 }
 
-const NO_PROBE: u64 = u64::MAX;
-static PROBE_GENERATION: AtomicU64 = AtomicU64::new(0);
-static PROBE_INFLIGHT: AtomicU64 = AtomicU64::new(NO_PROBE);
-
-struct ProbeGuard(u64);
-
-impl Drop for ProbeGuard {
-    fn drop(&mut self) {
-        let _ =
-            PROBE_INFLIGHT.compare_exchange(self.0, NO_PROBE, Ordering::SeqCst, Ordering::SeqCst);
-    }
+fn probe() -> &'static SharedProbe<RuntimeSnapshot> {
+    static PROBE: OnceLock<SharedProbe<RuntimeSnapshot>> = OnceLock::new();
+    PROBE.get_or_init(SharedProbe::default)
 }
 
 pub fn reset_probe_gate() {
-    PROBE_GENERATION.fetch_add(1, Ordering::SeqCst);
-    PROBE_INFLIGHT.store(NO_PROBE, Ordering::SeqCst);
+    probe().reset();
 }
 
-pub fn status_probe() -> Result<RuntimeSnapshot, String> {
-    let generation = PROBE_GENERATION.load(Ordering::SeqCst);
-    if PROBE_INFLIGHT
-        .compare_exchange(NO_PROBE, generation, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("TUN Helper 状态检查正在进行".to_string());
-    }
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _guard = ProbeGuard(generation);
-        let _ = sender.send(status_sync());
-    });
-    receiver
-        .recv_timeout(Duration::from_secs(3))
-        .map_err(|_| "TUN Helper 状态检查超时".to_string())?
+pub fn status_probe() -> ProbeRead<RuntimeSnapshot> {
+    probe().read(
+        Duration::from_secs(3),
+        Duration::from_millis(250),
+        status_sync,
+    )
 }
 
 pub fn prepare(source: &str) -> Result<(), String> {
@@ -96,6 +78,16 @@ pub fn heartbeat(lease: &str) -> Result<(), String> {
 
 pub fn stop() -> Result<(), String> {
     request(OP_STOP, |_| {}).map(|_| ())
+}
+
+pub fn stop_lease(lease: &str) -> Result<(), String> {
+    let lease = CString::new(lease).map_err(|_| "TUN lease 格式无效".to_string())?;
+    // A separate operation fails closed against old Helpers instead of being
+    // interpreted as their unconditional stop operation.
+    request(OP_STOP_LEASE, |message| unsafe {
+        xpc_dictionary_set_string(message, KEY_LEASE.as_ptr(), lease.as_ptr());
+    })
+    .map(|_| ())
 }
 
 pub fn logs(limit: usize) -> Result<Vec<TunRuntimeLog>, String> {
