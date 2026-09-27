@@ -26,11 +26,12 @@ export function startupModeHelp(settings: StartupPreferences, mode: StartupMode)
 
 export function startupRegistrationPresentation(status: StartupStatus | null) {
   if (!status) return { issue: false, text: "登录项状态尚未读取；核对状态不会修改系统设置。" };
-  const issue = status.registered === null
+  const issue = status.state === "needs_repair" || status.registered === null
     || status.registered !== status.launchRequested
     || (status.launchRequested && status.systemAllows === false);
   const remembered = status.desiredRunning ? "已开启，恢复时沿用保存的模式与配置" : "已关闭，下次保持停止";
-  return { issue, text: status.message + " 记忆的代理状态：" + remembered + "。" };
+  const label = ({ disabled: "未开启", requires_approval: "待系统允许", registered: "已登记", needs_repair: "需要修复", unknown: "待核对" } as const)[status.state];
+  return { issue, text: (label ? label + "：" : "") + status.message + " 记忆的代理状态：" + remembered + "。" };
 }
 
 export function sessionResumePresentation(status: SessionResumeStatus | null) {
@@ -54,5 +55,5 @@ export function sessionResumeHelp(launchAtLogin: boolean, restoreLastSession: bo
   const entry = launchAtLogin
     ? (silentStartup ? "登录后在托盘后台恢复" : "登录后自动打开应用并恢复")
     : "未开启登录时启动：重启电脑后，手动打开应用才会恢复";
-  return entry + "上次运行状态。上次已停止则保持停止；运行中则使用原模式与选用配置。临时网络故障时等待重试，点击停止可取消；TUN 权限不足或其他系统代理占用时暂停恢复，不会自动接入 Codex 或启动其他程序。";
+  return entry + "上次运行状态。上次已停止则保持停止；运行中则使用原模式与选用配置。临时网络故障时等待重试，点击停止可取消；TUN 服务需要处理或其他系统代理占用时暂停恢复，不会自动接入 Codex 或启动其他程序。";
 }

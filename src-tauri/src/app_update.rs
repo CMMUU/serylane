@@ -6,13 +6,15 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 use url::Url;
 
+const HK_MANIFEST: &str = "https://downloads.cmmuu.com/api/releases/serylane/latest";
+const HK_RELEASES: &str = "https://files.cmmuu.com/releases/serylane";
 const GITHUB_MANIFEST: &str =
     "https://github.com/CMMUU/serylane/releases/latest/download/latest-serylane.json";
 const LEGACY_GITHUB_MANIFEST: &str =
@@ -32,6 +34,7 @@ pub enum UpdateSource {
     Auto,
     Github,
     Gitee,
+    Hk,
 }
 
 impl UpdateSource {
@@ -40,12 +43,14 @@ impl UpdateSource {
             Self::Auto => "自动",
             Self::Github => "GitHub",
             Self::Gitee => "Gitee",
+            Self::Hk => "香港下载中心",
         }
     }
     fn release_base(self) -> AppResult<&'static str> {
         match self {
             Self::Github => Ok("https://github.com/CMMUU/serylane/releases"),
             Self::Gitee => Ok("https://gitee.com/cmmuu/serylane/releases"),
+            Self::Hk => Ok(HK_RELEASES),
             Self::Auto => Err(failure("请指定实际发布渠道")),
         }
     }
@@ -78,6 +83,12 @@ fn official_release_url(source: UpdateSource, tag: &str) -> AppResult<String> {
         tag.strip_prefix('v')
             .ok_or_else(|| failure("发布标签必须以 v 开头"))?,
     )?;
+    // The archive is a download source; release notes remain authoritative on GitHub.
+    let source = if source == UpdateSource::Hk {
+        UpdateSource::Github
+    } else {
+        source
+    };
     Ok(format!("{}/tag/{tag}", source.release_base()?))
 }
 
@@ -149,15 +160,18 @@ struct Session {
 
 #[derive(Default)]
 pub struct AppUpdateManager {
-    session: Mutex<Session>,
-    busy: AtomicBool,
+    session: Arc<Mutex<Session>>,
+    busy: Arc<AtomicBool>,
     cancelled: AtomicBool,
 }
 
-struct Operation<'a>(&'a AppUpdateManager);
-impl Drop for Operation<'_> {
+struct Operation {
+    session: Arc<Mutex<Session>>,
+    busy: Arc<AtomicBool>,
+}
+impl Drop for Operation {
     fn drop(&mut self) {
-        if let Ok(mut session) = self.0.session.lock() {
+        if let Ok(mut session) = self.session.lock() {
             if matches!(
                 session.status.phase.as_str(),
                 "checking" | "downloading" | "installing"
@@ -166,7 +180,7 @@ impl Drop for Operation<'_> {
                 session.status.error = Some("操作已中断，请重试".into());
             }
         }
-        self.0.busy.store(false, Ordering::Release);
+        self.busy.store(false, Ordering::Release);
     }
 }
 
@@ -174,12 +188,15 @@ impl AppUpdateManager {
     fn lock(&self) -> AppResult<MutexGuard<'_, Session>> {
         self.session.lock().map_err(|_| failure("更新状态锁不可用"))
     }
-    fn begin(&self) -> AppResult<Operation<'_>> {
+    fn begin(&self) -> AppResult<Operation> {
         self.busy
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| AppError::Conflict("已有更新操作正在进行".into()))?;
         self.cancelled.store(false, Ordering::Release);
-        Ok(Operation(self))
+        Ok(Operation {
+            session: self.session.clone(),
+            busy: self.busy.clone(),
+        })
     }
     fn finish_error(&self, error: &AppError) -> AppErrorDto {
         if let Ok(mut session) = self.lock() {
@@ -215,6 +232,15 @@ fn artifact_name(target: &str, version: &str) -> AppResult<String> {
     Ok(legacy_artifact_name(target, version)?.replacen("RouteDeck_", "Serylane_", 1))
 }
 
+fn asset_url(source: UpdateSource, version: &str, filename: &str) -> AppResult<String> {
+    let base = source.release_base()?;
+    Ok(if source == UpdateSource::Hk {
+        format!("{base}/v{version}/{filename}")
+    } else {
+        format!("{base}/download/v{version}/{filename}")
+    })
+}
+
 fn validate_asset(
     source: UpdateSource,
     target: &str,
@@ -222,22 +248,14 @@ fn validate_asset(
     url: &Url,
     raw: &serde_json::Value,
 ) -> AppResult<(String, u64)> {
-    let expected = format!(
-        "{}/download/v{version}/{}",
-        source.release_base()?,
-        artifact_name(target, version)?
-    );
+    let expected = asset_url(source, version, &artifact_name(target, version)?)?;
     let legacy_github = matches!(source, UpdateSource::Github)
         && url.as_str()
             == format!(
                 "{LEGACY_GITHUB_RELEASES}/download/v{version}/{}",
                 legacy_artifact_name(target, version)?
             );
-    let legacy_channel = format!(
-        "{}/download/v{version}/{}",
-        source.release_base()?,
-        legacy_artifact_name(target, version)?
-    );
+    let legacy_channel = asset_url(source, version, &legacy_artifact_name(target, version)?)?;
     let legacy_gitee = matches!(source, UpdateSource::Gitee)
         && url.as_str()
             == format!(
@@ -279,6 +297,7 @@ struct ManifestLocation {
 
 fn manifest_location(source: UpdateSource, tag: Option<&str>) -> AppResult<ManifestLocation> {
     let (addresses, expected_version) = match source {
+        UpdateSource::Hk => (vec![HK_MANIFEST.to_owned()], None),
         UpdateSource::Github => (
             vec![
                 GITHUB_MANIFEST.to_owned(),
@@ -370,10 +389,10 @@ async fn check_source(
             "此 Linux 安装不是 AppImage，请通过原 deb/rpm 包管理方式升级",
         ));
     }
-    let manifest = if source == UpdateSource::Github {
-        manifest_location(source, None)?
-    } else {
-        gitee_manifest(proxy).await?
+    let manifest = match source {
+        UpdateSource::Github | UpdateSource::Hk => manifest_location(source, None)?,
+        UpdateSource::Gitee => gitee_manifest(proxy).await?,
+        UpdateSource::Auto => return Err(failure("请指定实际发布渠道")),
     };
     let target = tauri_plugin_updater::target().ok_or_else(|| failure("此平台不支持更新"))?;
     let mut builder = app
@@ -455,9 +474,10 @@ fn candidate_priority(
     // Prefer the domestic mirror for the newest stable build. A lagging mirror
     // must not hide a newer GitHub release or become a downgrade fallback.
     let priority = match source {
-        UpdateSource::Gitee => 0,
-        UpdateSource::Github => 1,
-        UpdateSource::Auto => 2,
+        UpdateSource::Hk => 0,
+        UpdateSource::Gitee => 1,
+        UpdateSource::Github => 2,
+        UpdateSource::Auto => 3,
     };
     (std::cmp::Reverse(version), priority)
 }
@@ -511,11 +531,16 @@ pub async fn check_app_update(
         let proxy = proxy_for_update(&app)?;
         let results = match source {
             UpdateSource::Auto => {
-                let (gitee, github) = tokio::join!(
+                let (hk, gitee, github) = tokio::join!(
+                    check_source(&app, UpdateSource::Hk, proxy.as_ref()),
                     check_source(&app, UpdateSource::Gitee, proxy.as_ref()),
                     check_source(&app, UpdateSource::Github, proxy.as_ref())
                 );
-                vec![(UpdateSource::Gitee, gitee), (UpdateSource::Github, github)]
+                vec![
+                    (UpdateSource::Hk, hk),
+                    (UpdateSource::Gitee, gitee),
+                    (UpdateSource::Github, github),
+                ]
             }
             single => vec![(single, check_source(&app, single, proxy.as_ref()).await)],
         };
@@ -699,6 +724,33 @@ pub fn cancel_app_update(state: State<'_, AppUpdateManager>) -> Result<(), AppEr
     Ok(())
 }
 
+// Injectable boundary keeps service mutation ordered with the installer. Tests
+// exercise failure/panic paths without touching launchd or installing an app.
+fn install_with_service_transaction(
+    prepare: impl FnOnce() -> AppResult<()>,
+    install: impl FnOnce() -> AppResult<()>,
+    rollback: impl FnOnce() -> AppResult<()>,
+) -> AppResult<()> {
+    let prepare = std::panic::catch_unwind(std::panic::AssertUnwindSafe(prepare))
+        .unwrap_or_else(|_| Err(failure("升级准备意外中断；尚未启动安装")));
+    let result = match prepare {
+        Ok(()) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(install))
+            .unwrap_or_else(|_| Err(failure("安装过程意外中断"))),
+        Err(error) => Err(failure(format!(
+            "辅助服务升级准备未完成，已停止安装：{error}"
+        ))),
+    };
+    if let Err(error) = result {
+        let recovery = std::panic::catch_unwind(std::panic::AssertUnwindSafe(rollback))
+            .unwrap_or_else(|_| Err(failure("辅助服务恢复意外中断")));
+        return Err(failure(match recovery {
+            Ok(()) => format!("{error}。升级状态恢复步骤已完成；代理保持停止，请重新打开应用后核对状态。"),
+            Err(recovery) => format!("{error}；辅助服务恢复尚未完成：{recovery}。请重新打开应用，按提示重新关联辅助服务。"),
+        }));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn install_app_update(
     app: AppHandle,
@@ -709,49 +761,78 @@ pub async fn install_app_update(
     if !confirmed {
         return Err(failure("安装需要用户确认；安装期间代理会暂时停止").dto());
     }
-    let _operation = state.begin().map_err(|e| e.dto())?;
-    let _configuration = crate::user_rules::acquire_configuration(&app).map_err(|e| e.dto())?;
-    let result = (|| -> AppResult<()> {
-        let mut session = state.lock()?;
-        if session.status.phase != "ready"
-            || !session
-                .status
-                .info
+    let _operation = Arc::new(state.begin().map_err(|e| e.dto())?);
+    let _configuration =
+        Arc::new(crate::user_rules::acquire_configuration(&app).map_err(|e| e.dto())?);
+    let result = async {
+        let (candidate, bytes) = {
+            let mut session = state.lock()?;
+            if session.status.phase != "ready"
+                || !session
+                    .status
+                    .info
+                    .as_ref()
+                    .is_some_and(|info| info.available && info.latest_version == version_tag)
+            {
+                return Err(failure("请先下载并验证当前选定的新版本"));
+            }
+            let (candidate, bytes) = session
+                .ready
                 .as_ref()
-                .is_some_and(|info| info.available && info.latest_version == version_tag)
-        {
-            return Err(failure("请先下载并验证当前选定的新版本"));
-        }
-        let (candidate, bytes) = session
-            .ready
-            .as_ref()
-            .ok_or_else(|| failure("已验证的安装包不可用，请重新下载"))?;
-        if candidate.version <= parse_version(env!("CARGO_PKG_VERSION"))?
-            || format!("{:x}", Sha256::digest(bytes)) != candidate.sha256
-        {
-            return Err(failure("安装包版本或摘要校验失败"));
-        }
-        // No disruptive work before explicit confirmation and a verified package.
-        app.state::<crate::local_routing::LocalRoutingManager>()
-            .shutdown(&app)?;
-        app.state::<crate::openai_stability::StabilityManager>()
-            .stop();
-        crate::platform::restore_system_proxy(&app)?;
-        app.state::<MihomoRuntime>().stop(Some(&app))?;
-        app.state::<crate::OpenAiPolicyTaskManager>().cancel()?;
-        app.state::<crate::GlobalTrafficMonitor>().stop();
-        AppStorage::from_app(&app)?.mark_clean_shutdown(true)?;
-        let (candidate, bytes) = session
-            .ready
-            .take()
-            .ok_or_else(|| failure("安装包已失效"))?;
-        session.status.phase = "installing".into();
-        drop(session);
-        candidate.update.install(bytes).map_err(|e| {
-            failure(format!(
-                "安装启动失败：{e}。代理已安全停止，可重新启动后重试。"
-            ))
-        })?;
+                .ok_or_else(|| failure("已验证的安装包不可用，请重新下载"))?;
+            if candidate.version <= parse_version(env!("CARGO_PKG_VERSION"))?
+                || bytes.len() as u64 != candidate.size
+                || format!("{:x}", Sha256::digest(bytes)) != candidate.sha256
+            {
+                return Err(failure("安装包版本、大小或摘要校验失败"));
+            }
+            let ready = session
+                .ready
+                .take()
+                .ok_or_else(|| failure("安装包已失效"))?;
+            session.status.phase = "installing".into();
+            ready
+        };
+        // No session MutexGuard is held across await. Blocking lifecycle waits
+        // and archive extraction must not block the async runtime/UI executor.
+        let install_app = app.clone();
+        let worker_operation = _operation.clone();
+        let worker_configuration = _configuration.clone();
+        tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+            // Blocking work outlives cancellation of its awaiting command. Keep
+            // both gates owned by the worker until rollback/install really ends.
+            let _operation = worker_operation;
+            let _configuration = worker_configuration;
+            // No disruptive work before explicit confirmation and verified bytes.
+            install_app
+                .state::<crate::local_routing::LocalRoutingManager>()
+                .shutdown(&install_app)?;
+            install_app
+                .state::<crate::openai_stability::StabilityManager>()
+                .stop();
+            crate::platform::restore_system_proxy(&install_app)?;
+            install_app
+                .state::<MihomoRuntime>()
+                .stop(Some(&install_app))?;
+            install_app
+                .state::<crate::OpenAiPolicyTaskManager>()
+                .cancel()?;
+            install_app.state::<crate::GlobalTrafficMonitor>().stop();
+            AppStorage::from_app(&install_app)?.mark_clean_shutdown(true)?;
+            let target_version = candidate.update.version.clone();
+            install_with_service_transaction(
+                || crate::tun_service::prepare_app_upgrade(&install_app, &target_version),
+                || {
+                    candidate
+                        .update
+                        .install(bytes)
+                        .map_err(|error| failure(format!("安装启动失败：{error}")))
+                },
+                || crate::tun_service::rollback_app_upgrade(&install_app),
+            )
+        })
+        .await
+        .map_err(|_| failure("安装任务意外结束；请重新打开应用核对辅助服务状态"))??;
         // Windows exits from install(); its installer relaunches Serylane.
         #[cfg(not(windows))]
         {
@@ -761,7 +842,8 @@ pub async fn install_app_update(
         {
             Ok(())
         }
-    })();
+    }
+    .await;
     result.map_err(|e| state.finish_error(&e))
 }
 
@@ -781,18 +863,95 @@ pub fn open_official_release(
 mod tests {
     use super::*;
     #[test]
-    fn newest_build_prefers_gitee_and_keeps_github_as_download_fallback() {
+    fn install_transaction_requires_preparation_and_rolls_back_failed_phases() {
+        use std::cell::RefCell;
+        for fail in [
+            "none",
+            "prepare",
+            "prepare_panic",
+            "install",
+            "rollback",
+            "panic",
+            "rollback_panic",
+        ] {
+            let calls = RefCell::new(Vec::new());
+            let result = install_with_service_transaction(
+                || {
+                    calls.borrow_mut().push("prepare");
+                    if fail == "prepare_panic" {
+                        panic!("fixture prepare panic")
+                    }
+                    if fail == "prepare" {
+                        Err(failure("fixture prepare failure"))
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    calls.borrow_mut().push("install");
+                    if fail == "panic" {
+                        panic!("fixture install panic")
+                    }
+                    if matches!(fail, "install" | "rollback" | "rollback_panic") {
+                        Err(failure("fixture install failure"))
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    calls.borrow_mut().push("rollback");
+                    if fail == "rollback_panic" {
+                        panic!("fixture rollback panic")
+                    }
+                    if fail == "rollback" {
+                        Err(failure("fixture rollback failure"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            match fail {
+                "none" => {
+                    assert!(result.is_ok());
+                    assert_eq!(*calls.borrow(), ["prepare", "install"]);
+                }
+                "prepare" | "prepare_panic" => {
+                    assert!(result.is_err());
+                    assert_eq!(*calls.borrow(), ["prepare", "rollback"]);
+                }
+                _ => {
+                    assert!(result.is_err());
+                    assert_eq!(*calls.borrow(), ["prepare", "install", "rollback"]);
+                }
+            }
+            if fail == "rollback" {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("fixture install failure"));
+                assert!(error.contains("fixture rollback failure"));
+            }
+        }
+    }
+
+    #[test]
+    fn newest_build_prefers_hk_and_keeps_identical_mirrors_as_download_fallback() {
         let version = StableVersion(1, 2, 3);
-        let mut sources = [UpdateSource::Github, UpdateSource::Gitee];
+        let mut sources = [UpdateSource::Github, UpdateSource::Gitee, UpdateSource::Hk];
         sources.sort_by_key(|source| candidate_priority(version, *source));
-        assert_eq!(sources, [UpdateSource::Gitee, UpdateSource::Github]);
+        assert_eq!(
+            sources,
+            [UpdateSource::Hk, UpdateSource::Gitee, UpdateSource::Github]
+        );
         sources.reverse();
         sources.sort_by_key(|source| candidate_priority(version, *source));
-        assert_eq!(sources, [UpdateSource::Gitee, UpdateSource::Github]);
+        assert_eq!(
+            sources,
+            [UpdateSource::Hk, UpdateSource::Gitee, UpdateSource::Github]
+        );
     }
     #[test]
     fn lagging_domestic_mirror_never_hides_a_newer_official_release() {
         let mut releases = [
+            (StableVersion(1, 2, 3), UpdateSource::Hk),
             (StableVersion(1, 2, 3), UpdateSource::Gitee),
             (StableVersion(1, 2, 4), UpdateSource::Github),
         ];
@@ -802,7 +961,7 @@ mod tests {
     #[test]
     fn automatic_updates_remain_the_default_and_either_single_source_is_usable() {
         assert_eq!(UpdateSource::default(), UpdateSource::Auto);
-        for source in [UpdateSource::Gitee, UpdateSource::Github] {
+        for source in [UpdateSource::Hk, UpdateSource::Gitee, UpdateSource::Github] {
             let mut sources = [source];
             sources.sort_by_key(|source| candidate_priority(StableVersion(1, 2, 3), *source));
             assert_eq!(sources, [source]);
@@ -839,6 +998,13 @@ mod tests {
     }
     #[test]
     fn branded_manifest_precedes_legacy_fallback_and_gitee_is_bound_to_tag() {
+        let hk = manifest_location(UpdateSource::Hk, None).unwrap();
+        assert_eq!(hk.endpoints.len(), 1);
+        assert_eq!(hk.endpoints[0].as_str(), HK_MANIFEST);
+        assert_eq!(
+            official_release_url(UpdateSource::Hk, "v0.7.18").unwrap(),
+            "https://github.com/CMMUU/serylane/releases/tag/v0.7.18"
+        );
         let github = manifest_location(UpdateSource::Github, None).unwrap();
         assert_eq!(github.endpoints.len(), 2);
         assert_eq!(github.endpoints[0].as_str(), GITHUB_MANIFEST);
@@ -871,8 +1037,8 @@ mod tests {
     }
 
     #[test]
-    fn serylane_downloads_validate_all_architectures_and_both_channels() {
-        for source in [UpdateSource::Github, UpdateSource::Gitee] {
+    fn serylane_downloads_validate_all_architectures_and_all_channels() {
+        for source in [UpdateSource::Hk, UpdateSource::Github, UpdateSource::Gitee] {
             for target in [
                 "windows-x86_64",
                 "windows-aarch64",
@@ -888,11 +1054,8 @@ mod tests {
                 let mut raw = serde_json::json!({"platforms": {}});
                 raw["platforms"][target] =
                     serde_json::json!({"sha256": "a".repeat(64), "size": 123});
-                let address = format!(
-                    "{}/download/v0.7.7/{}",
-                    source.release_base().unwrap(),
-                    artifact_name(target, "0.7.7").unwrap()
-                );
+                let address =
+                    asset_url(source, "0.7.7", &artifact_name(target, "0.7.7").unwrap()).unwrap();
                 assert!(address.contains("/Serylane_0.7.7_"));
                 assert!(validate_asset(
                     source,
@@ -1014,6 +1177,20 @@ mod tests {
         )
         .is_err());
     }
+    #[test]
+    fn cancelled_install_caller_cannot_release_the_blocking_workers_busy_lease() {
+        let manager = AppUpdateManager::default();
+        let caller = Arc::new(manager.begin().unwrap());
+        let worker = caller.clone();
+        manager.lock().unwrap().status.phase = "installing".into();
+        drop(caller); // the async command is cancelled, worker is still alive
+        assert!(manager.begin().is_err());
+        assert_eq!(manager.lock().unwrap().status.phase, "installing");
+        drop(worker);
+        assert_eq!(manager.lock().unwrap().status.phase, "failed");
+        assert!(manager.begin().is_ok());
+    }
+
     #[test]
     fn updater_operations_are_exclusive_and_cancellation_resets_on_retry() {
         let manager = AppUpdateManager::default();

@@ -88,6 +88,7 @@ class UpdaterReleaseTests(unittest.TestCase):
         self.assertTrue(all((self.output / name).is_file() for name in UPDATER_MANIFESTS))
         github = json.loads((self.output / "latest-serylane.json").read_text())
         gitee = json.loads((self.output / "latest-serylane-gitee.json").read_text())
+        hk = json.loads((self.output / "latest-serylane-hk.json").read_text())
         legacy_gitee = json.loads((self.output / "latest-gitee.json").read_text())
         self.assertEqual(set(github["platforms"]), set(manifest["platforms"]))
         for target, data in manifest["platforms"].items():
@@ -107,7 +108,8 @@ class UpdaterReleaseTests(unittest.TestCase):
                              f"https://github.com/CMMUU/serylane/releases/download/v0.7.0/{public}")
             self.assertEqual(gitee["platforms"][target]["url"],
                              f"https://gitee.com/cmmuu/serylane/releases/download/v0.7.0/{public}")
-            for current in (github, gitee):
+            self.assertEqual(hk["platforms"][target]["url"], f"https://files.cmmuu.com/releases/serylane/v0.7.0/{public}")
+            for current in (github, gitee, hk):
                 self.assertEqual(current["version"], manifest["version"])
                 for key in ("sha256", "size", "signature"):
                     self.assertEqual(current["platforms"][target][key], data[key])

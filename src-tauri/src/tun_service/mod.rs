@@ -3,11 +3,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
-mod admin;
+pub(crate) mod admin;
 #[cfg(target_os = "macos")]
 mod client;
 #[cfg(target_os = "macos")]
-mod codesign;
+pub(crate) mod codesign;
 #[cfg(target_os = "macos")]
 pub mod daemon;
 pub(crate) mod lifecycle;
@@ -37,6 +37,7 @@ pub struct TunHelperStatus {
     pub state: TunHelperState,
     pub message: String,
     pub protocol_version: u32,
+    pub helper_version: Option<String>,
     pub runtime_running: bool,
     pub runtime_pid: Option<u32>,
     pub runtime_version: Option<String>,
@@ -50,6 +51,7 @@ impl TunHelperStatus {
             state: TunHelperState::Unsupported,
             message: message.into(),
             protocol_version: 0,
+            helper_version: None,
             runtime_running: false,
             runtime_pid: None,
             runtime_version: None,
@@ -81,7 +83,7 @@ pub struct TunRuntimeLog {
 pub fn status() -> TunHelperStatus {
     #[cfg(target_os = "macos")]
     {
-        admin::status()
+        crate::macos_upgrade::status_override().unwrap_or_else(admin::status)
     }
     #[cfg(windows)]
     {
@@ -217,4 +219,30 @@ fn service_unavailable() -> AppError {
     #[cfg(not(windows))]
     let message = format!("{} TUN Helper 尚未实现", std::env::consts::OS);
     AppError::Platform(message)
+}
+
+/// Called only after a verified package, explicit install confirmation and an
+/// idle/stopped runtime. Other platforms retain their existing lifecycle.
+pub fn prepare_app_upgrade(app: &tauri::AppHandle, target_version: &str) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_upgrade::prepare(app, target_version)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, target_version);
+        Ok(())
+    }
+}
+
+pub fn rollback_app_upgrade(app: &tauri::AppHandle) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_upgrade::recover(app)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Ok(())
+    }
 }

@@ -140,3 +140,43 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
   assert.equal(context.store.settings.networkMode, "tun");
   assert.equal(context.store.subscriptions[0].status, newQuota);
 });
+
+test("native login repair exposes OS approval separately and never rewrites draft preference", () => {
+  const status = { state: "needs_repair", launchRequested: true, registered: true, systemAllows: true, repairAvailable: true, desiredRunning: false, message: "旧登录项待迁移。" };
+  assert.equal(startupRegistrationPresentation(status).issue, true);
+  assert.match(startupRegistrationPresentation(status).text, /需要修复/);
+  assert.match(startupRegistrationPresentation({ ...status, state: "requires_approval", systemAllows: false }).text, /待系统允许/);
+  const markup = read("src/settings-view.ts");
+  assert.match(markup, /id="settings-startup-repair"/);
+  assert.match(markup, /id="settings-startup-open"/);
+  assert.match(read("src/api.ts"), /invoke<StartupStatus>\("repair_startup_registration"\)/);
+  const main = read("src/main.ts");
+  const repair = main.slice(main.indexOf('$("#settings-startup-repair")!.addEventListener'), main.indexOf('document.querySelectorAll<HTMLInputElement>', main.indexOf('$("#settings-startup-repair")!.addEventListener')));
+  assert.match(repair, /startupModeDraft !== null/);
+  assert.match(repair, /startupRepairBusy = true/);
+  assert.doesNotMatch(repair, /saveSettings|setNetworkMode|startActive|api\.stop/);
+});
+
+test("native login bundle uses a short-lived exact-app launcher and retains autostart semantics", () => {
+  const config = JSON.parse(read("src-tauri/tauri.conf.json"));
+  assert.equal(config.bundle.macOS.files["Library/LaunchAgents/com.cmmuu.mihomodesktop.login.plist"], "helper/com.cmmuu.mihomodesktop.login.plist");
+  const plist = read("src-tauri/helper/com.cmmuu.mihomodesktop.login.plist");
+  assert.match(plist, /Contents\/MacOS\/serylane-login-helper/);
+  assert.doesNotMatch(plist, /<key>KeepAlive<\/key>/);
+  const launcher = read("src-tauri/src/bin/serylane-login-helper.rs");
+  assert.match(launcher, /\.arg\(bundle\)/);
+  assert.match(launcher, /\.arg\("--autostart"\)/);
+  assert.doesNotMatch(launcher, /\.arg\("-b"\)/);
+});
+
+test("all native binaries have explicit Cargo paths to avoid Tauri 2.11.4 discovery deduplication", () => {
+  const manifest = read("src-tauri/Cargo.toml");
+  for (const [name, path] of [["serylane", "src/main.rs"], ["mihomo-tun-helper", "src/bin/mihomo-tun-helper.rs"], ["serylane-login-helper", "src/bin/serylane-login-helper.rs"]]) {
+    const blocks = manifest.split("[[bin]]").slice(1);
+    assert.ok(blocks.some(block => block.includes(`name = "${name}"`) && block.includes(`path = "${path}"`)), `${name} must retain an explicit source path`);
+  }
+  const verifier = read("scripts/verify-macos-layout.sh");
+  assert.match(verifier, /serylane mihomo-tun-helper serylane-login-helper mihomo/);
+  assert.match(verifier, /BundleProgram Contents\/MacOS\/mihomo-tun-helper/);
+  assert.match(verifier, /codesign --verify --deep --strict/);
+});

@@ -63,6 +63,7 @@ fn status_from_elevation(elevated: io::Result<bool>) -> TunHelperStatus {
         // This is a session capability check, not an installed helper or IPC
         // protocol. Runtime state comes from MihomoRuntime on Windows.
         protocol_version: 0,
+        helper_version: None,
         runtime_running: false,
         runtime_pid: None,
         runtime_version: None,

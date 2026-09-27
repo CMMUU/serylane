@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { handle } from '../src/worker.ts';
-import { TARGETS, GITHUB, GITEE } from '../src/releases.ts';
+import { TARGETS, GITHUB, GITEE, HK_FILES } from '../src/releases.ts';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
 const suffix = { 'windows-x64': 'x64-setup.exe', 'windows-arm64': 'arm64-setup.exe', 'macos-x64': 'x64.dmg', 'macos-arm64': 'aarch64.dmg', 'linux-x64': 'amd64.AppImage', 'linux-arm64': 'aarch64.AppImage' };
@@ -31,6 +31,7 @@ function upstream(data, override = () => undefined) {
     assert.ok(!init.headers.Authorization && !init.headers.Cookie);
     const altered = await override(url, init, calls);
     if (altered) return altered;
+    if (url.startsWith(HK_FILES)) return new Response('not mirrored yet', { status: 404 });
     if (url === `${GITHUB}/releases/latest`) return new Response(null, { status: 302, headers: { location: `${GITHUB}/releases/tag/${data.version}` } });
     if (url.endsWith(`/${data.marker}`)) return new Response(data.markerText);
     if (url.endsWith('/SHA256SUMS.txt')) return new Response(data.sums);
@@ -172,4 +173,67 @@ test('HEAD download resolves normally but has no response body', async () => {
   const response = await handle(request('/download/windows-x64', 'HEAD'), env, upstream(fixture()).fetcher);
   assert.equal(response.status, 302);
   assert.equal(await response.text(), '');
+});
+
+function hkUpstream(data, failure) {
+  return upstream(data, (url, init) => {
+    if (!url.startsWith(HK_FILES)) return;
+    if (failure === 'timeout') throw new DOMException('timeout', 'TimeoutError');
+    if (failure === 'missing') return new Response(null, { status: 404 });
+    if (url.endsWith('/' + data.marker)) return new Response(failure === 'stale' ? fixture('v0.7.6').markerText
+      : failure === 'changed' ? data.markerText + ' ' : data.markerText);
+    const asset = Object.values(data.assets).find(a => url.endsWith('/' + a.filename));
+    if (asset && init.method === 'HEAD') return new Response(null, { headers: {
+      'content-length': String(failure === 'size' ? asset.size + 1 : asset.size), 'content-type': 'application/octet-stream',
+    } });
+  });
+}
+test('HK archive is preferred for all six exact current packages, GitHub override skips both mirrors', async () => {
+  const data = fixture();
+  for (const target of TARGETS) {
+    const { fetcher, calls } = hkUpstream(data);
+    const response = await handle(request(`/download/${target}`), env, fetcher);
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get('location'), `${HK_FILES}/${data.version}/${data.assets[target].filename}`);
+    assert.equal(response.headers.get('x-serylane-channel'), 'hk');
+    assert.ok(calls.every(c => c.method === 'HEAD' || /\/(downloads.json|SHA256SUMS.txt)$/.test(c.url)));
+    const override = hkUpstream(data);
+    const github = await handle(request(`/download/${target}?channel=github`), env, override.fetcher);
+    assert.equal(github.headers.get('x-serylane-channel'), 'github');
+    assert.ok(override.calls.every(c => !c.url.startsWith(HK_FILES) && !c.url.startsWith(GITEE)));
+  }
+});
+test('HK lag, timeout, missing file, changed marker or wrong length falls back only to identical current Gitee', async () => {
+  for (const failure of ['stale', 'timeout', 'missing', 'changed', 'size']) {
+    const { fetcher } = hkUpstream(fixture(), failure);
+    const response = await handle(request('/download/macos-arm64'), env, fetcher);
+    assert.equal(response.status, 302, failure);
+    assert.equal(response.headers.get('location'), `${GITEE}/releases/download/v0.7.7/Serylane_0.7.7_aarch64.dmg`);
+  }
+});
+test('HK catalog readiness is reported separately and does not conceal failed Gitee', async () => {
+  const data = fixture();
+  const hk = hkUpstream(data);
+  const response = await handle(request('/api/releases/latest'), env, async (url, init) =>
+    url.startsWith(GITEE) ? new Response(null, { status: 503 }) : hk.fetcher(url, init));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-serylane-hk'), 'VERIFIED');
+  assert.notEqual(response.headers.get('x-serylane-mirror'), 'VERIFIED');
+  assert.ok(Object.values((await response.json()).assets).every(a => a.domesticAvailable && a.hkAvailable && !a.giteeAvailable));
+});
+test('HK redirect allowlist rejects other origins, credentials, paths and query strings before request', async () => {
+  for (const location of ['https://files.cmmuu.com.evil.example/releases/serylane/v0.7.7/downloads.json',
+    'https://files.cmmuu.com/manual/other', 'https://files.cmmuu.com/releases/other/v0.7.7/downloads.json',
+    'https://files.cmmuu.com/releases/serylane/v0.7.7/downloads.json?url=other',
+    'https://files.cmmuu.com/releases/serylane/v0.7.6/downloads.json',
+    'https://files.cmmuu.com/releases/serylane/v0.7.7/other.json',
+    'http://files.cmmuu.com/releases/serylane/v0.7.7/downloads.json',
+    'https://user@files.cmmuu.com/releases/serylane/v0.7.7/downloads.json']) {
+    const data = fixture();
+    const { fetcher, calls } = upstream(data, url => url.startsWith(HK_FILES)
+      ? new Response(null, { status: 302, headers: { location } }) : undefined);
+    const response = await handle(request('/download/windows-x64'), env, fetcher);
+    assert.equal(response.headers.get('x-serylane-channel'), 'gitee');
+    assert.ok(!calls.some(c => c.url === location), location);
+  }
 });

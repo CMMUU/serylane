@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { retryRead, sourceAssetBytes, uploadedVersion, verifyStatic } from './deploy-site.mjs';
+import { retryRead, sourceAssetBytes, uploadedVersion, verifyStatic, verifyDownloads } from './deploy-site.mjs';
 
 test('robots verification preserves Cloudflare managed policy and checks the full source portion', async () => {
   const owned = 'User-agent: *\nAllow: /\n\nSitemap: https://serylane.cmmuu.com/sitemap.xml\n';
@@ -54,4 +54,37 @@ test('online verification requires marker AND actual bytes, never a marker alone
   await assert.rejects(verifyStatic(expected, fetcher('stale page')));
   await assert.rejects(verifyStatic(expected, fetcher('expected', { ...expected, sourceCommit: 'c'.repeat(40) })));
   await assert.rejects(verifyStatic(expected, fetcher('expected', expected, 'public')));
+});
+
+test('download verification covers all six primary and explicit fallback routes with exact identities', async () => {
+  const targets = ['windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64', 'linux-x64', 'linux-arm64'];
+  const release = { version: 'v0.7.18', assets: Object.fromEntries(targets.map(t => [t, { filename: `package-${t}` }])) };
+  const calls = [];
+  const fetcher = async (url, init) => {
+    if (url.endsWith('/api/releases/latest')) return Response.json(release);
+    calls.push({ url, method: init.method });
+    const parsed = new URL(url);
+    const target = parsed.pathname.slice('/download/'.length);
+    const github = parsed.search === '?channel=github';
+    return new Response(null, { status: 302, headers: {
+      'x-serylane-version': release.version, 'x-serylane-channel': github ? 'github' : 'hk',
+      location: `${github ? 'https://github.com/CMMUU/serylane/releases/download' : 'https://files.cmmuu.com/releases/serylane'}/${release.version}/${release.assets[target].filename}`,
+    } });
+  };
+  await verifyDownloads(fetcher);
+  assert.equal(calls.length, 12);
+  assert.ok(calls.every(c => c.method === 'HEAD'));
+  for (const bad of ['version', 'architecture', 'host', 'query', 'channel']) {
+    await assert.rejects(verifyDownloads(async (url, init) => {
+      const response = await fetcher(url, init);
+      if (!url.includes('/download/')) return response;
+      const headers = new Headers(response.headers);
+      if (bad === 'version') headers.set('x-serylane-version', 'v0.7.17');
+      if (bad === 'architecture') headers.set('location', headers.get('location').replace('windows-x64', 'windows-arm64'));
+      if (bad === 'host') headers.set('location', headers.get('location').replace('files.cmmuu.com', 'evil.example'));
+      if (bad === 'query') headers.set('location', headers.get('location') + '?token=unexpected');
+      if (bad === 'channel') headers.set('x-serylane-channel', 'unknown');
+      return new Response(null, { status: 302, headers });
+    }), bad);
+  }
 });

@@ -16,6 +16,7 @@ pub const KEY_LEASE: &CStr = c"lease";
 pub const KEY_LIMIT: &CStr = c"limit";
 pub const KEY_STATUS: &CStr = c"status";
 pub const KEY_MESSAGE: &CStr = c"message";
+pub const KEY_HELPER_VERSION: &CStr = c"helper_version";
 pub const KEY_PROTOCOL_VERSION: &CStr = c"protocol_version";
 pub const KEY_RUNNING: &CStr = c"running";
 pub const KEY_PID: &CStr = c"pid";

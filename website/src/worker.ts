@@ -30,11 +30,13 @@ export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher
   try {
     if (isAPI) {
       const catalog = await latestCatalog(fetcher);
-      const mirror = await mirrorReady(fetcher, catalog, TARGETS);
+      const [hk, mirror] = await Promise.all([
+        mirrorReady(fetcher, catalog, TARGETS, 'hk'), mirrorReady(fetcher, catalog, TARGETS, 'gitee'),
+      ]);
       result = response(JSON.stringify({
         version: catalog.version, checkedAt: new Date().toISOString(),
-        assets: Object.fromEntries(TARGETS.map(target => [target, { ...catalogAsset(catalog, target), domesticAvailable: mirror.ready.has(target) }])),
-      }), 200, undefined, { 'X-Serylane-Mirror': mirror.diagnostic });
+        assets: Object.fromEntries(TARGETS.map(target => [target, { ...catalogAsset(catalog, target), domesticAvailable: hk.ready.has(target) || mirror.ready.has(target), hkAvailable: hk.ready.has(target), giteeAvailable: mirror.ready.has(target) }])),
+      }), 200, undefined, { 'X-Serylane-Mirror': mirror.diagnostic, 'X-Serylane-HK': hk.diagnostic });
     } else {
       const download = await resolveDownload(fetcher, target, url.search === '?channel=github');
       result = new Response(null, { status: 302, headers: { ...HEADERS, Location: download.url,

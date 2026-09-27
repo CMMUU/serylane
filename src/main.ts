@@ -17,7 +17,7 @@ import { sessionResumePresentation, canStopSession, startupModeFromSettings, sta
 import { canStartRuntime, startRuntimeInMode, type RuntimeStartMode } from "./runtime-start";
 import { prepareTunForStart } from "./tun-preflight";
 import { api, errorMessage, revisionLabel } from "./api";
-import { describeAppUpdate } from "./app-update";
+import { describeAppUpdate, updateSourceLabel } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { mountRuleManager, ruleManagerMarkup } from "./rule-manager";
 import { mountLocalRouting, localRoutingMarkup } from "./local-routing";
@@ -162,6 +162,7 @@ let sessionResumeRevision = 0;
 let sessionResumeReadBusy = false;
 let sessionResumeReadAgain = false;
 let startupStatus: StartupStatus | null = null;
+let startupRepairBusy = false;
 // An asynchronous refresh must not overwrite an unsaved startup-mode choice.
 let startupModeDraft: StartupMode | null = null;
 const OPENAI_GROUP_NAME = "🤖 OpenAI 自动灾备";
@@ -410,10 +411,10 @@ app.innerHTML = `
             <span>特权内核</span><strong id="tun-helper-runtime">未运行</strong>
           </div>
           <div class="toolbar tun-helper-actions">
-            <button class="button button-primary" id="tun-helper-install" type="button">安装 Helper</button>
-            <button class="button button-quiet" id="tun-helper-repair" type="button">修复 Helper</button>
+            <button class="button button-primary" id="tun-helper-install" type="button">安装辅助服务</button>
+            <button class="button button-quiet" id="tun-helper-repair" type="button">重新关联辅助服务</button>
             <button class="button button-quiet" id="tun-helper-open-settings" type="button">打开系统设置</button>
-            <button class="button button-danger" id="tun-helper-uninstall" type="button">卸载 Helper</button>
+            <button class="button button-danger" id="tun-helper-uninstall" type="button">卸载辅助服务</button>
           </div>
         </article>
         <article class="panel">
@@ -740,6 +741,11 @@ function renderSessionResume() {
   const registration = startupRegistrationPresentation(startupStatus);
   $("#startup-registration-status")!.textContent = registration.text;
   $("#startup-registration-status")!.classList.toggle("startup-registration-issue", registration.issue);
+  const repair = $("#settings-startup-repair") as HTMLButtonElement;
+  repair.classList.toggle("is-hidden", startupStatus?.repairAvailable !== true);
+  repair.disabled = startupRepairBusy || settingsSaving || startupModeDraft !== null;
+  repair.textContent = startupRepairBusy ? "正在关联…" : "修复登录启动";
+  $("#settings-startup-open")!.classList.toggle("is-hidden", store.appInfo?.targetOs !== "macos" || startupStatus?.state !== "requires_approval");
 }
 
 async function refreshSessionResume(force = false) {
@@ -1069,12 +1075,12 @@ function renderAppUpdate() {
     store.appInfo?.version ?? store.appUpdate?.currentVersion ?? "—";
   $("#app-update-latest")!.textContent = store.appUpdate?.latestVersion ?? "尚未检查";
   $("#app-update-date")!.textContent = formatDate(store.appUpdate?.publishedAt);
-  $("#app-update-source")!.textContent = store.appUpdate ? (store.appUpdate.source === "github" ? "GitHub" : "Gitee") : "—";
+  $("#app-update-source")!.textContent = updateSourceLabel(store.appUpdate?.source);
   const channels = $("#app-update-channels")!;
   channels.replaceChildren(...(store.appUpdate?.channels ?? []).map((channel) => {
     const item = document.createElement("li");
     item.classList.toggle("is-warning", Boolean(channel.error));
-    item.textContent = `${channel.source === "github" ? "GitHub" : "Gitee"} · ${channel.error ?? channel.version ?? "尚未检查"}`;
+    item.textContent = `${updateSourceLabel(channel.source)} · ${channel.error ?? channel.version ?? "尚未检查"}`;
     return item;
   }));
   channels.classList.toggle("is-hidden", !channels.childElementCount);
@@ -1215,20 +1221,20 @@ function renderTunHelper() {
   $("#tun-panel-heading")!.textContent = windows ? "Windows TUN 权限" : macos ? "macOS TUN 权限服务" : "TUN 平台支持";
   $("#network-mode-help")!.textContent = windows
     ? "Windows TUN 需要先从托盘退出应用，再右键以管理员身份运行。关闭窗口会保留托盘运行；停止内核或退出应用才会关闭 TUN。使用系统代理前，请先关闭其他代理客户端的系统代理。"
-    : macos ? "首次使用需安装并批准 TUN 权限服务；预检通过后才切换模式。服务正在检查时请稍候；升级后若需要更新，请在停止代理后主动点击“更新辅助服务”。"
+    : macos ? "首次使用需安装并批准 TUN 权限服务；预检通过后才切换模式。服务正在检查时请稍候；升级后若提示重新关联，请先停止代理，再点击“重新关联辅助服务”；系统拒绝授权时请在登录项与扩展中允许。"
     : "Linux 暂未提供 TUN 网络接管。可使用本地端口、系统代理或程序代理；已安装应用快选不代表已支持 TUN。";
   $("#tun-helper-title")!.textContent = windows
     ? state === "ready" ? "管理员会话已就绪" : "以管理员身份运行后可开启 TUN"
-    : !macos ? "此平台尚未提供 TUN 网络接管" : state === "ready" ? "最小权限 TUN Helper 已就绪" : tunHelperStateLabel(state);
+    : !macos ? "此平台尚未提供 TUN 网络接管" : state === "ready" ? "TUN 辅助服务已就绪" : tunHelperStateLabel(state);
   const tunUnsupported = store.appInfo?.targetOs === "linux" || helper?.supported === false;
   ($('[name="settings-network-mode"][value="tun"]') as HTMLInputElement).disabled = tunUnsupported;
   ($('#settings-mode option[value="tun"]') as HTMLOptionElement).disabled = tunUnsupported;
   $("#tun-helper-message")!.textContent =
     helper?.message ?? "正在读取当前系统的 TUN 运行方式。";
-  $("#tun-helper-protocol-label")!.textContent = windows ? "运行方式" : "协议版本";
+  $("#tun-helper-protocol-label")!.textContent = windows ? "运行方式" : "辅助服务 / 协议";
   $("#tun-helper-protocol")!.textContent = windows ? "管理员会话（无常驻服务）" : helper?.protocolVersion
-    ? `v${helper.protocolVersion}`
-    : "—";
+    ? `${helper.helperVersion ?? "版本尚未读取"} · 协议 v${helper.protocolVersion}`
+    : "尚未读取";
   $("#tun-helper-runtime")!.textContent = helper?.runtimeRunning
     ? `运行中 · PID ${helper.runtimePid ?? "—"}`
     : state === "checking" || state === "unreachable" ? "待确认" : !helper?.supported ? "此平台未提供" : "未运行";
@@ -1242,14 +1248,14 @@ function renderTunHelper() {
     "is-hidden",
     !macos || (state !== "outdated" && state !== "unreachable"),
   );
-  open.classList.toggle("is-hidden", !macos || state !== "requires_approval");
+  open.classList.toggle("is-hidden", !macos || (state !== "requires_approval" && state !== "unreachable"));
   uninstall.classList.toggle(
     "is-hidden",
     !macos || !state || state === "unsupported" || state === "not_installed",
   );
   const helperBusy = networkModeSwitching || runtimeActionInFlight || settingsSaving || !canStartRuntime(store.runtime);
   install.disabled = helperBusy;
-  repair.textContent = state === "outdated" ? "更新辅助服务" : "修复 Helper";
+  repair.textContent = "重新关联辅助服务";
   repair.disabled = helperBusy || running;
   open.disabled = networkModeSwitching;
   uninstall.disabled = helperBusy || running;
@@ -2617,8 +2623,10 @@ async function manageTunHelper(operation: () => Promise<unknown>, message: strin
   runtimeMutationRevision++;
   renderHeader(); renderOverview(); renderTunHelper();
   try {
-    await action(message, operation);
+    await operation();
     store.tunHelper = await api.tunHelperStatus();
+    toast(store.tunHelper.state === "ready" || store.tunHelper.state === "not_installed"
+      ? message : store.tunHelper.message, store.tunHelper.state === "ready" || store.tunHelper.state === "not_installed" ? "success" : "info");
   } catch (error) {
     connectionFeedback.showError(error);
   } finally {
@@ -2630,7 +2638,7 @@ async function manageTunHelper(operation: () => Promise<unknown>, message: strin
 }
 
 $("#tun-helper-install")!.addEventListener("click", () => manageTunHelper(api.installTunHelper, "TUN 辅助服务已提交安装，请核对授权状态"));
-$("#tun-helper-repair")!.addEventListener("click", () => manageTunHelper(api.repairTunHelper, "TUN 辅助服务已重新注册，请核对授权状态"));
+$("#tun-helper-repair")!.addEventListener("click", () => manageTunHelper(api.repairTunHelper, "辅助服务已与当前版本关联并通过身份核对"));
 $("#tun-helper-open-settings")!.addEventListener("click", async () => {
   if (store.appInfo?.targetOs !== "macos") return;
   await action("", () => api.openTunHelperSettings());
@@ -2638,7 +2646,7 @@ $("#tun-helper-open-settings")!.addEventListener("click", async () => {
 $("#tun-helper-uninstall")!.addEventListener("click", async (event) => {
   if (store.appInfo?.targetOs !== "macos" || networkModeSwitching || runtimeActionInFlight || settingsSaving || !canStartRuntime(store.runtime)) return;
   const confirmed = await confirmAction({
-    title: "卸载 TUN Helper",
+    title: "卸载 TUN 辅助服务",
     message: "卸载后 TUN 模式将停止使用，Manual 与系统代理不受影响。",
     confirmLabel: "确认卸载",
     returnFocus: event.currentTarget as HTMLElement,
@@ -2705,6 +2713,22 @@ $("#app-update-install")!.addEventListener("click", async (event) => {
   } finally { appUpdateActionBusy = false; renderAppUpdate(); }
 });
 
+$("#settings-startup-open")!.addEventListener("click", () => { void action("", api.openStartupSettings); });
+$("#settings-startup-repair")!.addEventListener("click", async () => {
+  if (startupRepairBusy || settingsSaving || startupModeDraft !== null || !startupStatus?.repairAvailable) return;
+  startupRepairBusy = true;
+  sessionResumeRevision++;
+  renderSessionResume();
+  try {
+    const status = await action("", api.repairStartup);
+    if (status) { startupStatus = status; toast(status.message, status.state === "registered" ? "success" : "info"); }
+  } finally {
+    startupRepairBusy = false;
+    sessionResumeRevision++;
+    renderSessionResume();
+    void refreshSessionResume(true);
+  }
+});
 document.querySelectorAll<HTMLInputElement>('[name="settings-network-mode"]').forEach((radio) => {
   radio.addEventListener("change", () => {
     if (radio.checked) ($("#settings-mode") as HTMLSelectElement).value = radio.value;
@@ -2717,6 +2741,7 @@ $("#settings-startup-mode")!.addEventListener("change", () => {
   renderSessionResume();
 });
 $("#settings-startup-check")!.addEventListener("click", () => { void refreshSessionResume(true); });
+
 $("#settings-form")!.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!store.settings || settingsSaving || runtimeActionInFlight || networkModeSwitching || themeController.snapshot.saving) return;

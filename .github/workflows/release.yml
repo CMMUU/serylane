@@ -175,18 +175,59 @@ jobs:
           name: failed-native-tray-${{ matrix.artifact }}
           path: ${{ runner.temp }}/native-tray
           if-no-files-found: warn
+      - name: Prepare required Apple signing and notarization
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        shell: bash
+        run: |
+          for key in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_P8; do
+            if [ -z "${!key}" ]; then
+              echo "Missing Apple release credential: $key"
+              exit 1
+            fi
+          done
+          case "$APPLE_SIGNING_IDENTITY" in
+            'Developer ID Application:'*) ;;
+            *) echo 'A Developer ID Application identity is required for public macOS releases.'; exit 1 ;;
+          esac
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/serylane-notary.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/serylane-notary.p8" >> "$GITHUB_ENV"
+          node -e 'require("fs").writeFileSync(process.env.RUNNER_TEMP + "/serylane-release-config.json", JSON.stringify({bundle:{macOS:{signingIdentity:process.env.APPLE_SIGNING_IDENTITY,hardenedRuntime:true}}}))'
       - name: Build signed installers and updater artifacts
         id: signed_build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         shell: bash
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             echo 'Missing TAURI_SIGNING_PRIVATE_KEY; refusing an unsigned release.'
             exit 1
           fi
-          npm run tauri build
+          if [ "$RUNNER_OS" = 'macOS' ]; then
+            npm run tauri build -- --config "$RUNNER_TEMP/serylane-release-config.json"
+            ./scripts/verify-macos-release.sh src-tauri/target/release/bundle/macos/Serylane.app
+          else
+            npm run tauri build
+          fi
+      - name: Remove temporary Apple notarization material
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/serylane-notary.p8" "$RUNNER_TEMP/serylane-release-config.json"
       - name: Verify Windows installers on disposable runner
         if: runner.os == 'Windows'
         shell: pwsh

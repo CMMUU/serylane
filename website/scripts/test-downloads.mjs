@@ -156,7 +156,7 @@ for (const target of targets) {
   view.tabs.find(t => t.dataset.system === system).dispatch('click');
   view.architectures.find(a => a.dataset.architecture === arch).dispatch('click');
   verifySelection(view, target);
-  assert.match(view.query('#channel-note').textContent, system === 'windows' ? /已核对国内/ : /暂未确认国内/);
+  assert.match(view.query('#channel-note').textContent, system === 'windows' ? /已核对Gitee/ : /暂未确认香港或 Gitee/);
 }
 view.tabs[0].dispatch('keydown', { key: 'End' });
 verifySelection(view, 'linux-x64');

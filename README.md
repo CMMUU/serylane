@@ -21,16 +21,16 @@ Serylane 是基于 **Mihomo** 内核、使用 Rust + Tauri 2 构建的开源桌�
 - **更清晰的 macOS 双行网速（v0.7.9）**：保留共享 S 图标，使用原生等宽数字、固定数值/单位列和系统亮暗着色；紧凑显示上下行，悬停查看完整速率单位，关闭后回到纯图标。
 - **可选 Codex 路由**：提供 HTTP/SSE 兼容模式与 WebSocket 原生透传。保存设置、启用本地服务、接入 Codex 是独立操作，接入前备份，恢复时检查冲突。
 - **OpenAI 稳定灾备**：分别检测 ChatGPT 与 OpenAI API，区分基础可达和模型流证据；结合限频故障复查、节点保持、故障冷却与恢复滞后选择后备节点。手动选点和倍率预算优先，不重放请求；已中断的数据流不能靠换节点无缝续接。
-- **日常桌面体验**：磨砂玻璃界面、浅色／深色／深紫与跟随系统主题、托盘、流量监控，以及 Gitee 优先、GitHub 备用的签名更新。
+- **日常桌面体验**：磨砂玻璃界面、浅色／深色／深紫与跟随系统主题、托盘、流量监控，以及 香港下载中心优先、Gitee / GitHub 备用的签名更新。
 
 ## 源码与下载
 
 - 官网：[Serylane](https://serylane.cmmuu.com/)（已上线，提供安装包下载与使用文档）。
 - 源码仓库：[GitHub](https://github.com/CMMUU/serylane) · [Gitee](https://gitee.com/cmmuu/serylane)
 - 版本发布：[GitHub Releases](https://github.com/CMMUU/serylane/releases) · [Gitee Releases](https://gitee.com/cmmuu/serylane/releases)
-- macOS 下载分为 **Intel 芯片（x64）** 和 **Apple 芯片（M 系列，ARM64）**；在苹果菜单 →「关于本机」确认芯片后选择。官网入口在每次点击时查询最新正式版，同版本国内优先、GitHub 备用。
+- macOS 下载分为 **Intel 芯片（x64）** 和 **Apple 芯片（M 系列，ARM64）**；在苹果菜单 →「关于本机」确认芯片后选择。官网入口在每次点击时查询最新正式版，同版本香港优先、Gitee / GitHub 备用。
 - 正式可用版本以官网动态查询、两渠道实际 Release 与更新清单为准；`main` 可能包含尚未发布的源码改动，不能将源码版本号当成已公开的安装包版本。订阅的统一新增入口与「添加后选用」说明见 [v0.7.6 发布说明](docs/发布说明-v0.7.6.md)。
-- 安装包、SHA-256 校验文件和更新签名以 Release 页面实际附件为准；应用内自动更新同版本优先 Gitee，GitHub 备用。历史版本附件文件名保持不变。
+- 安装包、SHA-256 校验文件和更新签名以 Release 页面实际附件为准；应用内自动更新同版本优先香港下载中心，Gitee / GitHub 备用。历史版本附件文件名保持不变。
 - Windows 10/11 TUN 为实验性功能，已实现管理员会话运行方式，尚未完成真实 TUN 路由与恢复验收。各平台的安装、构建和网络接管验证范围见 [v0.5.0 发布说明](docs/发布说明-v0.5.0.md)。
 - 自 2026-09-04 起，应用源码按 [GNU GPL v3（GPL-3.0-only）](LICENSE) 开源。第三方依赖沿用各自许可证，见 [第三方声明](THIRD_PARTY_NOTICES.md)、[v0.5.0 许可证清单](docs/compliance/v0.5.0/license-inventory.md) 和 [SBOM](docs/compliance/v0.5.0/sbom.cdx.json)。`package.json` 中的 `private: true` 仅防止意外发布到 npm，不限制源码访问或 GPL 授予的权利。
 
@@ -168,7 +168,7 @@ Serylane 是基于 **Mihomo** 内核、使用 Rust + Tauri 2 构建的开源桌�
 
 ## 升级与数据兼容
 
-- 应用内更新继续使用既有的发布渠道与签名校验，同版本国内优先、GitHub 备用；安装标识、更新包地址和数据目录保持兼容，不重置订阅、设置或配置历史。
+- 应用内更新继续使用既有的发布渠道与签名校验，同版本香港优先、Gitee / GitHub 备用；安装标识、更新包地址和数据目录保持兼容，不重置订阅、设置或配置历史。
 - Codex 接入备份、规则导出元数据和 TUN helper 标识保持兼容；更新不会自动接入 Codex，也不会改变路由默认关闭及独立确认流程。
 - 升级前备份数据，在方便结束重要连接时确认安装；不要同时运行多个版本，或同时开启多个客户端的系统代理／TUN。
 - 从 0.3.1–0.5.0 升级时，请先阅读 [历史版本迁移注意事项](docs/发布说明-v0.6.0.md)，按对应平台处理安装与数据保留。各平台的覆盖安装、快捷方式、登录启动项及 helper 授权需独立验证。

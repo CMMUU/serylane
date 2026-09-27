@@ -56,23 +56,28 @@ export async function verifyStatic(expected, fetcher = request) {
     assert.equal(sha256(sourceAssetBytes(path, Buffer.from(await response.arrayBuffer()))), hash, `Live content differs: ${path}`);
   }
 }
-async function verifyDownloads() {
-  const catalog = await request(origin + '/api/releases/latest');
+export async function verifyDownloads(fetcher = request) {
+  const catalog = await fetcher(origin + '/api/releases/latest');
   assert.equal(catalog.status, 200, 'Latest release lookup failed; deployment is not fully verified');
   const release = await catalog.json();
   assert.match(release.version, /^v\d+\.\d+\.\d+$/);
   const targets = ['windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64', 'linux-x64', 'linux-arm64'];
   assert.deepEqual(Object.keys(release.assets).sort(), [...targets].sort());
-  // No installer bodies are downloaded. Each architecture is checked separately.
-  for (const target of targets) {
-    const response = await request(`${origin}/download/${target}?channel=github`, { method: 'HEAD' });
+  const bases = { github: 'https://github.com/CMMUU/serylane/releases/download',
+    gitee: 'https://gitee.com/cmmuu/serylane/releases/download', hk: 'https://files.cmmuu.com/releases/serylane' };
+  // Verify BOTH the primary selection and explicit fallback for all six targets.
+  // HEAD only: deployment verification never pulls installer bodies into Node.
+  for (const target of targets) for (const githubOnly of [false, true]) {
+    const response = await fetcher(`${origin}/download/${target}${githubOnly ? '?channel=github' : ''}`, { method: 'HEAD' });
     assert.equal(response.status, 302, `Latest download not verified: ${target}`);
     assert.equal(response.headers.get('x-serylane-version'), release.version, 'Release changed during verification; rerun');
-    const location = new URL(response.headers.get('location'));
-    assert.equal(location.origin, 'https://github.com');
-    assert.equal(decodeURIComponent(location.pathname), `/CMMUU/serylane/releases/download/${release.version}/${release.assets[target].filename}`);
+    const channel = response.headers.get('x-serylane-channel');
+    assert.ok(Object.hasOwn(bases, channel), 'Unknown download channel');
+    if (githubOnly) assert.equal(channel, 'github');
+    assert.equal(response.headers.get('location'), `${bases[channel]}/${release.version}/${release.assets[target].filename}`,
+      `Channel/version/architecture identity differs: ${target}`);
   }
-  console.log(`Verified latest release ${release.version}, all six architecture-specific download routes.`);
+  console.log(`Verified latest release ${release.version}, six primary routes and six GitHub fallback routes.`);
 }
 export async function retryRead(check, wait = () => new Promise(resolve => setTimeout(resolve, 15000))) {
   // Edge activation can briefly return the previous asset manifest. Retry only

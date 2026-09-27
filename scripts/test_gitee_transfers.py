@@ -126,7 +126,7 @@ class TransferTests(unittest.TestCase):
 
     def test_website_catalog_and_all_update_manifests_wait_for_verified_payloads(self):
         job, calls = self.job(1), []
-        names = ["downloads.json", "latest-serylane.json", "latest-serylane-gitee.json",
+        names = ["downloads.json", "latest-serylane.json", "latest-serylane-gitee.json", "latest-serylane-hk.json",
                  "latest.json", "latest-gitee.json", "app.zip", "app.zip.sig", "SHA256SUMS.txt"]
         def ensure(release_id, item):
             if item["name"] in sync.RELEASE_MANIFESTS:
@@ -134,7 +134,7 @@ class TransferTests(unittest.TestCase):
             calls.append(item["name"])
         with patch.object(job, "ensure_attachment", side_effect=ensure):
             job.transfer_attachments(12, [{"name": name} for name in names])
-        self.assertCountEqual(calls[-5:], sync.RELEASE_MANIFESTS)
+        self.assertCountEqual(calls[-len(sync.RELEASE_MANIFESTS):], sync.RELEASE_MANIFESTS)
 
     def test_serial_default_preserves_manifest_last_order(self):
         job, calls = self.job(1), []
