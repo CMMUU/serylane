@@ -1,9 +1,10 @@
 // Fixed upstreams only. Never accept a host, asset URL, version or filename from a visitor.
 export const GITHUB = 'https://github.com/CMMUU/serylane';
 export const GITEE = 'https://gitee.com/cmmuu/serylane';
+export const HK_FILES = 'https://files.cmmuu.com/releases/serylane';
 export const TARGETS = ['windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64', 'linux-x64', 'linux-arm64'] as const;
 export type Target = typeof TARGETS[number];
-type Channel = 'github' | 'gitee';
+export type Channel = 'github' | 'gitee' | 'hk';
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 export type Asset = { filename: string; size: number; sha256: string };
 export type Catalog = { version: string; assets: Partial<Record<Target, Asset>>; marker: string; markerText: string };
@@ -24,10 +25,13 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 export function assetURL(channel: Channel, version: string, filename: string): string {
-  return `${channel === 'gitee' ? GITEE : GITHUB}/releases/download/${version}/${filename}`;
+  return channel === 'hk' ? `${HK_FILES}/${version}/${filename}`
+    : `${channel === 'gitee' ? GITEE : GITHUB}/releases/download/${version}/${filename}`;
 }
 function allowed(url: URL, channel: Channel): boolean {
   if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash) return false;
+  if (channel === 'hk') return url.origin === new URL(HK_FILES).origin && !url.search
+    && /^\/releases\/serylane\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\/[A-Za-z0-9_.-]+$/.test(url.pathname);
   // Provider-owned release CDN destinations; no wildcard hostnames or user-controlled redirect endpoints.
   if (channel === 'github') return (url.origin === 'https://github.com' && url.pathname.startsWith('/CMMUU/serylane/releases/'))
     || (url.hostname === 'release-assets.githubusercontent.com' && url.pathname.startsWith('/github-production-release-asset/'));
@@ -48,11 +52,15 @@ async function upstream(fetcher: Fetcher, input: string, channel: Channel, metho
     const location = response.headers.get('location');
     await dispose(response);
     requireValid(location);
-    url = new URL(location, url);
+    const destination = new URL(location, url);
+    // Our file gateway serves immutable paths directly. A redirect must not
+    // silently switch a tag/filename (even to another allowed archive path).
+    if (channel === 'hk') requireValid(destination.href === input);
+    url = destination;
   }
   throw new ReleaseError('UPSTREAM_REDIRECT_LIMIT');
 }
-async function boundedText(response: Response): Promise<string> {
+export async function boundedText(response: Response): Promise<string> {
   if (response.status !== 200) {
     await dispose(response);
     throw new ReleaseError(`METADATA_HTTP_${response.status}`);
@@ -95,7 +103,7 @@ function checksums(text: string): Map<string, string> {
   }
   return result;
 }
-function filenames(version: string): Record<Target, string> {
+export function filenames(version: string): Record<Target, string> {
   const [major, minor, patch] = version.slice(1).split('.').map(Number);
   const brand = major === 0 && (minor < 7 || (minor === 7 && patch < 7)) ? 'RouteDeck' : 'Serylane';
   const prefix = `${brand}_${version.slice(1)}`;
@@ -179,24 +187,24 @@ export function catalogAsset(catalog: Catalog, target: Target): Asset {
   return asset;
 }
 
-export async function mirrorReady(fetcher: Fetcher, catalog: Catalog, targets: readonly Target[]): Promise<{ ready: Set<Target>; diagnostic: string }> {
+export async function mirrorReady(fetcher: Fetcher, catalog: Catalog, targets: readonly Target[], channel: 'gitee' | 'hk' = 'gitee'): Promise<{ ready: Set<Target>; diagnostic: string }> {
   const signal = AbortSignal.timeout(4000);
   try {
     // This marker is mirrored only after every package/signature/checksum has verified.
     // Compare exact authoritative bytes; a matching version string alone is insufficient.
-    const marker = await metadata(fetcher, 'gitee', catalog.version, catalog.marker, signal);
+    const marker = await metadata(fetcher, channel, catalog.version, catalog.marker, signal);
     if (marker !== catalog.markerText) throw new ReleaseError('MIRROR_MARKER_MISMATCH');
     const results = await Promise.all(targets.map(async target => {
       try {
         const asset = catalogAsset(catalog, target);
-        const size = await packageSize(fetcher, 'gitee', catalog.version, asset.filename, signal);
+        const size = await packageSize(fetcher, channel, catalog.version, asset.filename, signal);
         return size === asset.size ? target : null;
       } catch { return null; }
     }));
     const ready = new Set(results.filter((target): target is Target => target !== null));
     return { ready, diagnostic: ready.size === targets.length ? 'VERIFIED' : 'PACKAGE_UNVERIFIED' };
   } catch (error) {
-    console.info({ event: 'mirror_unavailable', code: error instanceof ReleaseError ? error.code : 'MIRROR_METADATA_UNAVAILABLE' });
+    console.info({ event: 'mirror_unavailable', channel, code: error instanceof ReleaseError ? error.code : 'MIRROR_METADATA_UNAVAILABLE' });
     return { ready: new Set(), diagnostic: error instanceof ReleaseError ? error.code : 'MIRROR_METADATA_UNAVAILABLE' };
   }
 }
@@ -204,8 +212,14 @@ export async function mirrorReady(fetcher: Fetcher, catalog: Catalog, targets: r
 export async function resolveDownload(fetcher: Fetcher, target: Target, githubOnly: boolean) {
   const catalog = await latestCatalog(fetcher, [target]);
   const asset = catalogAsset(catalog, target);
-  if (!githubOnly && (await mirrorReady(fetcher, catalog, [target])).ready.has(target)) {
-    return { version: catalog.version, channel: 'gitee', url: assetURL('gitee', catalog.version, asset.filename) };
+  if (!githubOnly) {
+    // Independent mirrors run within the same bound. HK never hides a newer
+    // upstream release and is only eligible after matching the exact catalog.
+    const [hk, gitee] = await Promise.all([
+      mirrorReady(fetcher, catalog, [target], 'hk'), mirrorReady(fetcher, catalog, [target], 'gitee'),
+    ]);
+    const channel = hk.ready.has(target) ? 'hk' : gitee.ready.has(target) ? 'gitee' : null;
+    if (channel) return { version: catalog.version, channel, url: assetURL(channel, catalog.version, asset.filename) };
   }
   const size = await packageSize(fetcher, 'github', catalog.version, asset.filename, AbortSignal.timeout(5000));
   requireValid(size === asset.size);

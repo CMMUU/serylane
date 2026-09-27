@@ -59,26 +59,26 @@
     });
     const target = `${selectedSystem}-${selectedArchitecture}`;
     const asset = release?.assets[target];
-    const domesticAvailable = asset?.domesticAvailable === true;
+    const domesticAvailable = asset?.hkAvailable === true;
     const github = document.querySelector("#download-github");
     const gitee = document.querySelector("#download-gitee");
     // These URLs always resolve again on click, even if this page was left open before a release.
     github.href = `/download/${target}?channel=github`;
-    gitee.href = `/download/${target}`;
+    gitee.href = `https://downloads.cmmuu.com/download/serylane/latest/${target}`;
     github.querySelector("span").textContent = "GitHub 备用";
     gitee.querySelector("span").textContent = `下载最新版 · ${system.format}`;
     const links = document.querySelector(".release-links");
     links.append(gitee, github);
-    for (const [link, channelName] of [[gitee, "国内优先、GitHub 备用"], [github, "GitHub"]]) {
+    for (const [link, channelName] of [[gitee, "下载中心优先、GitHub 备用"], [github, "GitHub"]]) {
       link.dataset.system = selectedSystem;
       link.dataset.architecture = selectedArchitecture;
       link.setAttribute("aria-label", `下载最新正式版 Serylane ${system.short} ${architecture} ${system.format} 安装包，${channelName}，点击时重新核对版本`);
     }
     const note = !release
-      ? "国内优先，GitHub 备用；点击下载时会独立核对最新版本与渠道。"
+      ? "默认使用下载中心；点击时核对最新正式版。连接异常可选择 GitHub 备用。"
       : domesticAvailable
-        ? `已核对国内 ${system.short} ${architecture} ${system.format} 包；点击时再次确认，异常时转 GitHub。`
-        : `暂未确认国内 ${system.short} ${architecture} ${system.format} 包；点击时重新检查，未就绪则转 GitHub 同版本包。`;
+        ? `已核对下载中心 ${system.short} ${architecture} ${system.format} 包；点击时再次确认；连接异常可选择 GitHub 备用。`
+        : `暂未确认下载中心 ${system.short} ${architecture} ${system.format} 包；点击时重新检查，未就绪则转 GitHub 同版本包。`;
     document.querySelector("#release-status").textContent = loading ? "正在查询最新正式版…"
       : release ? `当前最新正式版 ${release.version}。点击时再次核对版本。`
         : "暂时无法确认最新正式版。可重试查询，或点击下载重新检查；不会静默下载旧版。";
