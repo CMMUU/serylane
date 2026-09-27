@@ -1,5 +1,6 @@
 import { GITHUB, TARGETS, catalogAsset, latestCatalog, mirrorReady, resolveDownload, ReleaseError } from './releases.ts';
 import type { Fetcher, Target } from './releases.ts';
+import { centerCatalog } from './center.ts';
 
 const HEADERS = {
   'Cache-Control': 'no-store, max-age=0', 'CDN-Cache-Control': 'no-store',
@@ -28,13 +29,31 @@ export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher
   if (url.search && (isAPI || url.search !== '?channel=github')) return response('{"error":"INVALID_QUERY"}', 400);
   let result: Response;
   try {
+    // Normal resolution is owned by the download center. Keep independent GitHub
+    // verification for explicit fallback and outages, including historical links.
+    if (url.search !== '?channel=github') {
+      try {
+        const catalog = await centerCatalog(fetcher);
+        if (isAPI) {
+          const result = response(JSON.stringify(catalog), 200, undefined, { 'X-Serylane-Resolver': 'download-center' });
+          return request.method === 'HEAD' ? new Response(null, result) : result;
+        }
+        const asset = catalog.assets[target];
+        return new Response(null, { status: 302, headers: { ...HEADERS, Location: asset.fileUrl,
+          'X-Serylane-Version': catalog.version, 'X-Serylane-Channel': asset.channel, 'X-Serylane-Resolver': 'download-center' } });
+      } catch {
+        console.info({ event: 'download_center_fallback' });
+      }
+    }
     if (isAPI) {
       const catalog = await latestCatalog(fetcher);
-      const mirror = await mirrorReady(fetcher, catalog, TARGETS);
+      const [hk, mirror] = await Promise.all([
+        mirrorReady(fetcher, catalog, TARGETS, 'hk'), mirrorReady(fetcher, catalog, TARGETS, 'gitee'),
+      ]);
       result = response(JSON.stringify({
         version: catalog.version, checkedAt: new Date().toISOString(),
-        assets: Object.fromEntries(TARGETS.map(target => [target, { ...catalogAsset(catalog, target), domesticAvailable: mirror.ready.has(target) }])),
-      }), 200, undefined, { 'X-Serylane-Mirror': mirror.diagnostic });
+        assets: Object.fromEntries(TARGETS.map(target => [target, { ...catalogAsset(catalog, target), domesticAvailable: hk.ready.has(target) || mirror.ready.has(target), hkAvailable: hk.ready.has(target), giteeAvailable: mirror.ready.has(target) }])),
+      }), 200, undefined, { 'X-Serylane-Mirror': mirror.diagnostic, 'X-Serylane-HK': hk.diagnostic });
     } else {
       const download = await resolveDownload(fetcher, target, url.search === '?channel=github');
       result = new Response(null, { status: 302, headers: { ...HEADERS, Location: download.url,

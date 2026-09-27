@@ -92,3 +92,10 @@ Gitee 同步把 `downloads.json` 与四份更新清单放在所有普通附件�
 延续批准稿的冰白底色、蓝紫环境光、磨砂玻璃、深色中文、统一线性图标与细圆角滚动条。下载版本/渠道提示及准确安全文案是相对概念稿的有意调整。页面中的路由界面是原生代码构建的**只读示意**，不代表实时连接状态。
 
 `public/assets/serylane-mark.png` 是仓库 `assets/brand/serylane-icon.png` 经 Tauri 官方图标转换生成的 256×256 PNG；`public/favicon.png` 为同源 32×32 PNG。新品牌源图来自内置 image_gen 对批准标志的提取，完整来源及提示词见 `assets/品牌素材来源.md`。没有使用整张设计图充当网页，也没有把生成资产留在外部临时路径供生产依赖。
+
+
+## 下载中心固定入口
+
+官网主下载按钮使用 `https://downloads.cmmuu.com/download/serylane/latest/{target}`，保留六平台与 Mac Intel/Apple 标签。项目页为 `https://downloads.cmmuu.com/projects/serylane`。同源版本展示和旧 `/download/{target}`优先消费中心已核验的安装包契约；异常时保留独立上游核验与 GitHub 显式备用，响应不缓存最新跳转。
+
+发布验证覆盖六个中心入口、六个旧入口和六个 GitHub 备用入口；对比版本、架构、渠道与实际不可变目标。中心固定入口先上线，再发布官网。此网页更新不重建或改写桌面应用历史安装包，不代表尚未发行的客户端已改变自动更新渠道。
