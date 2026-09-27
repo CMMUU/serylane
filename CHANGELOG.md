@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.18 - Unreleased candidate
+
+- Use native macOS login-item registration with explicit status, conservative legacy migration, and user-controlled repair; preserve disabled login and proxy preferences.
+- Coordinate Helper registration, bounded identity/version handshake and transactional update recovery; package and verify both native helpers before release.
+- Add verified HK download/update metadata with same-version, same-architecture fallback; preserve original hashes and updater signatures.
+- Require Developer ID signing and notarization for official macOS releases. Physical login, reboot and TUN acceptance remain separate release checks.
+
 ## 0.7.13 - 2026-09-18
 
 - Classify local proxy, DNS, TLS/certificate, connection, HTTP/account and streaming failures without storing request URLs, credentials, bodies or model output. Expose the latest historical diagnosis and bounded, rate-limited application-log events.

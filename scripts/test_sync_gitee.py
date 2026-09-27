@@ -139,7 +139,8 @@ class SyncTests(unittest.TestCase):
                 self_test = self
                 with patch.object(sync.Sync, "ensure_attachment", record):
                     job.transfer_attachments(1, [{"name": name} for name in names])
-                self.assertEqual(set(seen[-5:]), sync.RELEASE_MANIFESTS)
+                self.assertIn("latest-serylane-hk.json", sync.RELEASE_MANIFESTS)
+                self.assertEqual(set(seen[-len(sync.RELEASE_MANIFESTS):]), sync.RELEASE_MANIFESTS)
                 self.assertEqual(len(seen), len(names))
                 seen.clear()
                 def fail(self, release_id, item):
