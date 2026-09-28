@@ -77,7 +77,16 @@ export async function verifyDownloads(fetcher = request) {
     assert.equal(response.headers.get('location'), `${bases[channel]}/${release.version}/${release.assets[target].filename}`,
       `Channel/version/architecture identity differs: ${target}`);
   }
-  console.log(`Verified latest release ${release.version}, six primary routes and six GitHub fallback routes.`);
+  for (const target of targets) {
+    const response = await fetcher(`https://downloads.cmmuu.com/download/serylane/latest/${target}`, { method: 'HEAD' });
+    assert.equal(response.status, 302, `Center permanent route not verified: ${target}`);
+    assert.match(response.headers.get('cache-control') ?? '', /no-store/);
+    assert.equal(response.headers.get('x-serylane-version'), release.version, 'Center version differs; rerun verification');
+    const channel = response.headers.get('x-serylane-channel');
+    assert.ok(channel === 'hk' || channel === 'github');
+    assert.equal(response.headers.get('location'), `${bases[channel]}/${release.version}/${release.assets[target].filename}`);
+  }
+  console.log(`Verified latest release ${release.version}, six center routes, six legacy routes and six GitHub fallback routes.`);
 }
 export async function retryRead(check, wait = () => new Promise(resolve => setTimeout(resolve, 15000))) {
   // Edge activation can briefly return the previous asset manifest. Retry only

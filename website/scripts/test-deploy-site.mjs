@@ -64,15 +64,15 @@ test('download verification covers all six primary and explicit fallback routes 
     if (url.endsWith('/api/releases/latest')) return Response.json(release);
     calls.push({ url, method: init.method });
     const parsed = new URL(url);
-    const target = parsed.pathname.slice('/download/'.length);
+    const target = parsed.pathname.startsWith('/download/serylane/latest/') ? parsed.pathname.slice('/download/serylane/latest/'.length) : parsed.pathname.slice('/download/'.length);
     const github = parsed.search === '?channel=github';
     return new Response(null, { status: 302, headers: {
-      'x-serylane-version': release.version, 'x-serylane-channel': github ? 'github' : 'hk',
+      'x-serylane-version': release.version, 'x-serylane-channel': github ? 'github' : 'hk', 'cache-control': 'no-store',
       location: `${github ? 'https://github.com/CMMUU/serylane/releases/download' : 'https://files.cmmuu.com/releases/serylane'}/${release.version}/${release.assets[target].filename}`,
     } });
   };
   await verifyDownloads(fetcher);
-  assert.equal(calls.length, 12);
+  assert.equal(calls.length, 18);
   assert.ok(calls.every(c => c.method === 'HEAD'));
   for (const bad of ['version', 'architecture', 'host', 'query', 'channel']) {
     await assert.rejects(verifyDownloads(async (url, init) => {

@@ -102,11 +102,11 @@ function createPage(fetchResult) {
 }
 
 const targets = ['windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64', 'linux-x64', 'linux-arm64'];
-const data = { version: 'v9.2.1', assets: Object.fromEntries(targets.map(t => [t, { domesticAvailable: t.startsWith('windows') }])) };
+const data = { version: 'v9.2.1', assets: Object.fromEntries(targets.map(t => [t, { domesticAvailable: t.startsWith('windows'), hkAvailable: t.startsWith('windows') }])) };
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 function verifySelection(view, target) {
   const [system, architecture] = target.split('-');
-  assert.equal(view.gitee.href, '/download/' + target);
+  assert.equal(view.gitee.href, 'https://downloads.cmmuu.com/download/serylane/latest/' + target);
   assert.equal(view.github.href, '/download/' + target + '?channel=github');
   assert.deepEqual(view.query('.release-links').children, [view.gitee, view.github]);
   assert.equal(view.gitee.classList.contains('button-primary'), true);
@@ -135,7 +135,7 @@ function verifySelection(view, target) {
     assert.match(link.getAttribute('aria-label'), /点击时重新核对版本/);
   }
 }
-assert.equal(byId('download-gitee').attributes.href, '/download/windows-x64');
+assert.equal(byId('download-gitee').attributes.href, 'https://downloads.cmmuu.com/download/serylane/latest/windows-x64');
 assert.equal(byId('download-github').attributes.href, '/download/windows-x64?channel=github');
 for (const tag of [...systemTags, ...architectureTags]) assert.ok(Object.hasOwn(tag.attributes, 'disabled'));
 assert.doesNotMatch(html, /releases\/download\/v[0-9]/, 'No version-pinned HTML fallback');
@@ -156,7 +156,7 @@ for (const target of targets) {
   view.tabs.find(t => t.dataset.system === system).dispatch('click');
   view.architectures.find(a => a.dataset.architecture === arch).dispatch('click');
   verifySelection(view, target);
-  assert.match(view.query('#channel-note').textContent, system === 'windows' ? /已核对Gitee/ : /暂未确认香港或 Gitee/);
+  assert.match(view.query('#channel-note').textContent, system === 'windows' ? /已核对下载中心/ : /暂未确认下载中心/);
 }
 view.tabs[0].dispatch('keydown', { key: 'End' });
 verifySelection(view, 'linux-x64');

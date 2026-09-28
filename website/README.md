@@ -93,10 +93,9 @@ Gitee 同步把 `downloads.json` 与五份更新清单放在所有普通附件�
 
 `public/assets/serylane-mark.png` 是仓库 `assets/brand/serylane-icon.png` 经 Tauri 官方图标转换生成的 256×256 PNG；`public/favicon.png` 为同源 32×32 PNG。新品牌源图来自内置 image_gen 对批准标志的提取，完整来源及提示词见 `assets/品牌素材来源.md`。没有使用整张设计图充当网页，也没有把生成资产留在外部临时路径供生产依赖。
 
-## 香港下载中心接入（本轮源码，部署验收单独记录）
 
-香港文件源固定为 `https://files.cmmuu.com/releases/serylane/{tag}/{filename}`，管理和文件 Cookie 隔离。网站仅发小型清单 GET 和安装包 HEAD，再返回 302，不代理大文件。`downloads.json` 必须与 GitHub 权威当前标签的原始字节一致，文件大小也必须匹配；未归档、部分归档或历史版本不自动作为最新版。API 响应分别保留 `X-Serylane-HK` 与 `X-Serylane-Mirror` 诊断，HK 正常不代表 Gitee 已同步。
+## 下载中心固定入口
 
-桌面更新使用 `https://downloads.cmmuu.com/api/releases/serylane/latest` 的 Tauri 静态格式清单，仅当前权威发行已完整归档才返回 200，待同步或上游当前版本不确定返回 503。新发行 `latest-serylane-hk.json` 与另外四份清单一起生成：版本、摘要、大小及签名相同，只有 URL 渠道不同。历史导入不回写 GitHub 原附件。自动更新按最高稳定版本选择、同版优先香港，实际下载回退仍要求版本/摘要/大小/签名全部一致；手动指定渠道不悄悄改用另一个渠道。
+官网主下载按钮使用 `https://downloads.cmmuu.com/download/serylane/latest/{target}`，保留六平台与 Mac Intel/Apple 标签。项目页为 `https://downloads.cmmuu.com/projects/serylane`。同源版本展示和旧 `/download/{target}`优先消费中心已核验的安装包契约；异常时保留独立上游核验与 GitHub 显式备用，响应不缓存最新跳转。
 
-此源码接入不等于 HK 已部署，也不解除 GitHub/Gitee/官网完整发布验收要求。域名创建、文件导入、完整性/断点/六架构公网验收由下载中心部署流程记录。
+发布验证覆盖六个中心入口、六个旧入口和六个 GitHub 备用入口；对比版本、架构、渠道与实际不可变目标。中心固定入口先上线，再发布官网。此网页更新不重建或改写桌面应用历史安装包，不代表尚未发行的客户端已改变自动更新渠道。

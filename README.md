@@ -27,8 +27,9 @@ Serylane 是基于 **Mihomo** 内核、使用 Rust + Tauri 2 构建的开源桌�
 
 - 官网：[Serylane](https://serylane.cmmuu.com/)（已上线，提供安装包下载与使用文档）。
 - 源码仓库：[GitHub](https://github.com/CMMUU/serylane) · [Gitee](https://gitee.com/cmmuu/serylane)
-- 版本发布：[GitHub Releases](https://github.com/CMMUU/serylane/releases) · [Gitee Releases](https://gitee.com/cmmuu/serylane/releases)
-- macOS 下载分为 **Intel 芯片（x64）** 和 **Apple 芯片（M 系列，ARM64）**；在苹果菜单 →「关于本机」确认芯片后选择。官网入口在每次点击时查询最新正式版，同版本香港优先、Gitee / GitHub 备用。
+- 默认下载：[下载中心 Serylane 项目页](https://downloads.cmmuu.com/projects/serylane)，固定入口自动跟随已核验的正式发行。
+- 原始发行与备用：[GitHub Releases](https://github.com/CMMUU/serylane/releases) · [Gitee Releases](https://gitee.com/cmmuu/serylane/releases)
+- macOS 下载分为 **Intel 芯片（x64）** 和 **Apple 芯片（M 系列，ARM64）**；在苹果菜单 →「关于本机」确认芯片后选择。官网默认直达下载中心的固定平台链接，每次点击查询最新正式版；保留 GitHub 独立备用入口。
 - 正式可用版本以官网动态查询、两渠道实际 Release 与更新清单为准；`main` 可能包含尚未发布的源码改动，不能将源码版本号当成已公开的安装包版本。订阅的统一新增入口与「添加后选用」说明见 [v0.7.6 发布说明](docs/发布说明-v0.7.6.md)。
 - 安装包、SHA-256 校验文件和更新签名以 Release 页面实际附件为准；应用内自动更新同版本优先香港下载中心，Gitee / GitHub 备用。历史版本附件文件名保持不变。
 - Windows 10/11 TUN 为实验性功能，已实现管理员会话运行方式，尚未完成真实 TUN 路由与恢复验收。各平台的安装、构建和网络接管验证范围见 [v0.5.0 发布说明](docs/发布说明-v0.5.0.md)。

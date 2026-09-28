@@ -60,7 +60,7 @@ async function upstream(fetcher: Fetcher, input: string, channel: Channel, metho
   }
   throw new ReleaseError('UPSTREAM_REDIRECT_LIMIT');
 }
-async function boundedText(response: Response): Promise<string> {
+export async function boundedText(response: Response): Promise<string> {
   if (response.status !== 200) {
     await dispose(response);
     throw new ReleaseError(`METADATA_HTTP_${response.status}`);
@@ -103,7 +103,7 @@ function checksums(text: string): Map<string, string> {
   }
   return result;
 }
-function filenames(version: string): Record<Target, string> {
+export function filenames(version: string): Record<Target, string> {
   const [major, minor, patch] = version.slice(1).split('.').map(Number);
   const brand = major === 0 && (minor < 7 || (minor === 7 && patch < 7)) ? 'RouteDeck' : 'Serylane';
   const prefix = `${brand}_${version.slice(1)}`;
