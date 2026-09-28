@@ -1202,6 +1202,8 @@ function tunHelperStateLabel(state: TunHelperStatus["state"] | undefined): strin
     checking: "正在确认服务",
     outdated: "需要更新",
     unreachable: "连接异常",
+    needs_repair: "需要重新关联",
+    invalid_installation: "需要更新安装包",
   };
   return state ? labels[state] : "正在检查";
 }
@@ -1246,7 +1248,7 @@ function renderTunHelper() {
   install.classList.toggle("is-hidden", !macos || state !== "not_installed");
   repair.classList.toggle(
     "is-hidden",
-    !macos || (state !== "outdated" && state !== "unreachable"),
+    !macos || (state !== "outdated" && state !== "unreachable" && state !== "needs_repair"),
   );
   open.classList.toggle("is-hidden", !macos || (state !== "requires_approval" && state !== "unreachable"));
   uninstall.classList.toggle(
@@ -1554,12 +1556,12 @@ async function ensureTunHelperReady(): Promise<boolean> {
   } else {
     const helper = result.status;
     connectionFeedback.showError({ userMessage: {
-      title: helper.state === "requires_approval" ? "TUN 还需要系统授权" : !helper.supported ? "当前平台尚未支持 TUN" : "TUN 服务尚未就绪",
+      title: helper.state === "invalid_installation" ? "请更新完整安装包" : helper.state === "needs_repair" ? "辅助服务需要重新关联" : helper.state === "requires_approval" ? "TUN 还需要系统授权" : !helper.supported ? "当前平台尚未支持 TUN" : "TUN 服务尚未就绪",
       description: `${helper.message} 本次未切换网络模式。`,
       action: ["unreachable", "checking"].includes(helper.state) ? "refresh" : "settings",
       details: helper.lastError ?? "",
     } });
-    if (helper.state === "requires_approval") navigate("settings");
+    if (["requires_approval", "invalid_installation", "needs_repair", "outdated"].includes(helper.state)) navigate("settings");
   }
   return false;
 }

@@ -365,7 +365,9 @@ export type TunHelperState =
   | "ready"
   | "checking"
   | "outdated"
-  | "unreachable";
+  | "unreachable"
+  | "needs_repair"
+  | "invalid_installation";
 
 export type TunHelperStatus = {
   supported: boolean;

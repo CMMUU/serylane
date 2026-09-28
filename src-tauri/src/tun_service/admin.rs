@@ -1,14 +1,29 @@
 use super::client;
 use super::codesign;
-use super::lifecycle::ProbeRead;
+use super::launchd;
+use super::lifecycle::{ProbeRead, SharedProbe};
 use super::protocol::{PLIST_NAME, PROTOCOL_VERSION};
 use super::{TunHelperState, TunHelperStatus};
 use crate::macos_service::{self, Service};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 static SERVICE: Service = Service::new(PLIST_NAME, false);
 static MUTATION: Mutex<()> = Mutex::new(());
+
+fn installation_status() -> ProbeRead<()> {
+    static PROBE: OnceLock<SharedProbe<()>> = OnceLock::new();
+    PROBE.get_or_init(SharedProbe::default).read(
+        Duration::from_millis(150),
+        Duration::from_secs(60),
+        codesign::validate_installation,
+    )
+}
+
+fn reset_service_probes() {
+    client::reset_probe_gate();
+    launchd::reset();
+}
 
 pub fn registration_enabled() -> Result<bool, String> {
     SERVICE.ensure_settled()?;
@@ -21,8 +36,19 @@ pub fn status() -> TunHelperStatus {
         status.message = "系统仍在退出旧辅助服务；尚未确认新版关联，请稍后核对状态".into();
         return status;
     }
-    if !codesign::bundle_layout_ready() {
-        return TunHelperStatus::unsupported("当前应用包缺少 TUN 辅助服务，请安装完整版本");
+    match installation_status() {
+        ProbeRead::Complete(Ok(())) => {}
+        ProbeRead::Checking => {
+            let mut status = status_from_probe(ProbeRead::Checking);
+            status.message = "正在核对安装包与辅助程序的开发者签名；尚未切换网络".into();
+            return status;
+        }
+        ProbeRead::Complete(Err(error)) => {
+            let mut status = status_from_probe(ProbeRead::Complete(Err(error.clone())));
+            status.state = TunHelperState::InvalidInstallation;
+            status.message = error;
+            return status;
+        }
     }
     match SERVICE.status() {
         Ok(macos_service::ENABLED) => enabled_status(),
@@ -53,18 +79,8 @@ fn register_inner() -> Result<TunHelperStatus, String> {
     // An OS Enabled value can outlive a timed-out unregister request. Do not
     // accept its old handshake and clear an upgrade marker before completion.
     SERVICE.ensure_settled()?;
-    if !codesign::bundle_layout_ready() {
-        return Err("应用包缺少辅助服务，请重新安装完整版本".into());
-    }
-    // Validate actual signed executables before mutating registration. This is
-    // integrity verification, not a claim of Developer ID or notarization.
-    codesign::validate(&codesign::sibling_executable(
-        super::protocol::HELPER_BINARY_NAME,
-    )?)?;
-    codesign::validate(&codesign::sibling_executable(
-        super::protocol::APP_BINARY_NAME,
-    )?)?;
-    client::reset_probe_gate();
+    codesign::validate_installation()?;
+    reset_service_probes();
     if !matches!(
         SERVICE.status()?,
         macos_service::ENABLED | macos_service::REQUIRES_APPROVAL
@@ -74,8 +90,15 @@ fn register_inner() -> Result<TunHelperStatus, String> {
     // Registration is not readiness: require a fresh authenticated response.
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        let observed = status();
-        if observed.state != TunHelperState::Checking || Instant::now() >= deadline {
+        // XPC can briefly reject while launchd is still bringing up a newly
+        // registered job. Give that first handshake a bounded retry window;
+        // never unregister or re-register as part of these retries.
+        let observed = match SERVICE.status()? {
+            macos_service::ENABLED => status_from_probe(client::status_probe()),
+            _ => status(),
+        };
+        if !wait_for_handshake(observed.state) || Instant::now() >= deadline {
+            reset_service_probes();
             return Ok(observed);
         }
         std::thread::sleep(Duration::from_millis(150));
@@ -86,9 +109,9 @@ pub fn unregister() -> Result<(), String> {
     let _guard = MUTATION
         .try_lock()
         .map_err(|_| "辅助服务正在更新，请稍后核对状态".to_string())?;
-    client::reset_probe_gate();
+    reset_service_probes();
     SERVICE.unregister()?;
-    client::reset_probe_gate();
+    reset_service_probes();
     Ok(())
 }
 
@@ -99,10 +122,12 @@ pub fn repair() -> Result<TunHelperStatus, String> {
     if SERVICE.status()? == macos_service::REQUIRES_APPROVAL {
         return Err("系统尚未允许 Serylane 后台服务，请先在系统设置中允许；未重复注册".into());
     }
-    client::reset_probe_gate();
+    // A broken replacement package must not detach an existing working service.
+    codesign::validate_installation()?;
+    reset_service_probes();
     // Do not swallow failure or register while the old process is still exiting.
     SERVICE.unregister()?;
-    client::reset_probe_gate();
+    reset_service_probes();
     register_inner()
 }
 
@@ -111,7 +136,22 @@ pub fn open_approval_settings() -> Result<(), String> {
 }
 
 fn enabled_status() -> TunHelperStatus {
+    if launchd::failure() == Some(launchd::Failure::SpawnFailed) {
+        let mut status = status_from_probe(ProbeRead::Complete(Err(
+            "launchd: job state=spawn failed, last exit code=78 (EX_CONFIG)".into(),
+        )));
+        status.state = TunHelperState::NeedsRepair;
+        status.message = "系统保留了辅助服务登记，但辅助程序启动失败。请先停止代理，再点击“重新关联辅助服务”；这不是重复授权能解决的问题。".into();
+        return status;
+    }
     status_from_probe(client::status_probe())
+}
+
+fn wait_for_handshake(state: TunHelperState) -> bool {
+    matches!(
+        state,
+        TunHelperState::Checking | TunHelperState::Unreachable
+    )
 }
 
 fn status_from_probe(probe: ProbeRead<client::RuntimeSnapshot>) -> TunHelperStatus {
@@ -188,6 +228,24 @@ fn not_installed() -> TunHelperStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_transient_handshake_states_are_retried_without_reregistering() {
+        for state in [TunHelperState::Checking, TunHelperState::Unreachable] {
+            assert!(wait_for_handshake(state));
+        }
+        for state in [
+            TunHelperState::Ready,
+            TunHelperState::RequiresApproval,
+            TunHelperState::NotInstalled,
+            TunHelperState::Outdated,
+            TunHelperState::NeedsRepair,
+            TunHelperState::InvalidInstallation,
+            TunHelperState::Unsupported,
+        ] {
+            assert!(!wait_for_handshake(state));
+        }
+    }
 
     #[test]
     fn pending_probe_is_not_a_connection_failure() {

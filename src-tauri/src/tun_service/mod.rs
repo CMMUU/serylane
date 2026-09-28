@@ -10,6 +10,8 @@ mod client;
 pub(crate) mod codesign;
 #[cfg(target_os = "macos")]
 pub mod daemon;
+#[cfg(target_os = "macos")]
+mod launchd;
 pub(crate) mod lifecycle;
 #[cfg(target_os = "macos")]
 mod protocol;
@@ -28,6 +30,8 @@ pub enum TunHelperState {
     Ready,
     Outdated,
     Unreachable,
+    NeedsRepair,
+    InvalidInstallation,
 }
 
 #[derive(Debug, Clone, Serialize)]

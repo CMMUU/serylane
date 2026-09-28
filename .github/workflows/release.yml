@@ -58,6 +58,16 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Check Apple release prerequisites before starting package jobs
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: bash scripts/check-apple-release-env.sh
 
   bundle:
     needs: source
@@ -187,16 +197,7 @@ jobs:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         shell: bash
         run: |
-          for key in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_P8; do
-            if [ -z "${!key}" ]; then
-              echo "Missing Apple release credential: $key"
-              exit 1
-            fi
-          done
-          case "$APPLE_SIGNING_IDENTITY" in
-            'Developer ID Application:'*) ;;
-            *) echo 'A Developer ID Application identity is required for public macOS releases.'; exit 1 ;;
-          esac
+          bash scripts/check-apple-release-env.sh
           umask 077
           printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/serylane-notary.p8"
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/serylane-notary.p8" >> "$GITHUB_ENV"

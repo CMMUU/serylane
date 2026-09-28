@@ -56,7 +56,7 @@ class GiteeMigrationTests(unittest.TestCase):
                                ("owner", {"login": "other"})):
                 gh, ge, target, writes = self.fixture(slug)
                 target[key] = value
-                with self.assertRaises(SyncError):
+                with self.assertRaisesRegex(SyncError, "mismatched fields: " + key):
                     migrate_legacy_path(gh, ge, True)
                 self.assertEqual(writes, [])
         gh, ge, target, writes = self.fixture()
