@@ -272,6 +272,27 @@ mod tests {
     use std::process::Command;
 
     #[test]
+    #[ignore = "requires an explicitly supplied Developer ID-signed test bundle"]
+    fn signed_bundle_identity_smoke() {
+        let bundle = PathBuf::from(
+            std::env::var_os("SERYLANE_SIGNED_TEST_BUNDLE")
+                .expect("supply an isolated signed bundle"),
+        );
+        let team = developer_team(&bundle).expect("Developer ID application identity");
+        for name in [
+            "serylane",
+            "mihomo-tun-helper",
+            "serylane-login-helper",
+            "mihomo",
+        ] {
+            assert_eq!(
+                developer_team(&bundle.join("Contents/MacOS").join(name)).unwrap(),
+                team
+            );
+        }
+    }
+
+    #[test]
     fn valid_adhoc_integrity_is_not_a_developer_identity() {
         // Never inspect or modify the user's installed app in this regression.
         let dir = tempfile::tempdir().unwrap();
