@@ -230,6 +230,10 @@ jobs:
               echo 'Unknown Apple signing mode.' >&2
               exit 1
             fi
+            # Tauri treats present-but-empty certificate variables as a request
+            # to import a certificate. Legacy builds must leave them unset.
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID
+            unset APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_P8 APPLE_API_KEY_PATH
             npm run tauri build
             if [ "$RUNNER_OS" = 'macOS' ]; then
               ./scripts/verify-macos-layout.sh src-tauri/target/release/bundle/macos/Serylane.app

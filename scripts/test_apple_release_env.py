@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 
@@ -82,6 +83,47 @@ class AppleReleaseEnvironmentTests(unittest.TestCase):
         self.assertIn('./scripts/verify-macos-release.sh src-tauri/target/release/bundle/macos/Serylane.app', workflow)
         self.assertIn('./scripts/verify-macos-layout.sh src-tauri/target/release/bundle/macos/Serylane.app', workflow)
         self.assertNotIn('continue-on-error: true', workflow)
+
+    def test_actual_legacy_build_step_unsets_empty_apple_environment(self):
+        # Execute the workflow's actual shell with fake package/verification
+        # commands. No signing, keychain or application changes occur.
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/release.yml").read_text()
+        step = workflow.split("      - name: Build signed installers and updater artifacts\n", 1)[1]
+        step = step.split("      - name: Remove temporary Apple notarization material\n", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            (cwd / "bin").mkdir()
+            (cwd / "scripts").mkdir()
+            npm = cwd / "bin/npm"
+            npm.write_text("#!/bin/bash\nset -eu\n"
+                           'test "$TAURI_SIGNING_PRIVATE_KEY" = fixture-updater-key\n' +
+                           "".join(f'test -z "${{{key}+present}}"\n' for key in (*self.keys, "APPLE_API_KEY_PATH")) +
+                           'echo build >> "$TRACE"\n')
+            npm.chmod(0o755)
+            layout = cwd / "scripts/verify-macos-layout.sh"
+            layout.write_text('#!/bin/bash\necho layout >> "$TRACE"\n')
+            layout.chmod(0o755)
+            env = dict(os.environ, **dict.fromkeys((*self.keys, "APPLE_API_KEY_PATH"), ""),
+                       PATH=str(cwd / "bin") + os.pathsep + os.environ["PATH"],
+                       RUNNER_OS="macOS", SERYLANE_APPLE_MODE="legacy",
+                       TAURI_SIGNING_PRIVATE_KEY="fixture-updater-key",
+                       TRACE=str(cwd / "trace"), GITHUB_STEP_SUMMARY=str(cwd / "summary"))
+            result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                                    cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((cwd / "trace").read_text(), "build\nlayout\n")
+            self.assertIn("not included", (cwd / "summary").read_text())
+
+            # A configured Apple build failure never retries the legacy path.
+            npm.write_text('#!/bin/bash\necho failed-build >> "$TRACE"\nexit 7\n')
+            env["SERYLANE_APPLE_MODE"] = "notarized"
+            env["RUNNER_TEMP"] = directory
+            result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                                    cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 7)
+            self.assertEqual((cwd / "trace").read_text(), "build\nlayout\nfailed-build\n")
 
 
 if __name__ == "__main__":
