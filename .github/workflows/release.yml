@@ -223,7 +223,9 @@ jobs:
             exit 1
           fi
           if [ "$RUNNER_OS" = 'macOS' ] && [ "$SERYLANE_APPLE_MODE" = 'notarized' ]; then
-            npm run tauri build -- --config "$RUNNER_TEMP/serylane-release-config.json"
+            npm run tauri build -- --no-bundle --config "$RUNNER_TEMP/serylane-release-config.json"
+            bash scripts/prepare-macos-helpers.sh src-tauri/target/release
+            npm run tauri bundle -- --config "$RUNNER_TEMP/serylane-release-config.json"
             ./scripts/verify-macos-release.sh src-tauri/target/release/bundle/macos/Serylane.app
           else
             if [ "$RUNNER_OS" = 'macOS' ] && [ "$SERYLANE_APPLE_MODE" != 'legacy' ]; then
@@ -234,10 +236,14 @@ jobs:
             # to import a certificate. Legacy builds must leave them unset.
             unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID
             unset APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_P8 APPLE_API_KEY_PATH
-            npm run tauri build
             if [ "$RUNNER_OS" = 'macOS' ]; then
+              npm run tauri build -- --no-bundle
+              bash scripts/prepare-macos-helpers.sh src-tauri/target/release
+              npm run tauri bundle
               ./scripts/verify-macos-layout.sh src-tauri/target/release/bundle/macos/Serylane.app
               echo 'macOS compatibility release: updater signature and code integrity checked; Developer ID and Apple notarization are not included.' >> "$GITHUB_STEP_SUMMARY"
+            else
+              npm run tauri build
             fi
           fi
       - name: Remove temporary Apple notarization material

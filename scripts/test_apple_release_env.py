@@ -105,6 +105,7 @@ class AppleReleaseEnvironmentTests(unittest.TestCase):
             layout = cwd / "scripts/verify-macos-layout.sh"
             layout.write_text('#!/bin/bash\necho layout >> "$TRACE"\n')
             layout.chmod(0o755)
+            (cwd / "scripts/prepare-macos-helpers.sh").write_text('echo prepare >> "$TRACE"\n')
             env = dict(os.environ, **dict.fromkeys((*self.keys, "APPLE_API_KEY_PATH"), ""),
                        PATH=str(cwd / "bin") + os.pathsep + os.environ["PATH"],
                        RUNNER_OS="macOS", SERYLANE_APPLE_MODE="legacy",
@@ -113,7 +114,7 @@ class AppleReleaseEnvironmentTests(unittest.TestCase):
             result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
                                     cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((cwd / "trace").read_text(), "build\nlayout\n")
+            self.assertEqual((cwd / "trace").read_text(), "build\nprepare\nbuild\nlayout\n")
             self.assertIn("not included", (cwd / "summary").read_text())
 
             # A configured Apple build failure never retries the legacy path.
@@ -123,7 +124,49 @@ class AppleReleaseEnvironmentTests(unittest.TestCase):
             result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
                                     cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 7)
-            self.assertEqual((cwd / "trace").read_text(), "build\nlayout\nfailed-build\n")
+            self.assertEqual((cwd / "trace").read_text(), "build\nprepare\nbuild\nlayout\nfailed-build\n")
+
+    def test_helper_preparation_validates_both_inputs_before_signing(self):
+        script = Path(__file__).with_name("prepare-macos-helpers.sh").resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = Path(directory)
+            tools = cwd / "tools"
+            binaries = cwd / "binaries"
+            tools.mkdir()
+            binaries.mkdir()
+            for name, body in {
+                "uname": "echo Darwin",
+                "file": "echo Mach-O",
+                "codesign": 'echo "$*" >> "$TRACE"',
+            }.items():
+                tool = tools / name
+                tool.write_text("#!/bin/bash\n" + body + "\n")
+                tool.chmod(0o755)
+            env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                       TRACE=str(cwd / "trace"))
+            first = binaries / "mihomo-tun-helper"
+            first.write_text("fixture")
+            first.chmod(0o755)
+            result = subprocess.run(["bash", str(script), str(binaries)], env=env,
+                                    text=True, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((cwd / "trace").exists())
+            second = binaries / "serylane-login-helper"
+            second.symlink_to(first)
+            result = subprocess.run(["bash", str(script), str(binaries)], env=env,
+                                    text=True, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((cwd / "trace").exists())
+            second.unlink()
+            second.write_text("fixture")
+            second.chmod(0o755)
+            result = subprocess.run(["bash", str(script), str(binaries)], env=env,
+                                    text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((cwd / "trace").read_text().splitlines(), [
+                f"--force --sign - --timestamp=none {first}", f"--verify --strict {first}",
+                f"--force --sign - --timestamp=none {second}", f"--verify --strict {second}",
+            ])
 
 
 if __name__ == "__main__":
