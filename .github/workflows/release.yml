@@ -29,6 +29,7 @@ jobs:
       commit: ${{ steps.resolve.outputs.commit }}
       tag: ${{ steps.resolve.outputs.tag }}
       create_tag: ${{ steps.resolve.outputs.create_tag }}
+      apple_mode: ${{ steps.apple_signing.outputs.apple_mode }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,7 +59,8 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-      - name: Check Apple release prerequisites before starting package jobs
+      - name: Select established release or fully configured Apple signing
+        id: apple_signing
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -67,7 +69,7 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-        run: bash scripts/check-apple-release-env.sh
+        run: bash scripts/check-apple-release-env.sh --allow-legacy
 
   bundle:
     needs: source
@@ -185,8 +187,8 @@ jobs:
           name: failed-native-tray-${{ matrix.artifact }}
           path: ${{ runner.temp }}/native-tray
           if-no-files-found: warn
-      - name: Prepare required Apple signing and notarization
-        if: runner.os == 'macOS'
+      - name: Prepare configured Apple signing and notarization
+        if: runner.os == 'macOS' && needs.source.outputs.apple_mode == 'notarized'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -213,17 +215,26 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          SERYLANE_APPLE_MODE: ${{ needs.source.outputs.apple_mode }}
         shell: bash
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             echo 'Missing TAURI_SIGNING_PRIVATE_KEY; refusing an unsigned release.'
             exit 1
           fi
-          if [ "$RUNNER_OS" = 'macOS' ]; then
+          if [ "$RUNNER_OS" = 'macOS' ] && [ "$SERYLANE_APPLE_MODE" = 'notarized' ]; then
             npm run tauri build -- --config "$RUNNER_TEMP/serylane-release-config.json"
             ./scripts/verify-macos-release.sh src-tauri/target/release/bundle/macos/Serylane.app
           else
+            if [ "$RUNNER_OS" = 'macOS' ] && [ "$SERYLANE_APPLE_MODE" != 'legacy' ]; then
+              echo 'Unknown Apple signing mode.' >&2
+              exit 1
+            fi
             npm run tauri build
+            if [ "$RUNNER_OS" = 'macOS' ]; then
+              ./scripts/verify-macos-layout.sh src-tauri/target/release/bundle/macos/Serylane.app
+              echo 'macOS compatibility release: updater signature and code integrity checked; Developer ID and Apple notarization are not included.' >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
       - name: Remove temporary Apple notarization material
         if: always() && runner.os == 'macOS'

@@ -231,7 +231,7 @@ fn developer_team(path: &Path) -> Result<String, String> {
         let _requirement = OwnedCf(requirement.cast());
         let status = SecStaticCodeCheckValidity(code, 1 << 4, requirement);
         if status != ERR_SUCCESS {
-            return Err(format!("当前安装包缺少有效的 Developer ID 签名或内容已变化，请从下载中心安装正式版本；重复授权或重新关联不会修复签名（OSStatus {status}）"));
+            return Err(format!("当前安装包未通过 Developer ID 签名检查，TUN 暂未就绪。请核对发行说明中的 macOS 签名状态，安装签名有效的完整包；临时签名包重复下载同一版本或重新授权不会补齐开发者身份（OSStatus {status}）"));
         }
         let mut info = ptr::null();
         let status = SecCodeCopySigningInformation(code, 1 << 1, &mut info);

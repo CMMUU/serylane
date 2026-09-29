@@ -1,11 +1,11 @@
 # Changelog
 
-## 0.7.18 - Unreleased candidate
+## 0.7.18
 
 - Use native macOS login-item registration with explicit status, conservative legacy migration, and user-controlled repair; preserve disabled login and proxy preferences.
 - Coordinate Helper registration, bounded identity/version handshake and transactional update recovery; package and verify both native helpers before release.
 - Add verified HK download/update metadata with same-version, same-architecture fallback; preserve original hashes and updater signatures.
-- Require Developer ID signing and notarization for official macOS releases. Physical login, reboot and TUN acceptance remain separate release checks.
+- Preserve the established GitHub updater-signed publishing workflow when Apple credentials are absent; fully configured Apple releases still require Developer ID, hardened runtime and notarization, with no fallback on failure. Ad-hoc macOS packages do not satisfy the TUN Developer ID requirement; physical login, reboot and TUN acceptance remain separate checks.
 
 ## 0.7.13 - 2026-09-18
 
