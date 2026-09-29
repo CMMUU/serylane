@@ -63,6 +63,8 @@ assert.match(htmls.get('/docs/'), /v0\.7\.16：三平台应用快选与更新跟
 assert.match(htmls.get('/docs/'), /NSWorkspace/);
 assert.match(htmls.get('/docs/'), /Flatpak\/Snap/);
 assert.match(htmls.get('/'), /缓存清单先显示、后台刷新不打断编辑/);
+assert.match(htmls.get('/'), /安装包下载优先下载中心，GitHub 备用。/);
+assert.doesNotMatch(htmls.get('/'), /自动更新：同版本香港优先/, 'Do not advertise candidate-only client update behavior as already released');
 assert.match(htmls.get('/docs/'), /v0\.7\.9：更清晰的 macOS 双行网速/);
 assert.match(htmls.get('/'), /macOS 原生双行网速/);
 const sitemap = await readFile(join(root, 'sitemap.xml'), 'utf8');
