@@ -471,11 +471,19 @@ def migrate_legacy_path(github, gitee, apply=False):
         raise SyncError("Gitee migration requires the approved owner")
 
     def checked(info, slug):
-        if (type(info.get("id")) is not int or info["id"] != 50078322
-                or str(info.get("owner", {}).get("login", "")).casefold() != GE_OWNER
-                or info.get("path") != slug or info.get("private") is not False
-                or info.get("default_branch") != "main"):
-            raise SyncError("Gitee migration identity/path/visibility/default branch changed")
+        matches = {
+            "id": type(info.get("id")) is int and info["id"] == 50078322,
+            "owner": str(info.get("owner", {}).get("login", "")).casefold() == GE_OWNER,
+            "path": info.get("path") == slug,
+            "private": info.get("private") is False,
+            "default_branch": info.get("default_branch") == "main",
+        }
+        mismatches = [field for field, valid in matches.items() if not valid]
+        if mismatches:
+            # Field names only: retain the gate without printing credentials,
+            # private repository metadata or silently changing visibility.
+            raise SyncError("Gitee migration identity/path/visibility/default branch changed; "
+                            "mismatched fields: " + ", ".join(mismatches))
         return info
 
     new_path = "/repos/cmmuu/serylane"

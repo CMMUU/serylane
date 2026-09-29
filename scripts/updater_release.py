@@ -18,7 +18,8 @@ SERYLANE_CHANNELS = (
     # Canonical Gitee path was renamed with the original repository identity.
     ("latest-serylane-gitee.json", "https://gitee.com/cmmuu/serylane"),
 )
-UPDATER_MANIFESTS = frozenset(name for name, _ in (*LEGACY_CHANNELS, *SERYLANE_CHANNELS))
+HK_CHANNEL = ("latest-serylane-hk.json", "https://files.cmmuu.com/releases/serylane")
+UPDATER_MANIFESTS = frozenset(name for name, _ in (*LEGACY_CHANNELS, *SERYLANE_CHANNELS, HK_CHANNEL))
 
 
 def updater_names(version, product_name="RouteDeck"):
@@ -115,7 +116,7 @@ def stage_updaters(root, artifacts, output, version, notes, verify=verify_signat
     # The public installers and links use Serylane; these are signed-byte aliases.
     channels = [(name, base, False) for name, base in LEGACY_CHANNELS]
     if product_name == "Serylane":
-        channels.extend((name, base, True) for name, base in SERYLANE_CHANNELS)
+        channels.extend((name, base, True) for name, base in (*SERYLANE_CHANNELS, HK_CHANNEL))
     for manifest_name, base, current_brand in channels:
         manifest = {"version": version, "notes": notes, "pub_date": published_at, "platforms": {}}
         for target, data in platforms.items():
@@ -123,7 +124,8 @@ def stage_updaters(root, artifacts, output, version, notes, verify=verify_signat
             name = data["name"].replace("RouteDeck_", "Serylane_", 1) if current_brand else data["name"]
             if not (output / name).is_file():
                 raise ValueError(f"Manifest asset was not staged: {name}")
-            manifest["platforms"][target]["url"] = f"{base}/releases/download/v{version}/{name}"
+            prefix = f"{base}/v{version}" if manifest_name == HK_CHANNEL[0] else f"{base}/releases/download/v{version}"
+            manifest["platforms"][target]["url"] = f"{prefix}/{name}"
         path = output / manifest_name
         path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
         staged.append(path)

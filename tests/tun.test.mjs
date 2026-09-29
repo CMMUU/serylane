@@ -36,6 +36,18 @@ const deferred = () => {
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test("invalid installation and spawn-failed services keep the current network intact", async () => {
+  for (const state of ["invalid_installation", "needs_repair"]) {
+    const f = mainFixture({ status: helper(state) });
+    await f.switch();
+    assert.deepEqual(f.mutations(), []);
+    assert.deepEqual(f.preflight.calls, ["status"]);
+    assert.ok(f.calls.includes("navigate:settings"));
+    assert.equal(f.issues[0].action, "settings");
+    assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
+  }
+});
+
 function feedbackView(initial) {
   const elements = new Map();
   const root = {

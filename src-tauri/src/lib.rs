@@ -8,6 +8,10 @@ mod diagnostics;
 mod effective;
 mod error;
 mod local_routing;
+#[cfg(target_os = "macos")]
+mod macos_service;
+#[cfg(target_os = "macos")]
+mod macos_upgrade;
 mod mihomo_api;
 mod models;
 mod network_safety;
@@ -24,6 +28,8 @@ mod route_health;
 mod runtime;
 mod session_resume;
 mod startup;
+#[cfg(target_os = "macos")]
+mod startup_macos;
 mod storage;
 mod subscription;
 mod subscription_quota;
@@ -684,7 +690,9 @@ async fn repair_tun_helper(
     ensure_helper_management_idle(&app, &state).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let _configuration = _configuration;
-        tun_service::repair()
+        let status = tun_service::repair()?;
+        tun_service::rollback_app_upgrade(&app)?;
+        Ok(status)
     })
     .await
     .map_err(|error| dto(AppError::Platform(error.to_string())))?
@@ -702,6 +710,8 @@ async fn uninstall_tun_helper(
     ensure_helper_management_idle(&app, &state).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let _configuration = _configuration;
+        #[cfg(target_os = "macos")]
+        macos_upgrade::forget_tun_intent(&app)?;
         tun_service::uninstall()
     })
     .await
@@ -1188,7 +1198,11 @@ pub fn run() {
                     std::env::consts::ARCH
                 ),
             );
-            if startup::migrate_login_entry(app.handle(), &settings).is_err() {
+            #[cfg(target_os = "macos")]
+            let upgrade_pending = macos_upgrade::bootstrap(app.handle().clone());
+            #[cfg(not(target_os = "macos"))]
+            let upgrade_pending = false;
+            if !upgrade_pending && startup::migrate_login_entry(app.handle(), &settings).is_err() {
                 app_log::record(
                     1,
                     app_log::Area::Settings,
@@ -1252,8 +1266,10 @@ pub fn run() {
                 .bootstrap(app.handle());
             app.state::<openai_stability::StabilityManager>()
                 .start(app.handle().clone());
-            app.state::<session_resume::SessionResumeManager>()
-                .bootstrap(app.handle(), &settings, &persistent);
+            if !upgrade_pending {
+                app.state::<session_resume::SessionResumeManager>()
+                    .bootstrap(app.handle(), &settings, &persistent);
+            }
             // The native window starts hidden to avoid a visible flash at login.
             if startup::show_initial_window(&settings, &std::env::args().collect::<Vec<_>>()) {
                 if let Some(window) = app.get_webview_window("main") {
@@ -1290,6 +1306,8 @@ pub fn run() {
             connection_feedback::recheck_connection,
             session_resume::get_session_resume_status,
             startup::get_startup_status,
+            startup::repair_startup_registration,
+            startup::open_startup_settings,
             local_routing::local_route_status,
             local_routing::save_local_route,
             local_routing::set_local_route_enabled,

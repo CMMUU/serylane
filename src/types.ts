@@ -117,6 +117,8 @@ export type RuntimeStatus = {
 };
 
 export type StartupStatus = {
+  state: "disabled" | "requires_approval" | "registered" | "needs_repair" | "unknown";
+  repairAvailable: boolean;
   launchRequested: boolean;
   registered: boolean | null;
   systemAllows: boolean | null;
@@ -363,13 +365,16 @@ export type TunHelperState =
   | "ready"
   | "checking"
   | "outdated"
-  | "unreachable";
+  | "unreachable"
+  | "needs_repair"
+  | "invalid_installation";
 
 export type TunHelperStatus = {
   supported: boolean;
   state: TunHelperState;
   message: string;
   protocolVersion: number;
+  helperVersion: string | null;
   runtimeRunning: boolean;
   runtimePid: number | null;
   runtimeVersion: string | null;
@@ -383,7 +388,7 @@ export type AppInfo = {
   targetArch: string;
 };
 
-export type UpdateSource = "auto" | "github" | "gitee";
+export type UpdateSource = "auto" | "github" | "gitee" | "hk";
 export type AppUpdateInfo = {
   currentVersion: string;
   latestVersion: string;

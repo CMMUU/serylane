@@ -822,6 +822,7 @@ unsafe fn read_string(dictionary: XpcObject, key: &CStr) -> Option<String> {
 }
 
 unsafe fn write_snapshot(reply: XpcObject, snapshot: &RuntimeSnapshot) {
+    set_string(reply, KEY_HELPER_VERSION, env!("CARGO_PKG_VERSION"));
     xpc_dictionary_set_uint64(
         reply,
         KEY_PROTOCOL_VERSION.as_ptr(),

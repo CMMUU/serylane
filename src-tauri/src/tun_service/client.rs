@@ -11,6 +11,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshot {
     pub protocol_version: u32,
+    pub helper_version: Option<String>,
     pub running: bool,
     pub pid: Option<u32>,
     pub version: Option<String>,
@@ -94,17 +95,11 @@ pub fn logs(limit: usize) -> Result<Vec<TunRuntimeLog>, String> {
     with_connection(|connection| unsafe {
         let message = new_message(OP_LOGS)?;
         xpc_dictionary_set_uint64(message, KEY_LIMIT.as_ptr(), limit.clamp(1, 2_000) as u64);
-        let reply = xpc_connection_send_message_with_reply_sync(connection, message);
-        xpc_release(message);
-        let result = (|| {
+        send_bounded(connection, message, Duration::from_secs(5), |reply| {
             ensure_success(reply)?;
             let raw = read_string(reply, KEY_LOGS).unwrap_or_else(|| "[]".to_string());
             serde_json::from_str(&raw).map_err(|error| format!("解析 Helper 日志失败：{error}"))
-        })();
-        if !reply.is_null() {
-            xpc_release(reply);
-        }
-        result
+        })
     })
 }
 
@@ -116,14 +111,38 @@ fn request(operation: &CStr, configure: impl FnOnce(XpcObject)) -> Result<Runtim
     with_connection(|connection| unsafe {
         let message = new_message(operation)?;
         configure(message);
-        let reply = xpc_connection_send_message_with_reply_sync(connection, message);
-        xpc_release(message);
-        let result = parse_snapshot(reply);
-        if !reply.is_null() {
-            xpc_release(reply);
-        }
-        result
+        let timeout = if operation == OP_PREPARE || operation == OP_START {
+            Duration::from_secs(135) // Helper native validation has its own 120-second bound.
+        } else {
+            Duration::from_secs(5)
+        };
+        send_bounded(connection, message, timeout, |reply| parse_snapshot(reply))
     })
+}
+
+// Parse the callback-owned reply before it is released by XPC. A timed-out
+// caller drops the receiver and cancels its connection; late replies cannot
+// overwrite a later operation or retain borrowed XPC objects.
+unsafe fn send_bounded<T: Send + 'static>(
+    connection: XpcConnection,
+    message: XpcObject,
+    timeout: Duration,
+    parse: impl Fn(XpcObject) -> Result<T, String> + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let reply = RcBlock::new(move |object: XpcObject| {
+        let _ = sender.send(parse(object));
+    });
+    xpc_connection_send_message_with_reply(
+        connection,
+        message,
+        dispatch_get_global_queue(0, 0),
+        &reply,
+    );
+    xpc_release(message);
+    receiver
+        .recv_timeout(timeout)
+        .map_err(|_| "辅助服务响应超时，请稍后核对状态；未跳过身份验证".to_string())?
 }
 
 fn with_connection<T>(
@@ -191,6 +210,7 @@ unsafe fn parse_snapshot(reply: XpcObject) -> Result<RuntimeSnapshot, String> {
     let pid = xpc_dictionary_get_uint64(reply, KEY_PID.as_ptr());
     Ok(RuntimeSnapshot {
         protocol_version: xpc_dictionary_get_uint64(reply, KEY_PROTOCOL_VERSION.as_ptr()) as u32,
+        helper_version: read_string(reply, KEY_HELPER_VERSION),
         running: xpc_dictionary_get_bool(reply, KEY_RUNNING.as_ptr()),
         pid: u32::try_from(pid).ok().filter(|value| *value > 0),
         version: read_string(reply, KEY_VERSION),

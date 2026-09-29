@@ -104,6 +104,8 @@ export const api = {
   runtime: () => invoke<RuntimeStatus>("runtime_status"),
   sessionResume: () => invoke<SessionResumeStatus>("get_session_resume_status"),
   startupStatus: () => invoke<StartupStatus>("get_startup_status"),
+  repairStartup: () => invoke<StartupStatus>("repair_startup_registration"),
+  openStartupSettings: () => invoke<void>("open_startup_settings"),
   startActive: () => invoke<RuntimeStatus>("start_active_profile"),
   stop: () => invoke<RuntimeStatus>("stop_mihomo"),
   logs: (limit = 300) => invoke<RuntimeLog[]>("runtime_logs", { limit }),

@@ -45,7 +45,7 @@ export const preferencesMarkup = `
         </select>
       </label>
       <p class="session-resume-help" id="session-resume-help"></p>
-      <div class="preference-row"><span>系统登录项</span><button class="button button-quiet" id="settings-startup-check" type="button">核对状态</button></div>
+      <div class="preference-row"><span>系统登录项</span><div class="runtime-actions"><button class="button button-quiet" id="settings-startup-check" type="button">核对状态</button><button class="button button-quiet is-hidden" id="settings-startup-repair" type="button">修复登录启动</button><button class="button button-quiet is-hidden" id="settings-startup-open" type="button">打开系统登录项</button></div></div>
       <p class="session-resume-help" id="startup-registration-status" role="status" aria-live="polite"></p>
       <p class="session-resume-help" id="session-resume-status" role="status" aria-live="polite"></p>
       <label class="preference-row" for="settings-global-traffic"><span>显示全局流量监控</span>${preferenceSwitch("settings-global-traffic")}</label>
@@ -59,13 +59,13 @@ export const preferencesMarkup = `
     <div class="preferences-heading"><h2 id="update-heading">软件更新</h2><span class="control-state-pill is-hidden" id="app-update-state">待检查</span></div>
     <div class="preference-row update-current-row"><span>当前版本</span><div><strong id="app-update-current">—</strong><button class="button button-accent" id="app-update-check" type="button">检查更新</button></div></div>
     <form id="update-preferences-form">
-      <label class="preference-row" for="settings-update-source"><span>更新渠道</span><span class="update-source-control"><select id="settings-update-source" aria-label="更新渠道"><option value="auto">自动（国内优先）</option><option value="gitee">Gitee</option><option value="github">GitHub</option></select><span class="muted">自动：Gitee → GitHub</span></span></label>
+      <label class="preference-row" for="settings-update-source"><span>更新渠道</span><span class="update-source-control"><select id="settings-update-source" aria-label="更新渠道"><option value="auto">自动（香港优先）</option><option value="hk">香港下载中心</option><option value="gitee">Gitee</option><option value="github">GitHub</option></select><span class="muted">自动：香港 → Gitee → GitHub</span></span></label>
       <label class="preference-row" for="settings-auto-check-updates"><span title="启动后延迟检查，运行期间每 6 小时检查一次。">自动检查更新</span>${preferenceSwitch("settings-auto-check-updates")}</label>
       <label class="preference-row" for="settings-auto-download-updates"><span title="默认关闭；开启后会占用下载带宽，仍需确认安装。">自动下载更新</span>${preferenceSwitch("settings-auto-download-updates")}</label>
-      <div class="preference-actions update-preference-actions"><details class="preference-help"><summary>安装前会再次确认</summary><p>安装和重启会短暂中断代理连接。自动模式选用最高稳定版，同版本优先 Gitee，失败时回退 GitHub；Gitee 尚未同步新版时使用 GitHub。仅同版本、同摘要、同签名的包可跨渠道回退。退出软件会清除尚未安装的下载缓存。Linux 内置更新适用于 AppImage。</p></details><button class="button button-quiet" id="app-update-save" type="submit">保存更新偏好</button></div>
+      <div class="preference-actions update-preference-actions"><details class="preference-help"><summary>安装前会再次确认</summary><p>安装和重启会短暂中断代理连接。自动模式选用最高稳定版，同版本优先香港下载中心，失败时依次回退 Gitee、GitHub；香港或 Gitee 尚未同步新版时使用已核验的最新渠道。仅同版本、同摘要、同签名的包可跨渠道回退。退出软件会清除尚未安装的下载缓存。Linux 内置更新适用于 AppImage。</p></details><button class="button button-quiet" id="app-update-save" type="submit">保存更新偏好</button></div>
     </form>
     <div class="update-feedback is-hidden" id="app-update-feedback">
-      <div class="app-update-summary"><div aria-live="polite"><strong id="app-update-title">尚未检查</strong><p id="app-update-message">自动模式优先 Gitee，GitHub 备用；安装前由你确认。</p></div></div>
+      <div class="app-update-summary"><div aria-live="polite"><strong id="app-update-title">尚未检查</strong><p id="app-update-message">自动模式优先香港下载中心，同版本 Gitee / GitHub 备用；安装前由你确认。</p></div></div>
       <div class="about-grid app-update-details"><span>最新稳定版</span><strong id="app-update-latest">尚未检查</strong><span>发布日期</span><strong id="app-update-date">—</strong><span>当前渠道</span><strong id="app-update-source">—</strong></div>
       <ul class="app-update-channels is-hidden" id="app-update-channels" aria-label="渠道检查结果"></ul>
       <div class="app-update-progress is-hidden" id="app-update-progress"><progress id="app-update-progress-bar" max="100" value="0" aria-label="更新包下载进度"></progress><span id="app-update-progress-text" aria-live="off"></span></div>

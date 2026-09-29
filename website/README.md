@@ -53,11 +53,11 @@ GitHub Actions 中的 `Sync GitHub to Gitee` 在每次成功的非预演同步�
 
 页面主体继续使用静态资源；只有 `/api/*` 与 `/download/*` 先进入 Worker，其他路径由 Static Assets 处理。没有数据库、登录、分析脚本、代理探测或桌面接管。
 
-- `GET /api/releases/latest`：查询当前最新正式版、六个主包的名称/大小/SHA-256、各包国内渠道的元数据与 HEAD 检查结果。页面展示可能早于下一次发布，因此只用于说明。
-- `GET /download/{windows|macos|linux}-{x64|arm64}`：**每次点击重新解析** GitHub 官方 `releases/latest` 的正式版跳转，固定该标签，核对发布清单和校验清单。国内同标签就绪且所选包 HEAD 大小匹配才 302；否则检查并转向同版本 GitHub 包。
+- `GET /api/releases/latest`：查询当前最新正式版、六个主包的名称/大小/SHA-256、各包香港/Gitee 渠道的元数据与 HEAD 检查结果（hkAvailable、giteeAvailable 独立，domesticAvailable 为任一可用）。页面展示可能早于下一次发布，因此只用于说明。
+- `GET /download/{windows|macos|linux}-{x64|arm64}`：**每次点击重新解析** GitHub 官方 `releases/latest` 的正式版跳转，固定该标签，核对发布清单和校验清单。香港下载中心与 Gitee 同标签清单分别核验且所选包 HEAD 大小匹配才可 302，优先香港；均未就绪才检查并转向同版本 GitHub 包。
 - 加上精确参数 `?channel=github` 可跳过国内渠道。无 JavaScript 时仍可使用 Windows x64 的动态入口。
 - 查询、跳转、错误响应均为 `no-store`；不读旧版本缓存，不把旧包冒充最新版。未知目标/参数被拒绝，不接受用户传入下载 URL。
-- 元数据最多 256 KiB；固定 HTTPS 上游/发行 CDN 白名单、最多五跳；查询总超时 12 秒，国内检查 4 秒，GitHub 包 HEAD 5 秒。安装包交由浏览器从官方渠道下载，Worker 不下载或缓存大包。
+- 元数据最多 256 KiB；固定 HTTPS 上游/发行 CDN 白名单、最多五跳；查询总超时 12 秒，香港/Gitee 并行检查各 4 秒，GitHub 包 HEAD 5 秒。安装包交由浏览器从官方渠道下载，Worker 不下载或缓存大包。
 - GitHub 最新标签通过公开跳转解析，不依赖匿名 REST API 的共享配额；仍受上游网络、服务可用性及其自身发布元数据传播影响。“最新”指本次查询时 GitHub 指定的正式发行版，未发布源码不计入。
 - 渠道检查是版本/清单字节/文件大小检查，不是每次点击重下安装包验算哈希；镜像流水线负责逐包哈希验证。浏览器已经跳转、开始传输后，不能跨渠道无缝续传；可返回选择 GitHub 备用。
 
@@ -67,7 +67,7 @@ GitHub Actions 中的 `Sync GitHub to Gitee` 在每次成功的非预演同步�
 
 macOS 页面和文档明确区分 Intel 芯片（x64）与 Apple 芯片（M 系列，ARM64），无 JavaScript 时也有各自的动态下载链接。Releases 标题及安装包 `label` 使用 Serylane；历史二进制真实 `name`、URL、摘要和签名不变。需要整理既有发布记录时运行 `Release display metadata` 工作流，默认预演；确认应用后仅更新 GitHub/Gitee 的展示元数据，不创建、删除或重新上传附件。Gitee 不支持独立附件显示标签，历史真实文件名仍保留以兼容更新。
 
-Gitee 同步把 `downloads.json` 与四份更新清单放在所有普通附件验证完成后的屏障后上传。清理旧附件时先撤下清单。镜像没同步完时官网使用 GitHub **同版本**，不使用旧的 Gitee 最新版。此变更不修改保留历史的范围或触发新应用版本发布。
+Gitee 同步把 `downloads.json` 与五份更新清单放在所有普通附件验证完成后的屏障后上传。清理旧附件时先撤下清单。镜像没同步完时官网使用 GitHub **同版本**，不使用旧的 Gitee 最新版。此变更不修改保留历史的范围或触发新应用版本发布。
 
 已正式发布的 v0.7.6 没有新清单，因此兼容读取其原始 `latest.json` 和 `SHA256SUMS.txt`；DMG 大小通过 GitHub HEAD 补齐。不改历史附件、文件名或签名。从下一版起缺少新清单视为未就绪，返回 503。
 

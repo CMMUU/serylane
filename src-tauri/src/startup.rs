@@ -5,6 +5,7 @@ use crate::{
 };
 use serde::Serialize;
 use tauri::AppHandle;
+#[cfg(not(target_os = "macos"))]
 use tauri_plugin_autostart::ManagerExt;
 
 pub const AUTOSTART_ARG: &str = "--autostart";
@@ -17,6 +18,8 @@ pub struct StartupStatus {
     // Explicit OS disable state, not proof that a real login has been tested.
     pub system_allows: Option<bool>,
     pub desired_running: bool,
+    pub state: String,
+    pub repair_available: bool,
     pub message: String,
 }
 
@@ -28,7 +31,7 @@ fn registration_message(
     match (requested, registered, allowed) {
         (_, None, _) => "系统登录项读取失败，请稍后核对；本次未修改设置。",
         (true, Some(false), _) => {
-            "设置已开启，但系统登录项未登记。请先保存“不随系统启动”，再选择需要的启动模式。"
+            "登录启动已开启，但系统登录项未登记或关联已失效。点击“修复登录启动”重新关联应用；不会改变代理状态。"
         }
         (false, Some(true), _) => {
             "系统仍存在登录项，与“不随系统启动”的设置不一致，请核对系统登录项。"
@@ -57,7 +60,21 @@ pub async fn get_startup_status(app: AppHandle) -> Result<StartupStatus, AppErro
         } else {
             None
         };
+        let state = startup_state(settings.launch_at_login, registered, system_allows);
+        #[cfg(target_os = "macos")]
+        let state = if settings.launch_at_login
+            && system_allows != Some(false)
+            && crate::startup_macos::needs_migration()
+        {
+            "needs_repair"
+        } else {
+            state
+        };
         Ok(StartupStatus {
+            state: state.into(),
+            repair_available: settings.launch_at_login
+                && registered.is_some()
+                && system_allows != Some(false),
             launch_requested: settings.launch_at_login,
             registered,
             system_allows,
@@ -65,8 +82,14 @@ pub async fn get_startup_status(app: AppHandle) -> Result<StartupStatus, AppErro
                 .state()
                 .map_err(|error| error.dto())?
                 .desired_running,
-            message: registration_message(settings.launch_at_login, registered, system_allows)
-                .into(),
+            message: if state == "needs_repair"
+                && registered == Some(true)
+                && settings.launch_at_login
+            {
+                "旧登录项仍待迁移为原生服务关联，点击“修复登录启动”；代理恢复设置保持不变。".into()
+            } else {
+                registration_message(settings.launch_at_login, registered, system_allows).into()
+            },
         })
     })
     .await
@@ -107,6 +130,91 @@ pub fn save_with_login_registration(
     Ok(())
 }
 
+fn startup_state(requested: bool, registered: Option<bool>, allowed: Option<bool>) -> &'static str {
+    match (requested, registered, allowed) {
+        (_, None, _) => "unknown",
+        (true, Some(true), Some(false)) => "requires_approval",
+        (true, Some(false), _) | (false, Some(true), _) => "needs_repair",
+        (true, Some(true), _) => "registered",
+        (false, Some(false), _) => "disabled",
+    }
+}
+
+#[tauri::command]
+pub async fn repair_startup_registration(app: AppHandle) -> Result<StartupStatus, AppErrorDto> {
+    let permit = crate::user_rules::acquire_configuration(&app).map_err(|e| e.dto())?;
+    let worker = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let _permit = permit;
+        let storage = AppStorage::from_app(&worker)?;
+        if !storage.settings()?.launch_at_login {
+            return Err(AppError::Conflict(
+                "登录启动尚未开启；请先选择需要的启动方式并保存".into(),
+            ));
+        }
+        if system_allows_login() == Some(false) {
+            return Err(AppError::Platform(
+                "系统已禁用此登录项，请在系统设置中允许；应用未改变该选择".into(),
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            crate::startup_macos::repair()?;
+            crate::macos_upgrade::recover(&worker)?;
+        }
+        #[cfg(not(target_os = "macos"))]
+        worker
+            .autolaunch()
+            .enable()
+            .map_err(|e| AppError::Platform(e.to_string()))?;
+        if !registration_present(&worker)? {
+            return Err(AppError::Platform(
+                "登录启动关联尚未确认，请稍后核对系统状态".into(),
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| AppError::Runtime("登录项修复未完成".into()).dto())?
+    .map_err(|error| error.dto())?;
+    get_startup_status(app).await
+}
+
+#[tauri::command]
+pub fn open_startup_settings() -> Result<(), AppErrorDto> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_service::open_settings().map_err(|e| AppError::Platform(e).dto())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(AppError::Platform("请打开系统的启动应用设置核对允许状态".into()).dto())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn migrate_login_entry(app: &AppHandle, _settings: &AppSettings) -> AppResult<()> {
+    let app = app.clone();
+    // Registration can await OS work; never delay rendering or proxy restoration.
+    // Serialize with preference writes, then reread the user's latest intent.
+    // A queued migration must not revive a login entry they just disabled.
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| -> AppResult<()> {
+            let _permit = crate::user_rules::acquire_configuration(&app)?;
+            let settings = AppStorage::from_app(&app)?.settings()?;
+            crate::startup_macos::migrate(&settings)
+        })();
+        if result.is_err() {
+            crate::app_log::record(
+                1,
+                crate::app_log::Area::Settings,
+                "登录项迁移尚未完成；请在设置中核对状态或修复登录启动",
+            );
+        }
+    });
+    Ok(())
+}
+
 // auto-launch's Windows is_enabled() combines registration and Task Manager
 // approval. Read presence separately so a disabled item is not shown as missing.
 fn registration_present(app: &AppHandle) -> AppResult<bool> {
@@ -115,7 +223,12 @@ fn registration_present(app: &AppHandle) -> AppResult<bool> {
         let _ = app;
         Ok(windows_registration_value(WINDOWS_RUN_KEY)?.is_some())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        crate::startup_macos::registration_present()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         app.autolaunch()
             .is_enabled()
@@ -137,18 +250,26 @@ pub fn save_startup_settings(
         windows_registration_value(WINDOWS_RUN_KEY)?,
         windows_registration_value(WINDOWS_APPROVAL_KEY)?,
     );
+    #[cfg(not(target_os = "macos"))]
     let autostart = app.autolaunch();
     save_with_login_registration(
         current,
         next,
         || registration_present(app),
         |enabled| {
-            (if enabled {
-                autostart.enable()
-            } else {
-                autostart.disable()
-            })
-            .map_err(|error| AppError::Platform(error.to_string()))
+            #[cfg(target_os = "macos")]
+            {
+                crate::startup_macos::write(enabled)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                (if enabled {
+                    autostart.enable()
+                } else {
+                    autostart.disable()
+                })
+                .map_err(|error| AppError::Platform(error.to_string()))
+            }
         },
         |previous| {
             #[cfg(windows)]
@@ -161,7 +282,11 @@ pub fn save_startup_settings(
                     restore_windows_registration(WINDOWS_APPROVAL_KEY, snapshot.1.as_ref());
                 run.and(approval).map_err(AppError::from)
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
+            {
+                crate::startup_macos::write(previous)
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
             {
                 (if previous {
                     autostart.enable()
@@ -271,6 +396,11 @@ fn launchd_allows_login(output: &str) -> Option<bool> {
 
 #[cfg(target_os = "macos")]
 fn system_allows_login() -> Option<bool> {
+    crate::startup_macos::system_allows()
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn legacy_system_allows_login() -> Option<bool> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -431,7 +561,7 @@ pub fn migrate_login_entry(_app: &AppHandle, settings: &AppSettings) -> AppResul
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn migrate_login_entry(_app: &AppHandle, _settings: &AppSettings) -> AppResult<()> {
     Ok(())
 }

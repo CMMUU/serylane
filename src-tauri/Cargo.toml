@@ -1,6 +1,6 @@
 [package]
 name = "serylane"
-version = "0.7.17"
+version = "0.7.18"
 license = "GPL-3.0-only"
 description = "Serylane: lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]
@@ -15,6 +15,20 @@ default-run = "serylane"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "serylane_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Keep every entry point explicit. Tauri CLI 2.11.4's automatic src/bin
+# discovery can treat later binaries as duplicates when src_path is absent.
+[[bin]]
+name = "serylane"
+path = "src/main.rs"
+
+[[bin]]
+name = "mihomo-tun-helper"
+path = "src/bin/mihomo-tun-helper.rs"
+
+[[bin]]
+name = "serylane-login-helper"
+path = "src/bin/serylane-login-helper.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

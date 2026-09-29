@@ -1,11 +1,14 @@
-import type { AppUpdateStatus } from "./types";
+import type { AppUpdateStatus, UpdateSource } from "./types";
+
+export const updateSourceLabel = (source: UpdateSource | undefined): string =>
+  source ? ({ auto: "自动", hk: "香港下载中心", gitee: "Gitee", github: "GitHub" })[source] : "—";
 
 export function describeAppUpdate(status: AppUpdateStatus) {
   const { phase, info } = status;
   const busy = ["checking", "downloading", "installing"].includes(phase);
-  const source = info?.source === "gitee" ? "Gitee" : "GitHub";
+  const source = updateSourceLabel(info?.source);
   const labels: Record<AppUpdateStatus["phase"], [string, string, string]> = {
-    idle: ["待检查", "尚未检查", "自动模式优先 Gitee，GitHub 备用；下载和检查不会停止代理。"],
+    idle: ["待检查", "尚未检查", "自动模式优先香港下载中心，同版本 Gitee / GitHub 备用；下载和检查不会停止代理。"],
     checking: ["检查中", "正在检查更新", "正在读取所选渠道的版本和安装包信息…"],
     current: ["版本一致", "已与可用发布渠道同步", "如有渠道暂不可用，会在下方单独列出。"],
     ahead: ["本地领先", "本地版本高于可用渠道", "本地构建尚未在可用渠道发布，或镜像仍在同步。不会自动降级。"],

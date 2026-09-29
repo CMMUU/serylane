@@ -85,8 +85,19 @@ impl SessionResumeManager {
         settings: &AppSettings,
         persistent: &PersistentAppState,
     ) -> Option<ResumePlan> {
+        self.prepare_expected(settings, persistent, None)
+    }
+
+    fn prepare_expected(
+        &self,
+        settings: &AppSettings,
+        persistent: &PersistentAppState,
+        expected_generation: Option<u64>,
+    ) -> Option<ResumePlan> {
         let mut state = self.state.lock().ok()?;
-        if self.shutting_down.load(Ordering::Acquire) {
+        if self.shutting_down.load(Ordering::Acquire)
+            || expected_generation.is_some_and(|expected| state.generation != expected)
+        {
             return None;
         }
         state.generation = state.generation.wrapping_add(1);
@@ -205,6 +216,36 @@ impl SessionResumeManager {
         operation();
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn reserve_deferred_bootstrap(
+        &self,
+        app: &AppHandle,
+        settings: &AppSettings,
+        persistent: &PersistentAppState,
+    ) -> Option<u64> {
+        let plan = self.prepare(settings, persistent);
+        self.emit(app);
+        plan.map(|plan| plan.generation)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn bootstrap_reserved(
+        &self,
+        app: &AppHandle,
+        generation: u64,
+        settings: &AppSettings,
+        persistent: &PersistentAppState,
+    ) {
+        // Check the reservation under the same state lock as preparing the new
+        // plan. A manual Stop during service recovery permanently cancels it.
+        let plan = self.prepare_expected(settings, persistent, Some(generation));
+        self.emit(app);
+        if let Some(plan) = plan {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { restore(app, plan).await });
+        }
+    }
+
     pub fn bootstrap(
         &self,
         app: &AppHandle,
@@ -288,6 +329,34 @@ fn retry_restore(error: &crate::error::AppErrorDto) -> bool {
 
 async fn restore_attempt(app: &AppHandle, plan: &ResumePlan) -> bool {
     let manager = app.state::<SessionResumeManager>();
+    if plan.settings.network_mode == NetworkMode::Tun {
+        manager.update(
+            app,
+            plan.generation,
+            ResumePhase::Restoring,
+            "正在等待系统辅助服务启动；不会后台请求额外权限。".into(),
+        );
+        let readiness = tokio::select! {
+            biased;
+            _ = manager.cancelled(plan.generation) => return false,
+            result = wait_for_tun_readiness(|| async {
+                tauri::async_runtime::spawn_blocking(crate::tun_service::status).await
+                    .map_err(|_| AppError::Platform("辅助服务状态读取未完成，请稍后核对".into()))
+            }, Duration::from_secs(10)) => result,
+        };
+        if let Err(error) = readiness {
+            manager.update(
+                app,
+                plan.generation,
+                ResumePhase::Paused,
+                format!(
+                    "自动恢复已暂停：{}。原模式已保留，请处理后手动启动。",
+                    error
+                ),
+            );
+            return false;
+        }
+    }
     let result = restore_preflight(app, plan);
     let (settings, proxy_guard, _configuration) = match result {
         Ok(value) => value,
@@ -365,6 +434,32 @@ async fn restore_attempt(app: &AppHandle, plan: &ResumePlan) -> bool {
     false
 }
 
+// Only Checking is transient. Approval, incompatible versions and failures
+// pause with their own explanation; no install/repair/elevation is attempted.
+async fn wait_for_tun_readiness<F, Fut>(mut read: F, budget: Duration) -> AppResult<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = AppResult<crate::tun_service::TunHelperStatus>>,
+{
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let status = tokio::time::timeout_at(deadline, read())
+            .await
+            .map_err(|_| {
+                AppError::Platform("等待辅助服务启动超时，请在设置中核对服务状态".into())
+            })??;
+        match status.state {
+            crate::tun_service::TunHelperState::Ready => return Ok(()),
+            crate::tun_service::TunHelperState::Checking => {
+                tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(200)))
+                    .await
+                    .map_err(|_| AppError::Platform("辅助服务仍在初始化，请稍后手动启动".into()))?;
+            }
+            _ => return Err(AppError::Platform(status.message)),
+        }
+    }
+}
+
 type ResumePreflight = (
     AppSettings,
     Option<crate::platform::ResumeProxyGuard>,
@@ -386,11 +481,6 @@ fn restore_preflight(app: &AppHandle, plan: &ResumePlan) -> AppResult<ResumePref
     {
         return Err(AppError::Conflict("已有运行中的核心，未重复启动".into()));
     }
-    if settings.network_mode == NetworkMode::Tun && !crate::tun_service::status().ready() {
-        return Err(AppError::Platform(
-            "TUN 当前权限未就绪，不会后台提权或改用系统代理".into(),
-        ));
-    }
     let proxy = (settings.network_mode == NetworkMode::SystemProxy)
         .then(|| crate::platform::prepare_automatic_proxy_resume(app))
         .transpose()?;
@@ -406,6 +496,74 @@ pub fn get_session_resume_status(state: State<'_, SessionResumeManager>) -> Sess
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    fn helper_status(
+        state: crate::tun_service::TunHelperState,
+    ) -> crate::tun_service::TunHelperStatus {
+        crate::tun_service::TunHelperStatus {
+            state,
+            message: "fixture service status".into(),
+            ..crate::tun_service::TunHelperStatus::unsupported("fixture")
+        }
+    }
+
+    #[tokio::test]
+    async fn helper_initialization_has_a_budget_and_only_waits_for_checking() {
+        use crate::tun_service::TunHelperState::*;
+        let mut calls = 0;
+        wait_for_tun_readiness(
+            || {
+                calls += 1;
+                std::future::ready(Ok(helper_status(if calls == 1 { Checking } else { Ready })))
+            },
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls, 2);
+        for state in [
+            RequiresApproval,
+            Unreachable,
+            Outdated,
+            NotInstalled,
+            Unsupported,
+        ] {
+            let mut calls = 0;
+            let result = wait_for_tun_readiness(
+                || {
+                    calls += 1;
+                    std::future::ready(Ok(helper_status(state)))
+                },
+                Duration::from_secs(1),
+            )
+            .await;
+            assert!(result.is_err());
+            assert_eq!(calls, 1, "non-transient state must not auto-repair or poll");
+        }
+        assert!(wait_for_tun_readiness(
+            || std::future::ready(Ok(helper_status(Checking))),
+            Duration::from_millis(1)
+        )
+        .await
+        .is_err());
+    }
+
+    #[test]
+    fn stopping_during_deferred_service_recovery_cannot_be_undone_by_late_bootstrap() {
+        let manager = SessionResumeManager::default();
+        let settings = AppSettings::default();
+        let persistent = state();
+        let pending = manager.prepare(&settings, &persistent).unwrap();
+        assert!(manager.cancel());
+        assert!(manager
+            .prepare_expected(&settings, &persistent, Some(pending.generation))
+            .is_none());
+        assert_eq!(manager.snapshot().phase, ResumePhase::Idle);
+        let fresh = manager.prepare(&settings, &persistent).unwrap();
+        assert!(manager
+            .prepare_expected(&settings, &persistent, Some(fresh.generation))
+            .is_some());
+    }
 
     #[test]
     fn login_retry_waits_for_transient_network_without_a_busy_loop() {

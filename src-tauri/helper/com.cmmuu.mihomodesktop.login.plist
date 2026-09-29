@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>com.cmmuu.mihomodesktop.login</string>
+    <key>BundleProgram</key><string>Contents/MacOS/serylane-login-helper</string>
+    <key>RunAtLoad</key><true/>
+    <key>LimitLoadToSessionType</key><string>Aqua</string>
+    <key>AssociatedBundleIdentifiers</key>
+    <array><string>com.cmmuu.mihomodesktop</string></array>
+  </dict>
+</plist>

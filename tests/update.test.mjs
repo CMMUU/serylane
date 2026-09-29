@@ -10,7 +10,7 @@ import { root, verifyVersions, setVersion, verifyReleaseReady } from "../scripts
 
 const source = readFileSync(new URL("../src/app-update.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { describeAppUpdate } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const { describeAppUpdate, updateSourceLabel } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 const status = (phase, available = true) => ({ phase, info: { available, source: "gitee", latestVersion: "v1.0.0" }, downloadedBytes: 50, totalBytes: 100, error: "HTTP 403" });
 
 test("installation only becomes available after native verification of a newer release", () => {
@@ -33,10 +33,12 @@ test("download progress is bounded and never NaN", () => {
 });
 test("automatic update preferences clearly describe the domestic-first fallback policy", () => {
   const settings = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
-  assert.match(settings, /value="auto">自动（国内优先）/);
-  assert.match(settings, /自动：Gitee → GitHub/);
-  assert.match(settings, /Gitee 尚未同步新版时使用 GitHub/);
-  assert.match(describeAppUpdate(status("idle")).detail, /优先 Gitee，GitHub 备用/);
+  assert.match(settings, /value="auto">自动（香港优先）/);
+  assert.match(settings, /自动：香港 → Gitee → GitHub/);
+  assert.match(settings, /value="hk">香港下载中心/);
+  assert.match(describeAppUpdate({ ...status("available"), info: { ...status("available").info, source: "hk" } }).detail, /香港下载中心/);
+  assert.match(settings, /香港或 Gitee 尚未同步新版时使用已核验的最新渠道/);
+  assert.match(describeAppUpdate(status("idle")).detail, /优先香港下载中心，同版本 Gitee \/ GitHub 备用/);
 });
 test("updater uses confirmed native installation and separately saved non-network preferences", () => {
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
@@ -46,7 +48,10 @@ test("updater uses confirmed native installation and separately saved non-networ
   assert.match(main, /if \(!confirmed\) return;[\s\S]*api\.installAppUpdate\(version, true\)/);
   assert.match(main, /6 \* 60 \* 60 \* 1_000/);
   assert.match(main, /saveUpdatePreferences/);
-  assert.match(rust, /candidate\.update\.install\(bytes\)/);
+  assert.match(rust, /candidate\s*\.update\s*\.install\(bytes\)/);
+  assert.match(rust, /prepare_app_upgrade\(&install_app, &target_version\)/);
+  assert.match(rust, /rollback_app_upgrade\(&install_app\)/);
+  assert.ok(rust.indexOf("if !confirmed") < rust.indexOf("let install_app = app.clone()"));
   assert.doesNotMatch(api, /downloadAndInstall|install_app_update[^\n]*(?:url|path|bytes)/);
 });
 
@@ -105,4 +110,11 @@ test("release notes are present and checked before the bundle/tag pipeline", () 
   const workflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
   const sourceJob = workflow.slice(workflow.indexOf("  source:"), workflow.indexOf("  bundle:"));
   assert.match(sourceJob, /node scripts\/version\.mjs --release-ready/);
+});
+
+test("all channel labels use one map, including HK and absent status", () => {
+  assert.equal(updateSourceLabel("hk"), "香港下载中心");
+  assert.equal(updateSourceLabel("github"), "GitHub");
+  assert.equal(updateSourceLabel("gitee"), "Gitee");
+  assert.equal(updateSourceLabel(undefined), "—");
 });

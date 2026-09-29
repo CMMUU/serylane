@@ -28,10 +28,13 @@ extern "C" {
     pub fn xpc_connection_resume(connection: XpcConnection);
     pub fn xpc_connection_cancel(connection: XpcConnection);
     pub fn xpc_connection_send_message(connection: XpcConnection, message: XpcObject);
-    pub fn xpc_connection_send_message_with_reply_sync(
+    pub fn xpc_connection_send_message_with_reply(
         connection: XpcConnection,
         message: XpcObject,
-    ) -> XpcObject;
+        queue: *mut c_void,
+        handler: &Block<dyn Fn(XpcObject)>,
+    );
+    pub fn dispatch_get_global_queue(identifier: isize, flags: usize) -> *mut c_void;
     pub fn xpc_connection_get_euid(connection: XpcConnection) -> libc::uid_t;
 
     pub fn xpc_dictionary_create(

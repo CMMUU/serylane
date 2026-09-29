@@ -831,7 +831,7 @@ const readonlyReplies: Record<string, () => unknown> = {
     message: "合成运行态仅用于展示界面；未启动真实内核。", pid: null, startedAt: stamp, lastError: null,
   }),
   system_proxy_status: () => ({ active: fixtureSystemProxyActive, snapshotPath: null, platform: previewPlatform }),
-  tun_helper_status: () => ({ supported: previewPlatform !== "linux", state: previewPlatform === "linux" ? "unsupported" : fixtureRuntimeHelperState ?? (runtimeScenarioEnabled ? fixtureRuntimeHelperReady ? "ready" : "requires_approval" : "not_installed"), message: previewPlatform === "linux" ? "Linux 暂未提供 TUN 网络接管" : "合成预览不安装或调用 Helper", protocolVersion: previewPlatform === "macos" ? 2 : 0, runtimeRunning: false, runtimePid: null, runtimeVersion: null, lastError: null }),
+  tun_helper_status: () => ({ supported: previewPlatform !== "linux", state: previewPlatform === "linux" ? "unsupported" : fixtureRuntimeHelperState ?? (runtimeScenarioEnabled ? fixtureRuntimeHelperReady ? "ready" : "requires_approval" : "not_installed"), message: previewPlatform === "linux" ? "Linux 暂未提供 TUN 网络接管" : fixtureRuntimeHelperState === "invalid_installation" ? "合成状态：安装包缺少有效 Developer ID 签名，请更新完整正式版本；重复授权不会修复签名。" : fixtureRuntimeHelperState === "needs_repair" ? "合成状态：系统服务已登记，但辅助程序启动失败。请先停止代理，再重新关联辅助服务。" : "合成预览不安装或调用 Helper", protocolVersion: previewPlatform === "macos" ? 2 : 0, runtimeRunning: false, runtimePid: null, runtimeVersion: null, lastError: null }),
   global_traffic_snapshot: () => ({ enabled: true, uploadBytesPerSecond: 32000, downloadBytesPerSecond: 2400000, sampledAt: stamp, interfaces: ["fixture-only"] }),
   list_profiles: () => structuredClone(profiles),
   list_subscriptions: () => { subscriptionCalls.reads++; reportSubscriptions(); return subscriptions(); },
@@ -1348,6 +1348,12 @@ window.EventSource = class extends EventSource {
 
 element("fixture-system-light").addEventListener("click", () => setSystemDark(false));
 element("fixture-system-dark").addEventListener("click", () => setSystemDark(true));
+for (const [id, state] of [["fixture-helper-invalid", "invalid_installation"], ["fixture-helper-spawn-failed", "needs_repair"]]) {
+  element(id).addEventListener("click", () => {
+    setRuntimeScenario({ scenario: "system_proxy", helperState: state });
+    document.querySelector<HTMLButtonElement>("#global-refresh")?.click();
+  });
+}
 for (const [phase, message] of [
   ["paused", "合成暂停：其他程序已接管系统代理，未自动覆盖。请检查后手动启动。"],
   ["restoring", "合成进度：正在恢复上次配置与网络模式；未启动真实内核。"],
