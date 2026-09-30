@@ -59,7 +59,7 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-      - name: Select established release or fully configured Apple signing
+      - name: Require Developer ID and notarization before a stable release
         id: apple_signing
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -69,7 +69,14 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-        run: bash scripts/check-apple-release-env.sh --allow-legacy
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            bash scripts/check-apple-release-env.sh
+          else
+            # Ad-hoc builds are retained only as unpublished CI artifacts.
+            bash scripts/check-apple-release-env.sh --allow-legacy
+          fi
 
   bundle:
     needs: source

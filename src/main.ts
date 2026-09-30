@@ -1203,7 +1203,7 @@ function tunHelperStateLabel(state: TunHelperStatus["state"] | undefined): strin
     outdated: "需要更新",
     unreachable: "连接异常",
     needs_repair: "需要重新关联",
-    invalid_installation: "需要更新安装包",
+    invalid_installation: "安装包未满足 TUN 要求",
   };
   return state ? labels[state] : "正在检查";
 }
@@ -1556,9 +1556,9 @@ async function ensureTunHelperReady(): Promise<boolean> {
   } else {
     const helper = result.status;
     connectionFeedback.showError({ userMessage: {
-      title: helper.state === "invalid_installation" ? "请更新完整安装包" : helper.state === "needs_repair" ? "辅助服务需要重新关联" : helper.state === "requires_approval" ? "TUN 还需要系统授权" : !helper.supported ? "当前平台尚未支持 TUN" : "TUN 服务尚未就绪",
+      title: helper.state === "invalid_installation" ? "此安装包暂未满足 TUN 要求" : helper.state === "needs_repair" ? "辅助服务需要重新关联" : helper.state === "requires_approval" ? "TUN 还需要系统授权" : !helper.supported ? "当前平台尚未支持 TUN" : "TUN 服务尚未就绪",
       description: `${helper.message} 本次未切换网络模式。`,
-      action: ["unreachable", "checking"].includes(helper.state) ? "refresh" : "settings",
+      action: helper.state === "invalid_installation" ? "diagnostics" : ["unreachable", "checking"].includes(helper.state) ? "refresh" : "settings",
       details: helper.lastError ?? "",
     } });
     if (["requires_approval", "invalid_installation", "needs_repair", "outdated"].includes(helper.state)) navigate("settings");

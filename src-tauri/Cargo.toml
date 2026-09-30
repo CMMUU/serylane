@@ -1,11 +1,17 @@
 [package]
 name = "serylane"
-version = "0.7.18"
+version = "0.7.19"
 license = "GPL-3.0-only"
 description = "Serylane: lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]
 edition = "2021"
 default-run = "serylane"
+
+# Xcode 27's stripping of host proc-macro dylibs can produce a mis-aligned
+# LINKEDIT string pool (reported by rustc as E0463). These build-time tools are
+# never shipped; leave their symbols intact without changing app optimization.
+[profile.release.build-override]
+strip = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.19 - Candidate, not publicly released
+
+- Require configured Developer ID signing and notarization for stable publication; retain ad-hoc CI artifacts only for unpublished builds.
+- Verify the Developer ID requirement, exact team and hardened runtime on all four macOS executables, independently of notarization and physical TUN acceptance.
+- Leave build-time proc-macro symbols intact to avoid Xcode 27 LINKEDIT alignment failures without changing shipped application optimization.
+- Stop mixing previous system-proxy health checks into TUN preflight/recovery errors; direct invalid-installation issues to diagnostics rather than repeated downloads or authorization.
+- Preserve application/update identities and existing Helper re-association; notarization and real TUN acceptance remain pending.
+
 ## 0.7.18
 
 - Use native macOS login-item registration with explicit status, conservative legacy migration, and user-controlled repair; preserve disabled login and proxy preferences.

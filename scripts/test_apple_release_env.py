@@ -77,12 +77,25 @@ class AppleReleaseEnvironmentTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github/workflows/release.yml").read_text()
         self.assertIn("apple_mode: ${{ steps.apple_signing.outputs.apple_mode }}", workflow)
-        self.assertIn("run: bash scripts/check-apple-release-env.sh --allow-legacy", workflow)
+        self.assertIn('if [ -n "$RELEASE_TAG" ]; then\n            bash scripts/check-apple-release-env.sh', workflow)
         self.assertIn("if: runner.os == 'macOS' && needs.source.outputs.apple_mode == 'notarized'", workflow)
         self.assertIn('if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then', workflow)
         self.assertIn('./scripts/verify-macos-release.sh src-tauri/target/release/bundle/macos/Serylane.app', workflow)
         self.assertIn('./scripts/verify-macos-layout.sh src-tauri/target/release/bundle/macos/Serylane.app', workflow)
         self.assertNotIn('continue-on-error: true', workflow)
+
+    def test_actual_workflow_only_allows_adhoc_for_unpublished_builds(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/release.yml").read_text()
+        step = workflow.split("      - name: Require Developer ID and notarization before a stable release\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n  bundle:", 1)[0])
+        env = {k: v for k, v in os.environ.items() if k not in (*self.keys, "GITHUB_OUTPUT")}
+        for tag, expected in [("", 0), ("v0.7.19", 1)]:
+            result = subprocess.run(["bash", "-e", "-c", script], cwd=root,
+                                    env=dict(env, RELEASE_TAG=tag), capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, expected, result.stderr)
+            if tag:
+                self.assertNotIn("apple_mode=legacy", result.stdout)
 
     def test_actual_legacy_build_step_unsets_empty_apple_environment(self):
         # Execute the workflow's actual shell with fake package/verification
