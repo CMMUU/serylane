@@ -43,7 +43,8 @@ test("invalid installation and spawn-failed services keep the current network in
     assert.deepEqual(f.mutations(), []);
     assert.deepEqual(f.preflight.calls, ["status"]);
     assert.ok(f.calls.includes("navigate:settings"));
-    assert.equal(f.issues[0].action, "settings");
+    assert.equal(f.issues[0].action, state === "invalid_installation" ? "diagnostics" : "settings");
+    if (state === "invalid_installation") assert.doesNotMatch(f.issues[0].title, /更新|重新下载/);
     assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
   }
 });
@@ -69,6 +70,23 @@ function feedbackView(initial) {
   if (initial) component.accept(initial);
   return { component, text: field => root.querySelector(`#connection-feedback-${field}`).textContent };
 }
+
+test("TUN preflight errors never inherit successful probes from the existing system proxy", () => {
+  const previous = { revision: 1, operation: 1, phase: "enabled", mode: "system_proxy", health: "healthy", elapsedMs: 0,
+    checks: [{ target: "google", success: true, latencyMs: 370, detail: "old HTTP 204" }] };
+  const { component, text } = feedbackView(previous);
+  assert.match(text("detail-text"), /Google.*通过/);
+  component.showError(failure("Developer ID check failed"));
+  assert.match(text("detail-text"), /Developer ID check failed/);
+  assert.doesNotMatch(text("detail-text"), /Google|HTTP 204/);
+  component.accept({ ...previous, revision: 2 });
+  assert.doesNotMatch(text("detail-text"), /Google|HTTP 204/);
+  component.clearIssue();
+  assert.match(text("detail-text"), /Google.*通过/);
+  component.accept({ ...previous, revision: 3, operation: 2, phase: "failed", issue: failure("new failure").userMessage });
+  assert.match(text("detail-text"), /new failure/);
+  assert.doesNotMatch(text("detail-text"), /Google|HTTP 204/);
+});
 
 function preflightFixture(platform = "macos", options = {}) {
   const calls = [], observed = [];
