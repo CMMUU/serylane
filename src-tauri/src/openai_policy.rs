@@ -239,6 +239,7 @@ pub fn start_generation(
     auto_maintain: bool,
 ) -> AppResult<OpenAiPolicyTaskSnapshot> {
     let storage = AppStorage::from_app(app)?;
+    crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
     let profile = storage.load_profile(profile_id)?;
     if profile.active_revision_id.is_none() {
         return Err(AppError::NotFound("配置没有活动版本".to_string()));
@@ -365,6 +366,7 @@ async fn apply_policy_revision_checked(
 ) -> AppResult<()> {
     let permit = crate::user_rules::acquire_configuration(app)?;
     let storage = AppStorage::from_app(app)?;
+    crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
     let profile = storage.load_profile(profile_id)?;
     let previous_revision_id = profile
         .active_revision_id

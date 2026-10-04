@@ -98,6 +98,8 @@ impl RoutingMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    #[serde(default)]
+    pub manual_outbound: Option<crate::manual_outbound::ManualOutbound>,
     pub schema_version: u32,
     pub locale: String,
     pub theme: String,
@@ -139,6 +141,7 @@ impl Default for AppSettings {
             .collect();
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
+            manual_outbound: None,
             locale: "zh-CN".to_string(),
             theme: "system".to_string(),
             launch_at_login: false,
@@ -224,6 +227,7 @@ impl PublicAppSettings {
             mixed_port: self.mixed_port,
             controller_port: self.controller_port,
             controller_secret: current.controller_secret.clone(),
+            manual_outbound: current.manual_outbound.clone(),
             update_channel: self.update_channel,
             auto_check_updates: self.auto_check_updates,
             update_source: self.update_source,

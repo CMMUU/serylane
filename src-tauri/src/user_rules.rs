@@ -598,6 +598,7 @@ fn capture_context(app: &AppHandle, storage: &AppStorage) -> AppResult<ActiveCon
         "active": active, "profile": profile_marker,
         "networkMode": settings.network_mode, "mixedPort": settings.mixed_port,
         "controllerPort": settings.controller_port, "secret": settings.controller_secret,
+        "manualOutbound": settings.manual_outbound,
         "phase": runtime.phase, "pid": runtime.pid, "startedAt": runtime.started_at,
     })
     .to_string();
@@ -637,6 +638,11 @@ fn warnings(context: &ActiveContext, rules: &[UserRule]) -> Vec<String> {
         "用户规则只处理进入 Mihomo 的连接；DIRECT 仍经过本地核心，不修改系统代理例外或 PAC。"
             .to_string(),
     ];
+    if context.settings.manual_outbound.is_some() {
+        warnings.push(
+            "自选节点模式下用户分流规则暂不参与；保存不会切换出口，切回代理模式后恢复。".into(),
+        );
+    }
     if !context.active {
         warnings.push(
             "尚无活动订阅；仅校验 DIRECT/REJECT/REJECT-DROP 规则，选择订阅并启动后生效。"
@@ -796,7 +802,16 @@ pub(crate) async fn apply_profile_config(
     _permit: &ConfigurationMutationPermit,
 ) -> AppResult<()> {
     let context = capture_context(app, storage)?;
-    let previous = effective_for(&context, &context.settings.user_rules)?.yaml;
+    let previous = match effective_for(&context, &context.settings.user_rules) {
+        Ok(config) => config.yaml,
+        Err(error) if context.settings.manual_outbound.is_some() => {
+            // An interrupted selection or damaged source must not trap the user
+            // in manual mode. Only an explicit, validated switch can use the last
+            // saved runtime config as rollback; startup still fails closed.
+            storage.active_runtime_config()?.ok_or(error)?
+        }
+        Err(error) => return Err(error),
+    };
     validate_config(app, candidate).await?;
     let reloader = (context.active && context.running)
         .then(|| MihomoApiClient::new(&context.settings))

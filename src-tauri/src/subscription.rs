@@ -108,11 +108,105 @@ pub(crate) fn safe_subscription_error(error: &AppError) -> String {
     summary.to_string()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransportFailure {
+    Timeout,
+    Dns,
+    Tls,
+    Connection,
+    Interrupted,
+    Request,
+}
+
+impl TransportFailure {
+    fn classify(error: &reqwest::Error) -> Self {
+        // Inspect causes only for classification. Never expose cause text or URLs.
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        let mut dns = false;
+        let mut interrupted = false;
+        while let Some(value) = cause {
+            let text = value.to_string().to_ascii_lowercase();
+            if text.contains("certificate") || text.contains("tls handshake") {
+                return Self::Tls;
+            }
+            dns |= text.contains("dns error") || text.contains("failed to lookup address");
+            interrupted |= text.contains("connection closed before message completed")
+                || text.contains("connection reset")
+                || text.contains("broken pipe");
+            cause = value.source();
+        }
+        if error.is_timeout() {
+            Self::Timeout
+        } else if dns {
+            Self::Dns
+        } else if error.is_connect() {
+            Self::Connection
+        } else if interrupted {
+            Self::Interrupted
+        } else {
+            Self::Request
+        }
+    }
+
+    fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::Timeout | Self::Dns | Self::Connection | Self::Interrupted
+        )
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Timeout => "订阅请求超时",
+            Self::Dns => "订阅域名解析失败",
+            Self::Tls => "订阅安全连接校验失败",
+            Self::Connection => "订阅服务器连接失败",
+            Self::Interrupted => "订阅连接意外中断",
+            Self::Request => "订阅请求发送或读取失败",
+        }
+    }
+}
+
 fn subscription_transport_error(error: reqwest::Error) -> AppError {
-    // Reqwest attaches the request URL to transport/body errors. Subscription
-    // URLs commonly carry credentials in their query, so never forward it to
-    // logs, IPC, or the user-visible toast.
-    AppError::Subscription(error.without_url().to_string())
+    AppError::Subscription(TransportFailure::classify(&error).message().into())
+}
+
+pub(crate) fn subscription_user_message(
+    message: &str,
+) -> (&'static str, &'static str, &'static str) {
+    let (title, description) = if message.starts_with("HTTP 401") || message.starts_with("HTTP 403")
+    {
+        ("订阅服务拒绝了请求", "请核对服务商要求的客户端标识（User-Agent）或重新复制订阅链接。其他客户端可用时，可填写相同的客户端标识后重试。")
+    } else if message.starts_with("HTTP 429") {
+        ("订阅请求过于频繁", "请稍等片刻再试，避免连续点击刷新。")
+    } else if message.starts_with("HTTP 5") {
+        ("订阅服务暂时异常", "服务商暂未返回可用结果，请稍后重试。")
+    } else if message.contains("超时") {
+        ("获取订阅超时", "服务商未在等待时间内完成响应。请重试；如其他客户端可用，请检查当前网络路径和客户端标识。")
+    } else if message == "订阅域名解析失败" {
+        ("订阅域名解析失败", "请检查 DNS 与当前网络连接后重试。")
+    } else if message == "订阅安全连接校验失败" {
+        (
+            "订阅安全连接未通过校验",
+            "请检查系统时间，或联系服务商检查 HTTPS 证书。",
+        )
+    } else if message == "订阅服务器连接失败" || message == "订阅连接意外中断" {
+        (
+            "连接订阅服务未成功",
+            "连接失败或中途断开，请检查当前网络路径后重试。原有配置未受影响。",
+        )
+    } else if message.contains("为空") || message.contains("UTF-8") || message.contains("4 MiB") {
+        (
+            "订阅返回的内容需要检查",
+            "请使用服务商提供的 Clash / Mihomo 订阅格式，并检查是否返回了空内容或超大文件。",
+        )
+    } else {
+        (
+            "订阅下载未完成",
+            "请重试或核对服务商指定的订阅格式与客户端标识；原有配置未受影响。",
+        )
+    };
+    (title, description, "subscriptions")
 }
 
 fn subscription_timeout_error() -> AppError {
@@ -134,6 +228,40 @@ pub struct SubscriptionFetcher {
 }
 
 impl SubscriptionFetcher {
+    /// One transport retry for the entire operation, sharing the existing deadline.
+    /// Only GET/HEAD are passed here. HTTP compatibility attempts retain their own cap.
+    async fn send_request(
+        &self,
+        request: reqwest::RequestBuilder,
+        deadline: tokio::time::Instant,
+        retry_available: &mut bool,
+    ) -> AppResult<reqwest::Response> {
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(subscription_timeout_error());
+            }
+            let attempt = request
+                .try_clone()
+                .ok_or_else(|| AppError::Subscription("订阅请求参数无效".into()))?;
+            match tokio::time::timeout(remaining, attempt.send()).await {
+                Ok(Ok(response)) => return Ok(response),
+                Err(_) => return Err(subscription_timeout_error()),
+                Ok(Err(error)) => {
+                    if !*retry_available || !TransportFailure::classify(&error).retryable() {
+                        return Err(subscription_transport_error(error));
+                    }
+                    *retry_available = false;
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining <= std::time::Duration::from_millis(200) {
+                        return Err(subscription_transport_error(error));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }
+    }
+
     /// Quota is response metadata, independent of the YAML/ETag. HEAD first;
     /// services without HEAD metadata get a bounded GET whose body is dropped.
     /// This path never validates, persists or applies a configuration.
@@ -155,24 +283,20 @@ impl SubscriptionFetcher {
             }
         }
         let deadline = tokio::time::Instant::now() + self.total_timeout;
+        let mut retry_available = true;
         for method in [reqwest::Method::HEAD, reqwest::Method::GET] {
             for agent in &agents {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    return Err(subscription_timeout_error());
-                }
-                let response = tokio::time::timeout(
-                    remaining,
-                    self.client
-                        .request(method.clone(), parsed.clone())
-                        .header(reqwest::header::USER_AGENT, *agent)
-                        .header(ACCEPT, SUBSCRIPTION_ACCEPT)
-                        .header(CACHE_CONTROL, "no-cache")
-                        .send(),
-                )
-                .await
-                .map_err(|_| subscription_timeout_error())?
-                .map_err(subscription_transport_error)?;
+                let response = self
+                    .send_request(
+                        self.client
+                            .request(method.clone(), parsed.clone())
+                            .header(reqwest::header::USER_AGENT, *agent)
+                            .header(ACCEPT, SUBSCRIPTION_ACCEPT)
+                            .header(CACHE_CONTROL, "no-cache"),
+                        deadline,
+                        &mut retry_available,
+                    )
+                    .await?;
                 if response.status() == reqwest::StatusCode::FORBIDDEN {
                     continue;
                 }
@@ -197,8 +321,44 @@ impl SubscriptionFetcher {
         Err(AppError::Subscription("HTTP 403".into()))
     }
 
+    /// Reuse only this application's already-running core. This is a status read,
+    /// not permission to start a core, change system proxy, or discover other apps.
+    pub fn for_app(app: &tauri::AppHandle) -> AppResult<Self> {
+        use tauri::Manager;
+        let running = app
+            .state::<crate::runtime::MihomoRuntime>()
+            .status(Some(app))
+            .phase
+            == crate::models::RuntimePhase::Running;
+        let port = if running {
+            Some(
+                crate::storage::AppStorage::from_app(app)?
+                    .settings()?
+                    .mixed_port,
+            )
+        } else {
+            None
+        };
+        Self::with_running_proxy(port)
+    }
+
+    #[cfg(test)]
     pub fn new() -> AppResult<Self> {
-        let client = reqwest::Client::builder()
+        Self::with_running_proxy(None)
+    }
+
+    fn with_running_proxy(port: Option<u16>) -> AppResult<Self> {
+        let mut builder = reqwest::Client::builder();
+        if let Some(port) = port {
+            // Never fall back to direct access after the selected core fails.
+            // Local subscription fixtures remain local, avoiding a proxy loop.
+            let endpoint = format!("http://127.0.0.1:{port}");
+            builder = builder.no_proxy().proxy(reqwest::Proxy::custom(move |url| {
+                (!is_loopback_host(url)).then(|| endpoint.clone())
+            }));
+        }
+        let client = builder
+            .connect_timeout(std::time::Duration::from_secs(8))
             .timeout(std::time::Duration::from_secs(20))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {
@@ -245,6 +405,7 @@ impl SubscriptionFetcher {
 
         let mut response = None;
         let deadline = tokio::time::Instant::now() + self.total_timeout;
+        let mut retry_available = true;
         for (attempt_user_agent, include_validators, include_compatibility_headers) in attempts {
             let mut request = self
                 .client
@@ -264,14 +425,9 @@ impl SubscriptionFetcher {
                     request = request.header(IF_MODIFIED_SINCE, last_modified);
                 }
             }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(subscription_timeout_error());
-            }
-            let candidate = tokio::time::timeout(remaining, request.send())
-                .await
-                .map_err(|_| subscription_timeout_error())?
-                .map_err(subscription_transport_error)?;
+            let candidate = self
+                .send_request(request, deadline, &mut retry_available)
+                .await?;
             if candidate.status() != reqwest::StatusCode::FORBIDDEN {
                 response = Some(candidate);
                 break;
@@ -839,15 +995,162 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retries_one_interrupted_get_or_head_without_exposing_url() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for quota in [false, true] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                for attempt in 0..2 {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut buffer = [0; 2048];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    assert!(read > 0);
+                    if attempt == 1 {
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nSubscription-Userinfo: upload=1; download=2; total=9\r\nConnection: close\r\n\r\nproxies: []\n").await.unwrap();
+                    }
+                }
+            });
+            let fetcher = SubscriptionFetcher::new().unwrap();
+            let url = format!("http://{address}/sub?token=fixture-secret");
+            if quota {
+                assert!(fetcher
+                    .fetch_usage(&url, "clash.meta")
+                    .await
+                    .unwrap()
+                    .is_some());
+            } else {
+                assert!(fetcher
+                    .fetch(&url, "clash.meta", None, None)
+                    .await
+                    .unwrap()
+                    .content
+                    .is_some());
+            }
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn stops_after_one_transport_retry() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 2048];
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0);
+            }
+        });
+        let error = SubscriptionFetcher::new()
+            .unwrap()
+            .fetch(
+                &format!("http://{address}/sub?token=fixture-secret"),
+                "clash.meta",
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("中断"));
+        assert!(!error.to_string().contains("fixture-secret"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn running_proxy_carries_https_connect_without_sending_subscription_credentials() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for quota in [false, true] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                let read = stream.read(&mut buffer).await.unwrap();
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                assert!(request.starts_with("CONNECT subscription.example.invalid:443 "));
+                assert!(!request.contains("fixture-secret"));
+                stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            });
+            let mut fetcher = SubscriptionFetcher::with_running_proxy(Some(port)).unwrap();
+            fetcher.total_timeout = std::time::Duration::from_secs(2);
+            let url = "https://subscription.example.invalid/subscribe?token=fixture-secret";
+            let error = if quota {
+                fetcher.fetch_usage(url, "clash.meta").await.unwrap_err()
+            } else {
+                fetcher
+                    .fetch(url, "clash.meta", None, None)
+                    .await
+                    .unwrap_err()
+            };
+            assert!(!error.to_string().contains("fixture-secret"));
+            tokio::time::timeout(std::time::Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn local_subscriptions_bypass_the_running_proxy_to_avoid_loops() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 2048];
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0);
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nproxies: []\n").await.unwrap();
+        });
+        let fetched = SubscriptionFetcher::with_running_proxy(Some(1))
+            .unwrap()
+            .fetch(&format!("http://{address}/sub"), "clash.meta", None, None)
+            .await
+            .unwrap();
+        assert!(fetched.content.is_some());
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn friendly_subscription_errors_distinguish_causes_without_forwarding_payloads() {
+        for (message, expected) in [
+            ("HTTP 403 token=secret", "拒绝"),
+            ("HTTP 429", "频繁"),
+            ("订阅请求超时", "超时"),
+            ("订阅安全连接校验失败", "校验"),
+            ("订阅域名解析失败", "解析"),
+        ] {
+            let dto = crate::error::AppError::Subscription(message.into()).dto();
+            assert!(dto.user_message.title.contains(expected));
+            assert!(!dto.user_message.description.contains("secret"));
+        }
+        assert!(!super::TransportFailure::Tls.retryable());
+        assert!(!super::TransportFailure::Request.retryable());
+    }
+
+    #[tokio::test]
     #[ignore = "requires TEST_SUBSCRIPTION_URL and network access"]
     async fn validates_an_external_subscription_fixture() {
         use crate::effective::build_effective_config;
         use crate::models::{AppSettings, RoutingMode};
-        use std::process::Command;
         let Ok(url) = std::env::var("TEST_SUBSCRIPTION_URL") else {
             return;
         };
-        let fetched = SubscriptionFetcher::new()
+        let port = std::env::var("TEST_SUBSCRIPTION_PROXY_PORT")
+            .ok()
+            .map(|value| value.parse::<u16>().expect("numeric local proxy port"));
+        let fetched = SubscriptionFetcher::with_running_proxy(port)
             .expect("fetcher")
             .fetch(&url, "clash.meta", None, None)
             .await
@@ -868,23 +1171,22 @@ mod tests {
             .trim()
             .to_string();
         let binary = root.join("binaries").join(format!("mihomo-{target}"));
-        let directory = std::env::temp_dir().join(format!(
-            "mihomo-subscription-pipeline-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&directory).expect("directory");
-        let config = directory.join("effective.yaml");
-        std::fs::write(&config, effective.yaml).expect("write");
-        let output = Command::new(binary)
-            .args(["-t", "-d"])
-            .arg(&directory)
-            .arg("-f")
-            .arg(&config)
-            .output()
-            .expect("mihomo");
-        if !output.status.success() {
-            panic!("{}", String::from_utf8_lossy(&output.stderr));
+        let directory = tempfile::tempdir().expect("private fixture directory");
+        if let Ok(cache) = std::env::var("TEST_SUBSCRIPTION_DATA_DIR") {
+            for name in ["GeoSite.dat", "geoip.metadb", "GeoIP.dat", "Country.mmdb"] {
+                let source = std::path::Path::new(&cache).join(name);
+                if source.is_file() {
+                    std::fs::copy(source, directory.path().join(name))
+                        .expect("geographic data copy");
+                }
+            }
         }
-        let _ = std::fs::remove_dir_all(directory);
+        let config = directory.path().join("effective.yaml");
+        crate::runtime::write_private_file(&config, effective.yaml.as_bytes())
+            .expect("private config");
+        assert!(
+            crate::runtime::validate_file(&binary, directory.path(), &config).is_ok(),
+            "isolated native validation failed"
+        );
     }
 }

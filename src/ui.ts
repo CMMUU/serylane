@@ -25,6 +25,7 @@ export const NAV_ITEMS = [
   { id: "profiles", label: "配置", icon: "cube", color: "purple" },
   { id: "subscriptions", label: "订阅", icon: "subscription", color: "green" },
   { id: "proxies", label: "代理", icon: "globe", color: "orange" },
+  { id: "manual", label: "自选节点", icon: "check", color: "green" },
   { id: "programs", label: "程序代理", icon: "desktop", color: "blue" },
   { id: "routing", label: "路由", icon: "arrows", color: "purple" },
   { id: "rules", label: "规则", icon: "list", color: "purple" },

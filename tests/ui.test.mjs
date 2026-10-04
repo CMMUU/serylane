@@ -193,7 +193,7 @@ test("refreshBase rejects a delayed pre-start snapshot after a network mutation"
   const noop = () => {};
   const environment = {
     themeController: { mutationRevision: 0, sync: () => true },
-    runtimeMutationRevision: 0, baseReadSequence: 0, runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false,
+    runtimeMutationRevision: 0, baseReadSequence: 0, runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
     store: { settings: { networkMode: "manual" }, runtime: staleRuntime },
     action: async (_label, operation) => operation(),
     api: new Proxy({ settings: () => settingsRead, runtime: async () => staleRuntime }, { get: (target, key) => target[key] ?? (async () => null) }),
@@ -228,7 +228,7 @@ function runtimeRefreshFixture() {
   let reads = 0;
   const environment = {
     runtimeMutationRevision: 0, runtimeReadSequence: 0,
-    runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false,
+    runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
     store: { runtime: { phase: "stopped" }, systemProxy: { active: false } },
     api: {
       runtime: () => { reads++; activeRequest = requests.shift(); return activeRequest.promise; },
@@ -294,12 +294,12 @@ test("latest runtime read wins and a late in-action read cannot cross busy relea
   assert.equal(f.environment.store.systemProxy.active, true);
 });
 
-test("all eleven navigation items retain unique routes, labels and code-native icons", () => {
-  assert.deepEqual(NAV_ITEMS.map(({ id }) => id), ["overview", "profiles", "subscriptions", "proxies", "programs", "routing", "rules", "connections", "logs", "diagnostics", "settings"]);
-  assert.equal(new Set(NAV_ITEMS.map(({ id }) => id)).size, 11);
-  assert.equal((navigationMarkup.match(/<svg /g) ?? []).length, 11);
+test("all twelve navigation items retain unique routes, labels and code-native icons", () => {
+  assert.deepEqual(NAV_ITEMS.map(({ id }) => id), ["overview", "profiles", "subscriptions", "proxies", "manual", "programs", "routing", "rules", "connections", "logs", "diagnostics", "settings"]);
+  assert.equal(new Set(NAV_ITEMS.map(({ id }) => id)).size, 12);
+  assert.equal((navigationMarkup.match(/<svg /g) ?? []).length, 12);
   assert.equal((navigationMarkup.match(/aria-current="page"/g) ?? []).length, 1);
-  assert.equal((navigationMarkup.match(/aria-hidden="true"/g) ?? []).length, 11);
+  assert.equal((navigationMarkup.match(/aria-hidden="true"/g) ?? []).length, 12);
 });
 test("switches retain a native checked input and keyboard-focusable control", () => {
   assert.match(preferenceSwitch("settings-launch"), /id="settings-launch" type="checkbox" role="switch"/);

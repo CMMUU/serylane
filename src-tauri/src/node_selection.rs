@@ -47,6 +47,7 @@ pub(crate) fn validate_choice(group: &Value, node: &str) -> AppResult<()> {
 pub async fn proxies(app: &AppHandle) -> AppResult<Value> {
     let _permit = crate::user_rules::acquire_configuration(app)?;
     let storage = AppStorage::from_app(app)?;
+    crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
     let state = storage.state()?;
     let mut payload = MihomoApiClient::new(&storage.settings()?)?
         .proxies()

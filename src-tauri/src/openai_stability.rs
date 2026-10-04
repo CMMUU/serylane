@@ -342,8 +342,12 @@ impl StabilityManager {
         let Ok(persistent) = storage.state() else {
             return;
         };
+        let proxy_mode = storage
+            .settings()
+            .is_ok_and(|s| s.manual_outbound.is_none());
         let profile = persistent
             .active_profile_id
+            .filter(|_| proxy_mode)
             .and_then(|id| storage.load_profile(id).ok());
         if let Ok(mut s) = self.inner.lock() {
             s.epoch += 1;
@@ -458,6 +462,10 @@ impl StabilityManager {
     }
     async fn tick(&self, app: &AppHandle) -> AppResult<()> {
         let storage = AppStorage::from_app(app)?;
+        if storage.settings()?.manual_outbound.is_some() {
+            self.update_policy_status(app);
+            return Ok(());
+        }
         let active = storage.state()?.active_profile_id;
         let profile = active.map(|id| storage.load_profile(id)).transpose()?;
         let policy = profile.as_ref().map(|p| &p.openai_policy);
@@ -539,6 +547,7 @@ impl StabilityManager {
             .flatten()
         {
             let _permit = crate::user_rules::acquire_configuration(app)?;
+            crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
             let latest = active.map(|id| storage.load_profile(id)).transpose()?;
             if storage.state()?.active_profile_id != active
                 || latest.as_ref().and_then(|p| p.active_revision_id) != revision
@@ -650,6 +659,7 @@ impl StabilityManager {
         // A stopped/reloaded core is not evidence that every candidate is broken.
         // Gate both recording and selection, not just the eventual controller write.
         let _permit = crate::user_rules::acquire_configuration(app)?;
+        crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
         let run_after = app.state::<MihomoRuntime>().status(Some(app));
         if self.stopped.load(Ordering::Acquire)
             || run_after.phase != RuntimePhase::Running

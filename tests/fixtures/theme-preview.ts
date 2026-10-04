@@ -671,7 +671,7 @@ const staleSubscriptionStamp = "2026-09-01T08:00:00.000Z";
 const fixtureSubscriptionError = "订阅请求失败：HTTP 403。订阅服务拒绝访问；请检查订阅是否有效或联系服务商。";
 
 function subscriptions(): SubscriptionOverview[] {
-  return profiles.map(profile => {
+  return profiles.filter(profile => profile.source.type === "remote_subscription").map(profile => {
     const sample = subscriptionSamples.get(profile.id);
     return {
       profile: structuredClone(profile), summary: structuredClone(summary), revisionCount: 1,
@@ -740,6 +740,11 @@ function subscriptionScenario(scenario: string) {
       });
     });
   }
+  if (previewQuery.get("localYaml") === "1") {
+    const local = makeProfile("fixture-local", "保留的本地 YAML（合成）", false);
+    local.source = { type: "inline", label: "local-fixture.yaml" };
+    profiles.push(local);
+  }
   reportSubscriptions();
 }
 
@@ -805,6 +810,14 @@ function fixtureHealthProbe() {
     ] });
   }, 3000);
 }
+let fixtureManualSelection: {profileId: string; nodeName: string} | null = null;
+function fixtureManualState() {
+  return {selection: fixtureManualSelection, notices: [], nodes: profiles.filter(p => p.source.type === "remote_subscription").flatMap(p => [
+    {profileId: p.id, revisionId: p.activeRevisionId, profileName: p.displayName, name: "演示东京 01（虚构）", protocol: "trojan"},
+    {profileId: p.id, revisionId: p.activeRevisionId, profileName: p.displayName, name: "演示新加坡 02（虚构）", protocol: "socks5"},
+  ])};
+}
+
 const readonlyReplies: Record<string, () => unknown> = {
   connection_feedback: () => structuredClone({ ...fixtureFeedback, elapsedMs: fixtureFeedback.health === "checking" ? performance.now() - feedbackStartedAt : fixtureFeedback.elapsedMs }),
   app_info: () => ({ productName: "Serylane", version: `${packageInfo.version} · 合成预览`, targetOs: previewPlatform, targetArch: previewWindows ? "x86_64" : "aarch64" }),
@@ -833,6 +846,7 @@ const readonlyReplies: Record<string, () => unknown> = {
   system_proxy_status: () => ({ active: fixtureSystemProxyActive, snapshotPath: null, platform: previewPlatform }),
   tun_helper_status: () => ({ supported: previewPlatform !== "linux", state: previewPlatform === "linux" ? "unsupported" : fixtureRuntimeHelperState ?? (runtimeScenarioEnabled ? fixtureRuntimeHelperReady ? "ready" : "requires_approval" : "not_installed"), message: previewPlatform === "linux" ? "Linux 暂未提供 TUN 网络接管" : fixtureRuntimeHelperState === "invalid_installation" ? "合成状态：安装包缺少有效 Developer ID 签名，请更新完整正式版本；重复授权不会修复签名。" : fixtureRuntimeHelperState === "needs_repair" ? "合成状态：系统服务已登记，但辅助程序启动失败。请先停止代理，再重新关联辅助服务。" : "合成预览不安装或调用 Helper", protocolVersion: previewPlatform === "macos" ? 2 : 0, runtimeRunning: false, runtimePid: null, runtimeVersion: null, lastError: null }),
   global_traffic_snapshot: () => ({ enabled: true, uploadBytesPerSecond: 32000, downloadBytesPerSecond: 2400000, sampledAt: stamp, interfaces: ["fixture-only"] }),
+  get_manual_outbound: () => structuredClone(fixtureManualState()),
   list_profiles: () => structuredClone(profiles),
   list_subscriptions: () => { subscriptionCalls.reads++; reportSubscriptions(); return subscriptions(); },
   get_active_profile: () => activeProfileId ? profileDetails(activeProfileId) : null,
@@ -932,7 +946,7 @@ mockIPC(async (command, payload) => {
     try {
       await new Promise(resolve => window.setTimeout(resolve, 120));
       if (requestedRevision !== subscriptionScenarioRevision) throw ruleError("STATE_CONFLICT", "合成场景已切换，旧导入没有写入新场景。");
-      if (scenario === "import-403") throw { code: "SUBSCRIPTION_ERROR", stage: "fixture_subscription", message: fixtureSubscriptionError, retryable: false };
+      if (scenario === "import-403") throw { code: "SUBSCRIPTION_ERROR", stage: "fixture_subscription", message: fixtureSubscriptionError, retryable: false, userMessage: {title: "订阅服务拒绝了请求", description: "HTTP 403；请核对服务商指定的客户端标识或重新复制订阅链接。", action: "subscriptions", details: "HTTP 403"} };
       const existingId = subscriptionImportUrls.get(url.href);
       let profile = profiles.find(entry => entry.id === existingId);
       const created = !profile;
@@ -1150,6 +1164,16 @@ mockIPC(async (command, payload) => {
     document.documentElement.dataset.fixtureSettingsSaves = String(++settingsSaveCount);
     report("运行偏好已保存到合成状态；未触及系统设置");
     return settings();
+  }
+  if (command === "set_manual_outbound") {
+    if (args.confirmed !== true) throw ruleError("INVALID_INPUT", "请先确认出口切换");
+    if (args.profileId) {
+      const node = fixtureManualState().nodes.find(n => n.profileId === args.profileId && n.revisionId === args.revisionId && n.name === args.nodeName);
+      if (!node) throw ruleError("STATE_CONFLICT", "节点已变化，请刷新");
+      activeProfileId = node.profileId;
+      fixtureManualSelection = {profileId: node.profileId, nodeName: node.name};
+    } else { fixtureManualSelection = null; }
+    return structuredClone(fixtureManualState());
   }
   if (command === "save_update_preferences") {
     const source = args.source as UpdateSource;

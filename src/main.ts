@@ -5,9 +5,11 @@ import "./desktop-theme.css";
 import "./local-routing.css";
 import "./subscription-cards.css";
 import "./node-selection.css";
+import "./manual-outbound.css";
+import { manualOutboundMarkup, mountManualOutbound, type ManualOutboundState } from "./manual-outbound";
 import { generalGroups, currentNodeMarkup, nodeSelectionMarkup, type ProxyMap } from "./node-selection";
 import { mountOpenAiCosts, openAiCostsMarkup } from "./openai-costs";
-import { subscriptionCardMarkup, newestSubscriptionStatus } from "./subscription-cards";
+import { subscriptionCardMarkup, newestSubscriptionStatus, synchronizedProfiles } from "./subscription-cards";
 import { subscriptionImportMarkup, describeSubscriptionImport } from "./subscription-import";
 import { NAV_ITEMS, navigationMarkup, type ViewName } from "./ui";
 import { preferencesMarkup } from "./settings-view";
@@ -83,6 +85,7 @@ dns:
 
 const store: {
   view: ViewName;
+  manualOutbound: ManualOutboundState | null;
   appInfo: AppInfo | null;
   appUpdate: AppUpdateInfo | null;
   settings: AppSettings | null;
@@ -103,6 +106,7 @@ const store: {
   globalTraffic: GlobalTrafficSnapshot | null;
 } = {
   view: "overview",
+  manualOutbound: null,
   appInfo: null,
   appUpdate: null,
   settings: null,
@@ -136,6 +140,7 @@ const subscriptionRefreshing = new Set<string>();
 let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
 let runtimeActionInFlight = false;
+let manualModeSwitching = false;
 let stabilityActionInFlight = false;
 let nodeSelectionBusy = false;
 let proxyReadSequence = 0;
@@ -355,12 +360,16 @@ app.innerHTML = `
       <section class="view-stack is-hidden" id="proxies-view">
         <article class="panel proxy-groups-panel">
           <div class="panel-heading"><div><div class="section-label">PROXY GROUPS</div><h2>代理组与节点</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
+          <div id="proxy-mode-notice" class="warning-box" hidden><p>自选节点正在生效，代理页的策略组与自动选点已暂停。两种方式二选一。</p><button class="button button-quiet" id="proxy-mode-restore">切回代理模式</button></div>
+          <fieldset id="proxy-mode-controls"><legend class="sr-only">代理策略控制</legend>
           <div id="openai-policy-card" class="openai-policy-card"></div>
           ${openAiCostsMarkup}
           <div id="proxy-groups" class="card-list empty-state">启动 Mihomo 后查看代理组。</div>
+          </fieldset>
         </article>
       </section>
 
+      <section class="view-stack is-hidden" id="manual-view">${manualOutboundMarkup}</section>
       <section class="view-stack is-hidden" id="routing-view">
         ${localRoutingMarkup}
       </section>
@@ -654,9 +663,10 @@ async function refreshConnectionFeedback() {
 
 async function refreshBase() {
   const requestedBaseRead = ++baseReadSequence;
+  const selectedProfileId = store.selectedProfile?.profile.id;
   const requestedThemeRevision = themeController.mutationRevision;
   const requestedRuntimeRevision = runtimeMutationRevision;
-  const requestedDuringRuntimeWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving;
+  const requestedDuringRuntimeWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching;
   const result = await action("", async () => {
     const [
       appInfo,
@@ -670,6 +680,8 @@ async function refreshBase() {
       activeProfile,
       openAiTask,
       globalTraffic,
+      manualOutbound,
+      selectedDetails,
     ] =
       await Promise.all([
         api.appInfo(),
@@ -683,10 +695,12 @@ async function refreshBase() {
         api.activeProfile(),
         api.openAiPolicyTask(),
         api.globalTraffic(),
+        api.manualOutbound().catch(() => store.manualOutbound),
+        selectedProfileId ? api.profileDetails(selectedProfileId).catch(() => null) : Promise.resolve(null),
       ]);
     // A read started before/during a runtime or settings write must not put
     // the old network mode and runtime status back into the toolbar.
-    if (requestedBaseRead !== baseReadSequence || requestedDuringRuntimeWrite || requestedRuntimeRevision !== runtimeMutationRevision || runtimeActionInFlight || networkModeSwitching || settingsSaving) return;
+    if (requestedBaseRead !== baseReadSequence || requestedDuringRuntimeWrite || requestedRuntimeRevision !== runtimeMutationRevision || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return;
     if (!themeController.sync(settings.theme, requestedThemeRevision)) {
       settings.theme = themeController.snapshot.preference;
     }
@@ -705,12 +719,17 @@ async function refreshBase() {
       runtime,
       systemProxy,
       tunHelper,
-      profiles,
+      profiles: synchronizedProfiles(profiles ?? [], subscriptions),
       subscriptions,
       activeProfile,
       openAiTask,
       globalTraffic,
+      manualOutbound,
     });
+    if (store.selectedProfile?.profile.id === selectedProfileId) {
+      const current = store.profiles.find(profile => profile.id === selectedProfileId);
+      store.selectedProfile = current && selectedDetails && selectedDetails.profile.id === current.id && selectedDetails.profile.activeRevisionId === current.activeRevisionId ? { ...selectedDetails, profile: current } : null;
+    }
     return true;
   });
   if (result !== true) return false;
@@ -718,6 +737,7 @@ async function refreshBase() {
   renderOverview();
   renderProfiles();
   renderSubscriptions();
+  renderManualMode();
   renderSettings();
   renderOpenAiPolicy();
   renderGlobalTraffic();
@@ -857,7 +877,7 @@ function renderOverview() {
   const routingMode = store.activeProfile?.profile.routingMode ?? "rule";
   $$("#home-routing-mode button").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.routingMode === routingMode);
-    (button as HTMLButtonElement).disabled = !store.activeProfile;
+    (button as HTMLButtonElement).disabled = !store.activeProfile || Boolean(store.manualOutbound?.selection);
   });
   $("#control-hint")!.textContent = store.activeProfile
     ? `${store.activeProfile.profile.displayName} · ${modeLabel(store.settings?.networkMode)} · ${routingMode === "global" ? "全局" : routingMode === "direct" ? "直连" : "规则"}`
@@ -972,8 +992,7 @@ function renderProfiles() {
     list.textContent = "还没有配置档案";
   } else {
     list.className = "profile-list";
-    list.innerHTML = store.profiles
-      .map((profile) => {
+    const rows = (profiles: ProfileRecord[]) => profiles.map((profile) => {
         const active = store.activeProfile?.profile.id === profile.id;
         const selected = store.selectedProfile?.profile.id === profile.id;
         return `
@@ -985,6 +1004,9 @@ function renderProfiles() {
         `;
       })
       .join("");
+    const remote = store.profiles.filter(profile => profile.source.type === "remote_subscription");
+    const local = store.profiles.filter(profile => profile.source.type !== "remote_subscription");
+    list.innerHTML = `<h3 class="profile-source-heading">订阅配置 · 与订阅同步</h3>${rows(remote) || '<p class="hint">尚未添加订阅</p>'}<h3 class="profile-source-heading">本地 YAML</h3>${rows(local) || '<p class="hint">尚无本地配置</p>'}`;
   }
   renderProfileDetails();
 }
@@ -1344,7 +1366,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((but
 themeController.refresh();
 
 async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
-  const requestedDuringWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving;
+  const requestedDuringWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching;
   if (requestedDuringWrite && !allowDuringRuntimeAction) return;
   const requestedRevision = runtimeMutationRevision;
   const requestedSequence = ++runtimeReadSequence;
@@ -1352,7 +1374,7 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
   // Helper readback is unrelated to System Proxy completion. Refresh it later.
   void api.tunHelperStatus().then(helper => { if (requestedRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); } }).catch(() => {});
   if (requestedRevision !== runtimeMutationRevision || requestedSequence !== runtimeReadSequence
-    || (!allowDuringRuntimeAction && (runtimeActionInFlight || networkModeSwitching || settingsSaving))) return;
+    || (!allowDuringRuntimeAction && (runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching))) return;
   store.runtime = runtime;
   store.systemProxy = systemProxy;
   if (runtime.phase !== "running") {
@@ -1372,7 +1394,7 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
 async function startRuntime(mode: RuntimeStartMode) {
   connectionFeedback.clearIssue();
   const result = await startRuntimeInMode(mode, {
-    state: () => ({ settings: store.settings, runtime: store.runtime, systemProxyActive: Boolean(store.systemProxy?.active), hasProfile: Boolean(store.activeProfile), busy: runtimeActionInFlight || networkModeSwitching || settingsSaving }),
+    state: () => ({ settings: store.settings, runtime: store.runtime, systemProxyActive: Boolean(store.systemProxy?.active), hasProfile: Boolean(store.activeProfile), busy: runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching }),
     setBusy: (busy) => { runtimeMutationRevision++; runtimeActionInFlight = busy; renderHeader(); renderOverview(); renderAppearance(themeController.snapshot); },
     setSettings: (settings) => { store.settings = settings; },
     setRuntime: (runtime) => { store.runtime = runtime; },
@@ -2017,6 +2039,11 @@ async function refreshProxies(quiet = false) {
 }
 
 function renderOverviewNodes() {
+  if (store.manualOutbound?.selection) {
+    const selected = store.manualOutbound.selection;
+    $("#overview-nodes-content")!.innerHTML = `<div class="warning-box"><strong>自选节点 · ${escapeHtml(selected.nodeName)}</strong><p>已暂停代理页的策略组与自动选点。更换出口或恢复订阅策略，请前往「自选节点」。</p></div>`;
+    return;
+  }
   const container = $("#overview-nodes-content");
   if (!container) return;
   const profile = store.activeProfile?.profile;
@@ -2330,6 +2357,22 @@ const ruleManager = mountRuleManager($("#rules-view")!, {
   },
 });
 
+const manualOutbound = mountManualOutbound($("#manual-view")!, {
+  read: api.manualOutbound,
+  write: async node => { runtimeMutationRevision++; manualModeSwitching = true; try { return await api.setManualOutbound(node); } finally { manualModeSwitching = false; runtimeMutationRevision++; } },
+  confirm: confirmAction,
+  error: errorMessage,
+  changed: async state => { store.manualOutbound = state; renderManualMode(); await refreshBase(); },
+});
+$("#proxy-mode-restore")!.addEventListener("click", () => void manualOutbound.disable());
+function renderManualMode() {
+  const active = Boolean(store.manualOutbound?.selection);
+  ($("#proxy-mode-controls") as HTMLFieldSetElement).disabled = active;
+  $("#proxy-mode-notice")!.hidden = !active;
+  if (store.manualOutbound) manualOutbound.accept(store.manualOutbound);
+  document.querySelectorAll<HTMLButtonElement>("#home-routing-mode button").forEach(button => { button.disabled = active || !store.activeProfile; });
+}
+
 function navigate(view: ViewName) {
   const previousView = store.view;
   if (previousView !== view) viewNavigationRevision++;
@@ -2356,6 +2399,7 @@ function navigate(view: ViewName) {
   }
   if (view === "overview") void refreshProxies(true);
   if (view === "subscriptions") renderSubscriptions();
+  if (view === "manual") void manualOutbound.refresh();
   if (view === "settings") void refreshSessionResume(true);
   if (view === "programs") void programManager.refresh();
   if (view === "routing") void localRouting.refresh();

@@ -187,11 +187,7 @@ impl AppError {
                 "请检查磁盘空间及文件访问权限。",
                 "details",
             ),
-            Self::Subscription(_) => (
-                "订阅更新未完成",
-                "请检查网络和订阅地址后重试。",
-                "subscriptions",
-            ),
+            Self::Subscription(message) => crate::subscription::subscription_user_message(message),
             Self::Update(_) => (
                 "软件更新未完成",
                 "请稍后重试，详情中可查看具体原因。",

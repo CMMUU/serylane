@@ -1,4 +1,4 @@
-import type { OpenAiPolicyTask, SubscriptionOverview, SubscriptionUsage, SubscriptionStatus } from "./types";
+import type { OpenAiPolicyTask, SubscriptionOverview, SubscriptionUsage, SubscriptionStatus, ProfileRecord } from "./types";
 
 // A delayed full-page read must not replace a newer background quota event.
 export function newestSubscriptionStatus(previous: SubscriptionStatus | null | undefined, incoming: SubscriptionStatus | null | undefined) {
@@ -78,11 +78,15 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
       <div class="subscription-usage-label"><span>${usageData ? usage.state : "流量信息未提供"}</span>${usage.percent === null ? "" : `<span>${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(usage.percent)}% 已用</span>`}</div>
       <div class="subscription-usage-value"><strong>${subscriptionBytes(usage.remaining)}</strong><span>${quotaLabel}</span></div>
       ${progress}
-      <div class="subscription-transfer"><span>上传 ${subscriptionBytes(usage.upload)}</span><span>下载 ${subscriptionBytes(usage.download)}</span><span>已用 ${subscriptionBytes(usage.used)}</span></div>
     </section>
-    <dl class="subscription-facts"><div><dt>到期时间${usage.expired ? " · 已到期" : ""}</dt><dd class="${usage.expired ? "is-expired" : ""}">${usage.expires}</dd></div><div><dt>当前配置</dt><dd>${summary ? `${summary.nodeCount} 节点 · ${summary.proxyProviderCount} 提供器` : "尚未读取"}</dd></div></dl>
-    <div class="subscription-observation"><p class="${status?.lastError ? "is-error" : ""}">${status?.lastError ? `刷新失败 · ${escape(status.lastError)}` : status?.checkedAt ? `最近检查 ${subscriptionDate(status.checkedAt)}` : "尚未检查用量"}</p><p>${usageNote}</p></div>
-    <div class="subscription-entry-footer"><span class="subscription-validation">${configuration} · ${mode}模式</span><div class="toolbar">${button("refresh", "刷新")}${button("activate", subscription.active ? "已选用" : "选用", subscription.active ? "disabled" : "")}</div></div>
-    <details class="subscription-more"><summary>订阅详情与更多操作<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="subscription-more-body"><dl><div><dt>用量采样</dt><dd>${sampleAt ? subscriptionDate(sampleAt) : "尚无采样"}</dd></div><div><dt>配置更新</dt><dd>${subscriptionDate(subscription.latestFetchedAt)}</dd></div><div><dt>配置文件</dt><dd>${subscriptionBytes(latestMetadata?.bytes)} · ${subscription.revisionCount} 个版本</dd></div></dl><p>${policyText}${failed ? `：${escape(task?.error ?? "请重试")}` : ""}</p><div class="toolbar">${button(generating ? "openai-cancel" : "openai-generate", generating ? `停止生成${taskProgress}` : profile.openaiPolicy.enabled ? "重新生成灾备" : "OpenAI 灾备", task?.running && !taskForProfile ? "disabled" : "")}${button("versions", "版本")}${button("delete", "删除")}</div></div></details>
+    <div class="subscription-compact-facts"><span class="${usage.expired ? "is-expired" : ""}">到期 ${usage.expires}${usage.expired ? " · 已到期" : ""}</span><span>${summary ? `${summary.nodeCount} 节点 · ${summary.proxyProviderCount} 提供器` : "配置尚未读取"}</span></div>
+    ${status?.lastError || noCurrentSample ? `<p class="subscription-alert${status?.lastError ? " is-error" : ""}">${status?.lastError ? `刷新失败 · ${escape(status.lastError)}` : "本次检查未获取新用量，保留上次采样。"}</p>` : ""}
+    <div class="subscription-entry-footer"><span class="subscription-validation">${mode}模式</span><div class="toolbar">${button("refresh", "刷新")}${button("activate", subscription.active ? "已选用" : "选用", subscription.active ? "disabled" : "")}</div></div>
+    <details class="subscription-more"><summary>订阅详情与更多操作<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="subscription-more-body"><div class="subscription-transfer"><span>上传 ${subscriptionBytes(usage.upload)}</span><span>下载 ${subscriptionBytes(usage.download)}</span><span>已用 ${subscriptionBytes(usage.used)}</span></div><p>${configuration}</p><div class="subscription-observation"><p>${status?.checkedAt ? `最近检查 ${subscriptionDate(status.checkedAt)}` : "尚未检查用量"}</p><p>${usageNote}</p></div><dl><div><dt>用量采样</dt><dd>${sampleAt ? subscriptionDate(sampleAt) : "尚无采样"}</dd></div><div><dt>配置更新</dt><dd>${subscriptionDate(subscription.latestFetchedAt)}</dd></div><div><dt>配置文件</dt><dd>${subscriptionBytes(latestMetadata?.bytes)} · ${subscription.revisionCount} 个版本</dd></div></dl><p>${policyText}${failed ? `：${escape(task?.error ?? "请重试")}` : ""}</p><div class="toolbar">${button(generating ? "openai-cancel" : "openai-generate", generating ? `停止生成${taskProgress}` : profile.openaiPolicy.enabled ? "重新生成灾备" : "OpenAI 灾备", task?.running && !taskForProfile ? "disabled" : "")}${button("versions", "版本")}${button("delete", "删除")}</div></div></details>
   </article>`;
+}
+
+// The subscription response is the authority for remote profiles; local YAML is independent.
+export function synchronizedProfiles(profiles: ProfileRecord[], subscriptions: SubscriptionOverview[]): ProfileRecord[] {
+  return [...subscriptions.map(entry => entry.profile), ...profiles.filter(profile => profile.source.type !== "remote_subscription")];
 }

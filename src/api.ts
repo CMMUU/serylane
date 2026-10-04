@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ManualNode, ManualOutboundState } from "./manual-outbound";
 import type { CostSnapshot, CostInput } from "./openai-costs";
 import type { ThemePreference } from "./theme";
 import type {
@@ -42,6 +43,8 @@ import type {
 } from "./types";
 
 export const api = {
+  manualOutbound: () => invoke<ManualOutboundState>("get_manual_outbound"),
+  setManualOutbound: (node: ManualNode | null) => invoke<ManualOutboundState>("set_manual_outbound", {profileId: node?.profileId ?? null, revisionId: node?.revisionId ?? null, nodeName: node?.name ?? null, confirmed: true}),
   connectionFeedback: () => invoke<ConnectionFeedback>("connection_feedback"),
   recheckConnection: () => invoke<ConnectionFeedback>("recheck_connection"),
   localRouteStatus: () => invoke<RouteSnapshot>("local_route_status"),

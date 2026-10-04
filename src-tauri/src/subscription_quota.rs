@@ -1,4 +1,4 @@
-//! Metadata-only polling. No profile activation, YAML revision or runtime access.
+//! Metadata-only polling. No profile activation, YAML revision or runtime mutation.
 use crate::{
     models::{ProfileSource, SubscriptionStatus},
     storage::AppStorage,
@@ -43,9 +43,6 @@ pub fn start(app: AppHandle) {
             let Ok(profiles) = storage.list_profiles() else {
                 continue;
             };
-            let Ok(fetcher) = SubscriptionFetcher::new() else {
-                continue;
-            };
             for profile in profiles {
                 if app
                     .state::<crate::session_resume::SessionResumeManager>()
@@ -59,6 +56,10 @@ pub fn start(app: AppHandle) {
                 if !due(storage.subscription_status(profile.id).as_ref()) {
                     continue;
                 }
+                // Choose the current path per request, not once per polling batch.
+                let Ok(fetcher) = SubscriptionFetcher::for_app(&app) else {
+                    continue;
+                };
                 let started = Utc::now();
                 let result = fetcher.fetch_usage(url, user_agent).await;
                 if app

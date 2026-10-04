@@ -12,6 +12,7 @@ mod local_routing;
 mod macos_service;
 #[cfg(target_os = "macos")]
 mod macos_upgrade;
+mod manual_outbound;
 mod mihomo_api;
 mod models;
 mod network_safety;
@@ -598,6 +599,7 @@ fn active_effective_config(
     let revision_id = persistent
         .active_revision_id
         .ok_or_else(|| AppError::NotFound("没有活动配置版本".to_string()))?;
+    manual_outbound::require_profile(settings, profile_id)?;
     let source = storage.load_revision_source(profile_id, revision_id)?;
     let profile = storage.load_profile(profile_id)?;
     effective::build_effective_config_with_policy(
@@ -940,6 +942,7 @@ async fn set_profile_routing_mode(
 ) -> Result<ProfileDetails, AppErrorDto> {
     let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
+    manual_outbound::require_proxy_mode(&storage.settings().map_err(dto)?).map_err(dto)?;
     let old_mode = storage.load_profile(profile_id).map_err(dto)?.routing_mode;
     let details = profile_service::set_routing_mode(&app, profile_id, mode).map_err(dto)?;
     let active = storage.state().map_err(dto)?.active_profile_id == Some(profile_id);
@@ -955,6 +958,24 @@ async fn set_profile_routing_mode(
 #[tauri::command]
 async fn get_proxies(app: AppHandle) -> Result<Value, AppErrorDto> {
     node_selection::proxies(&app).await.map_err(dto)
+}
+
+#[tauri::command]
+fn get_manual_outbound(app: AppHandle) -> Result<manual_outbound::Snapshot, AppErrorDto> {
+    manual_outbound::snapshot(&AppStorage::from_app(&app).map_err(dto)?).map_err(dto)
+}
+
+#[tauri::command]
+async fn set_manual_outbound(
+    app: AppHandle,
+    profile_id: Option<Uuid>,
+    revision_id: Option<Uuid>,
+    node_name: Option<String>,
+    confirmed: bool,
+) -> Result<manual_outbound::Snapshot, AppErrorDto> {
+    manual_outbound::set(&app, profile_id, revision_id, node_name, confirmed)
+        .await
+        .map_err(dto)
 }
 
 #[tauri::command]
@@ -1366,6 +1387,8 @@ pub fn run() {
             set_network_mode,
             set_profile_routing_mode,
             get_proxies,
+            get_manual_outbound,
+            set_manual_outbound,
             get_current_node_details,
             get_rules,
             get_connections,

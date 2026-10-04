@@ -236,7 +236,7 @@ pub async fn create_subscription_profile(
         )
         .await;
     }
-    let fetcher = SubscriptionFetcher::new()?;
+    let fetcher = SubscriptionFetcher::for_app(app)?;
     let fetched = fetcher.fetch(&url, &user_agent, None, None).await?;
     let source = fetched
         .content
@@ -478,7 +478,7 @@ async fn refresh_subscription_candidate(
         .as_ref()
         .and_then(|revision| revision.subscription.as_ref())
         .and_then(|metadata| metadata.last_modified.as_deref());
-    let fetched = SubscriptionFetcher::new()?
+    let fetched = SubscriptionFetcher::for_app(app)?
         .fetch(url, user_agent, etag, last_modified)
         .await?;
     let usage = fetched.metadata.usage.clone();
@@ -562,9 +562,11 @@ fn activation_candidate(
     let profile = storage.load_profile(profile_id)?;
     let revision = storage.load_revision(profile_id, revision_id)?;
     let source = storage.load_revision_source(profile_id, revision_id)?;
+    let settings = storage.settings()?;
+    crate::manual_outbound::require_profile(&settings, profile_id)?;
     build_effective_config_with_policy(
         &source,
-        &storage.settings()?,
+        &settings,
         profile.routing_mode,
         Some(&revision.openai_policy),
     )
@@ -674,7 +676,12 @@ async fn persist_candidate_with_configuration(
     // after entering the short mutation transaction, never from the fetch start.
     let profile = storage.load_profile(profile.id)?;
     let activate_app = activation.should_activate(profile.id, storage.state()?.active_profile_id);
-    let settings = storage.settings()?;
+    let mut settings = storage.settings()?;
+    if activate_app {
+        crate::manual_outbound::require_profile(&settings, profile.id)?;
+    } else {
+        settings.manual_outbound = None;
+    }
     let effective = build_effective_config_with_policy(
         &source,
         &settings,

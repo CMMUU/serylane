@@ -139,11 +139,15 @@ pub fn build_effective_config_with_policy(
 
     normalize_proxy_groups(root, &mut summary)?;
 
-    if let Some(policy) = openai_policy {
-        apply_openai_policy(root, policy, &mut summary)?;
+    if let Some(selected) = &settings.manual_outbound {
+        crate::manual_outbound::apply(root, selected)?;
+        summary.warnings.push("自选节点模式：固定单一出口，订阅策略组、自动灾备与用户分流规则暂不参与；切回代理模式后恢复。".into());
+    } else {
+        if let Some(policy) = openai_policy {
+            apply_openai_policy(root, policy, &mut summary)?;
+        }
+        crate::user_rules::merge_into_config(root, &settings.user_rules, &mut summary)?;
     }
-
-    crate::user_rules::merge_into_config(root, &settings.user_rules, &mut summary)?;
 
     let yaml =
         serde_yaml::to_string(&document).map_err(|error| AppError::Config(error.to_string()))?;
