@@ -36,7 +36,7 @@ pub struct Snapshot {
     notices: Vec<String>,
 }
 
-fn fixed_node(node: &Value) -> bool {
+pub(crate) fn fixed_node(node: &Value) -> bool {
     let Some(name) = node["name"].as_str() else {
         return false;
     };
@@ -55,7 +55,7 @@ fn fixed_node(node: &Value) -> bool {
         && node.get("dialer-proxy").is_none()
 }
 
-fn identity(node: &Value) -> AppResult<String> {
+pub(crate) fn identity(node: &Value) -> AppResult<String> {
     Ok(format!(
         "{:x}",
         Sha256::digest(
