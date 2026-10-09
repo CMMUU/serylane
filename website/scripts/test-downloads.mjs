@@ -62,7 +62,7 @@ function createPage(fetchResult) {
     };
   }
   const selectors = new Map();
-  for (const id of ['main-nav', 'platform-name', 'download-panel', 'download-github', 'download-gitee', 'channel-note', 'download-selection', 'release-status', 'release-retry', 'architecture-selector', 'mac-chip-help']) {
+  for (const id of ['hero-download', 'main-nav', 'platform-name', 'download-panel', 'download-github', 'download-gitee', 'channel-note', 'download-selection', 'release-status', 'release-retry', 'architecture-selector', 'mac-chip-help']) {
     selectors.set(`#${id}`, element(byId(id)));
   }
   selectors.set('.menu-toggle', element(oneTag(tag => hasClass(tag, 'menu-toggle'))));
@@ -70,7 +70,6 @@ function createPage(fetchResult) {
   selectors.set('#platform-icon use', element());
   const tabs = systemTags.map(element);
   const architectures = architectureTags.map(element);
-  const windowsLinks = tagged(tag => Object.hasOwn(tag.attributes, 'data-select-windows')).map(element);
   tabs.forEach(tab => selectors.set(`#${tab.getAttribute('id')}`, tab));
   const query = selector => {
     assert.ok(selectors.has(selector), `Unexpected document selector: ${selector}`);
@@ -81,7 +80,7 @@ function createPage(fetchResult) {
   for (const link of [github, gitee]) link.descendants.set('span', element());
   query('.release-links').children = [github, gitee].sort((a, b) =>
     releaseLinks.indexOf(`id="${a.getAttribute('id')}"`) - releaseLinks.indexOf(`id="${b.getAttribute('id')}"`));
-  const collections = new Map([['[data-system]', tabs], ['[data-architecture]', architectures], ['[data-select-windows]', windowsLinks]]);
+  const collections = new Map([['[data-system]', tabs], ['[data-architecture]', architectures]]);
   const document = Object.assign(element(), {
     querySelector: query,
     querySelectorAll(selector) { assert.ok(collections.has(selector), `Unexpected collection: ${selector}`); return collections.get(selector); },
@@ -98,7 +97,7 @@ function createPage(fetchResult) {
     }, XMLHttpRequest: forbidden, WebSocket: forbidden,
     EventSource: forbidden, navigator: { sendBeacon: forbidden },
   }, { filename: 'website/public/site.js', timeout: 1_000 });
-  return { page, query, tabs, architectures, windowsLinks, github, gitee };
+  return { page, query, tabs, architectures, github, gitee };
 }
 
 const targets = ['windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64', 'linux-x64', 'linux-arm64'];
@@ -141,6 +140,10 @@ for (const tag of [...systemTags, ...architectureTags]) assert.ok(Object.hasOwn(
 assert.doesNotMatch(html, /releases\/download\/v[0-9]/, 'No version-pinned HTML fallback');
 assert.match(html, /界面示意 · 非实时状态/);
 assert.match(html, /三个独立操作/);
+assert.equal(byId('hero-download').attributes.href, '#download');
+assert.equal(contentById('hero-download').replace(/<[^>]+>/g, ''), '下载 Serylane');
+assert.match(html, /支持 Windows、macOS 与 Linux/);
+assert.doesNotMatch(html, /data-select-windows|下载 Windows 版/);
 let complete;
 const view = createPage(() => new Promise(resolve => { complete = resolve; }));
 assert.match(view.query('#release-status').textContent, /正在查询/);
@@ -167,7 +170,15 @@ view.tabs[0].dispatch('keydown', { key: 'ArrowLeft' });
 verifySelection(view, 'linux-x64');
 view.tabs[2].dispatch('keydown', { key: 'Home' });
 verifySelection(view, 'windows-x64');
-for (const hero of view.windowsLinks) { view.tabs[1].dispatch('click'); hero.dispatch('click'); verifySelection(view, 'windows-x64'); }
+// The neutral hero link scrolls to the selector without resetting a user's
+// platform or chip selection to Windows. Its fragment also works without JS.
+for (const target of targets) {
+  const [system, arch] = target.split('-');
+  view.tabs.find(t => t.dataset.system === system).dispatch('click');
+  view.architectures.find(a => a.dataset.architecture === arch).dispatch('click');
+  assert.equal(view.query('#hero-download').dispatch('click').defaultPrevented, false);
+  verifySelection(view, target);
+}
 for (const failure of ['network', 'status', 'malformed', 'incomplete']) {
   let recovered = false;
   const errorView = createPage(async () => {
