@@ -1,7 +1,7 @@
 {
   "name": "serylane",
   "private": true,
-  "version": "0.7.19",
+  "version": "0.7.20",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -25,7 +25,7 @@
     "test:rules": "node --test tests/rules.test.mjs",
     "test:programs": "node --test tests/programs.test.mjs",
     "test:routing": "node --test tests/local-routing.test.mjs",
-    "test:subscriptions": "node --test tests/subscriptions.test.mjs tests/subscription-fixture.test.mjs"
+    "test:subscriptions": "node --test tests/subscriptions.test.mjs tests/subscription-fixture.test.mjs tests/subscription-task.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

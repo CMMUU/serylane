@@ -1,3 +1,4 @@
+import type { DownloadOptions, SubscriptionTask } from "./subscription-task";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProxyMode, ManualOutboundState } from "./manual-outbound";
 import type { CostSnapshot, CostInput } from "./openai-costs";
@@ -84,6 +85,8 @@ export const api = {
     userAgent: string,
     generateOpenAi = false,
     activateAfterImport = false,
+    taskId?: string,
+    download?: DownloadOptions,
   ) =>
     invoke<SubscriptionImportResult>("create_subscription_profile", {
       displayName,
@@ -91,9 +94,13 @@ export const api = {
       userAgent,
       generateOpenAi,
       activateAfterImport,
+      taskId,
+      download,
     }),
-  refreshProfile: (profileId: string) =>
-    invoke<ProfileOperationResult>("refresh_profile", { profileId }),
+  subscriptionTask: (taskId: string) => invoke<SubscriptionTask | null>("subscription_task_status", { taskId }),
+  cancelSubscriptionTask: (taskId: string) => invoke<boolean>("cancel_subscription_task", { taskId }),
+  refreshProfile: (profileId: string, taskId?: string, download?: DownloadOptions) =>
+    invoke<ProfileOperationResult>("refresh_profile", { profileId, taskId, download }),
   activateProfile: (profileId: string, revisionId?: string | null) =>
     invoke<ProfileDetails>("activate_profile", {
       profileId,

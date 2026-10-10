@@ -144,3 +144,19 @@
 .subscription-tile .subscription-more > summary { min-height: 24px; width: fit-content; margin-left: auto; }
 .subscription-tile .subscription-more-body { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; }
 @container subscriptions (max-width: 450px) { .subscription-tile .subscription-entry-head { flex-wrap: wrap; } }
+
+.subscription-network-options { margin-bottom: 16px; color: var(--muted); }
+.subscription-network-options summary { cursor: pointer; font-weight: 600; }
+.subscription-network-options summary span { font-weight: 400; margin-left: 8px; }
+.subscription-network-options p { line-height: 1.6; margin: 10px 0; }
+.subscription-network-fields { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.subscription-network-fields label { display: grid; gap: 6px; flex: 1 1 230px; min-width: 0; }
+.subscription-network-fields label[hidden], .subscription-task-list[hidden], #managed-subscription-abort[hidden] { display: none; }
+.subscription-task-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; }
+.subscription-task-list span { min-width: 0; overflow-wrap: anywhere; }
+.subscription-task-list button { flex-shrink: 0; }
+
+.subscription-import-progress { display: flex; align-items: center; gap: 12px; }
+.subscription-import-progress .import-status { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.subscription-import-progress .import-status:empty { display: none; }
+.subscription-import-progress button { flex-shrink: 0; }

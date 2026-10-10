@@ -234,6 +234,44 @@ pub fn acquire_configuration(app: &AppHandle) -> AppResult<ConfigurationMutation
     app.state::<ConfigurationMutationGuard>().acquire()
 }
 
+pub async fn acquire_configuration_for_task(
+    app: &AppHandle,
+    task: &crate::subscription_task::Task,
+) -> AppResult<ConfigurationMutationPermit> {
+    app.state::<ConfigurationMutationGuard>()
+        .wait_for_task(task, std::time::Duration::from_secs(8))
+        .await
+}
+
+impl ConfigurationMutationGuard {
+    async fn wait_for_task(
+        &self,
+        task: &crate::subscription_task::Task,
+        budget: std::time::Duration,
+    ) -> AppResult<ConfigurationMutationPermit> {
+        task.check()?;
+        if let Ok(permit) = self.acquire() {
+            return Ok(permit);
+        }
+        task.phase(crate::subscription_task::Phase::Waiting);
+        task.wait(async {
+            let deadline = tokio::time::Instant::now() + budget;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(AppError::Conflict(
+                        "配置操作仍在进行，订阅尚未提交，请稍后重试".into(),
+                    ));
+                }
+                if let Ok(permit) = self.acquire() {
+                    return Ok(permit);
+                }
+            }
+        })
+        .await
+    }
+}
+
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TextMetadata {
@@ -726,6 +764,18 @@ fn validate_in_context(
 }
 
 fn native_validate(app: &AppHandle, yaml: &str) -> AppResult<()> {
+    native_validate_with_task(app, yaml, None)
+}
+
+fn native_validate_with_task(
+    app: &AppHandle,
+    yaml: &str,
+    task: Option<&crate::subscription_task::Task>,
+) -> AppResult<()> {
+    if let Some(task) = task {
+        task.check()?;
+        task.phase(crate::subscription_task::Phase::Validating);
+    }
     let directory = app
         .path()
         .app_data_dir()
@@ -737,7 +787,12 @@ fn native_validate(app: &AppHandle, yaml: &str) -> AppResult<()> {
     let binary = runtime::resolve_binary(Some(app))
         .ok_or_else(|| AppError::Runtime("未找到 Mihomo sidecar".to_string()))?;
     runtime::write_private_file(&candidate, yaml.as_bytes())?;
-    let result = runtime::validate_file(&binary, &directory, &candidate);
+    let result = runtime::validate_file_cancellable(
+        &binary,
+        &directory,
+        &candidate,
+        task.map(|t| &t.cancel_flag),
+    );
     let _ = std::fs::remove_file(candidate);
     result
 }
@@ -801,6 +856,17 @@ pub(crate) async fn apply_profile_config(
     commit: impl FnOnce() -> AppResult<()>,
     _permit: &ConfigurationMutationPermit,
 ) -> AppResult<()> {
+    apply_profile_config_with_task(app, storage, candidate, commit, _permit, None).await
+}
+
+pub(crate) async fn apply_profile_config_with_task(
+    app: &AppHandle,
+    storage: &AppStorage,
+    candidate: &str,
+    commit: impl FnOnce() -> AppResult<()>,
+    _permit: &ConfigurationMutationPermit,
+    task: Option<Arc<crate::subscription_task::Task>>,
+) -> AppResult<()> {
     let context = capture_context(app, storage)?;
     let previous = match effective_for(&context, &context.settings.user_rules) {
         Ok(config) => config.yaml,
@@ -812,10 +878,13 @@ pub(crate) async fn apply_profile_config(
         }
         Err(error) => return Err(error),
     };
-    validate_config(app, candidate).await?;
+    validate_config_with_task(app, candidate, task.clone()).await?;
     let reloader = (context.active && context.running)
         .then(|| MihomoApiClient::new(&context.settings))
         .transpose()?;
+    if let Some(task) = &task {
+        task.begin_commit()?;
+    }
     transact(reloader.as_ref(), candidate, &previous, commit, || {
         if capture_context(app, storage)?.fingerprint != context.fingerprint {
             return Err(AppError::Conflict(
@@ -828,11 +897,26 @@ pub(crate) async fn apply_profile_config(
 }
 
 pub(crate) async fn validate_config(app: &AppHandle, candidate: &str) -> AppResult<()> {
+    validate_config_with_task(app, candidate, None).await
+}
+
+pub(crate) async fn validate_config_with_task(
+    app: &AppHandle,
+    candidate: &str,
+    task: Option<Arc<crate::subscription_task::Task>>,
+) -> AppResult<()> {
+    if let Some(task) = &task {
+        task.check()?;
+    }
     let app = app.clone();
     let candidate = candidate.to_string();
-    tauri::async_runtime::spawn_blocking(move || native_validate(&app, &candidate))
-        .await
-        .map_err(|error| AppError::Runtime(error.to_string()))?
+    // Await worker completion even on cancellation, so the child is killed/reaped
+    // and the private candidate/log removed before releasing the configuration permit.
+    tauri::async_runtime::spawn_blocking(move || {
+        native_validate_with_task(&app, &candidate, task.as_deref())
+    })
+    .await
+    .map_err(|_| AppError::Runtime("配置校验任务异常结束".into()))?
 }
 
 trait RuleReloader {
@@ -1531,5 +1615,47 @@ mod tests {
                 "native rule {index}"
             );
         }
+    }
+    #[tokio::test]
+    async fn subscription_waits_for_configuration_and_cancels_without_stealing_permit() {
+        let guard = ConfigurationMutationGuard::default();
+        let permit = guard.acquire().unwrap();
+        let task = crate::subscription_task::TaskManager::default()
+            .start(None, "import", None, None)
+            .unwrap();
+        let release = async {
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            drop(permit);
+        };
+        let (result, ()) = tokio::join!(
+            guard.wait_for_task(&task, std::time::Duration::from_secs(1)),
+            release
+        );
+        let acquired = result.unwrap();
+        assert!(guard.acquire().is_err());
+        let cancelled = crate::subscription_task::TaskManager::default()
+            .start(None, "import", None, None)
+            .unwrap();
+        cancelled.cancel();
+        assert!(guard
+            .wait_for_task(&cancelled, std::time::Duration::from_secs(1))
+            .await
+            .is_err());
+        drop(acquired);
+        assert!(guard.acquire().is_ok());
+    }
+    #[tokio::test]
+    async fn configuration_wait_has_a_deadline() {
+        let guard = ConfigurationMutationGuard::default();
+        let _held = guard.acquire().unwrap();
+        let task = crate::subscription_task::TaskManager::default()
+            .start(None, "refresh", None, None)
+            .unwrap();
+        let start = std::time::Instant::now();
+        assert!(guard
+            .wait_for_task(&task, std::time::Duration::from_millis(60))
+            .await
+            .is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 }

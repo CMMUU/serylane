@@ -7,10 +7,12 @@ use crate::models::{
 };
 use crate::storage::AppStorage;
 use crate::subscription::SubscriptionFetcher;
+use crate::subscription_task::{DownloadOptions, Task};
 use crate::user_rules;
 use chrono::Utc;
 use serde::Serialize;
 use std::future::Future;
+use std::sync::Arc;
 use tauri::AppHandle;
 use uuid::Uuid;
 
@@ -222,9 +224,13 @@ pub async fn create_subscription_profile(
     url: String,
     user_agent: String,
     activate_after_import: bool,
+    download: &DownloadOptions,
+    task: Arc<Task>,
 ) -> AppResult<SubscriptionImportResult> {
+    task.check()?;
     let storage = AppStorage::from_app(app)?;
     if let Some(existing) = existing_subscription_result(&storage, &url)? {
+        task.begin_commit()?;
         return reuse_subscription(
             existing,
             activate_after_import,
@@ -236,12 +242,13 @@ pub async fn create_subscription_profile(
         )
         .await;
     }
-    let fetcher = SubscriptionFetcher::for_app(app)?;
+    let fetcher = SubscriptionFetcher::for_task(app, download, Some(task.clone()))?;
     let fetched = fetcher.fetch(&url, &user_agent, None, None).await?;
     let source = fetched
         .content
         .ok_or_else(|| AppError::Subscription("订阅没有返回内容".to_string()))?;
-    let permit = user_rules::acquire_configuration(app)?;
+    let permit = user_rules::acquire_configuration_for_task(app, &task).await?;
+    task.check()?;
     persist_new_subscription(
         &storage,
         display_name,
@@ -252,6 +259,7 @@ pub async fn create_subscription_profile(
         &AppProfileConfiguration {
             app,
             permit: &permit,
+            task: Some(task),
         },
     )
     .await
@@ -271,6 +279,7 @@ async fn persist_new_subscription(
     // cannot create a second profile for the same URL while this one fetches.
     if let ProfileSource::RemoteSubscription { url, .. } = &subscription {
         if let Some(existing) = existing_subscription_result(storage, url)? {
+            configuration.begin_commit()?;
             return reuse_subscription_with_configuration(
                 storage,
                 existing,
@@ -412,6 +421,8 @@ fn unchanged_operation_if_source_matches(
 pub async fn refresh_profile(
     app: &AppHandle,
     profile_id: Uuid,
+    download: &DownloadOptions,
+    task: Arc<Task>,
 ) -> AppResult<ProfileOperationResult> {
     let storage = AppStorage::from_app(app)?;
     let profile = storage.load_profile(profile_id)?;
@@ -419,23 +430,39 @@ pub async fn refresh_profile(
         return Err(AppError::Conflict("该配置不是远程订阅".to_string()));
     };
     let request_started = chrono::Utc::now();
-    match refresh_subscription_candidate(app, &storage, &profile, url, user_agent).await {
+    match refresh_subscription_candidate(
+        app,
+        &storage,
+        &profile,
+        url,
+        user_agent,
+        download,
+        task.clone(),
+    )
+    .await
+    {
         Ok((result, usage)) => {
-            storage.record_subscription_check_since(
-                profile_id,
-                usage.as_ref(),
-                None,
-                request_started,
-            )?;
+            if storage
+                .record_subscription_check_since(profile_id, usage.as_ref(), None, request_started)
+                .is_err()
+            {
+                crate::app_log::record(
+                    1,
+                    crate::app_log::Area::Subscription,
+                    "订阅已更新，用量检查记录未保存",
+                );
+            }
             Ok(result)
         }
         Err(error) => {
-            storage.record_subscription_check_since(
-                profile_id,
-                None,
-                Some(&error),
-                request_started,
-            )?;
+            if !task.cancelled() {
+                let _ = storage.record_subscription_check_since(
+                    profile_id,
+                    None,
+                    Some(&error),
+                    request_started,
+                );
+            }
             Err(error)
         }
     }
@@ -467,6 +494,8 @@ async fn refresh_subscription_candidate(
     profile: &ProfileRecord,
     url: &str,
     user_agent: &str,
+    download: &DownloadOptions,
+    task: Arc<Task>,
 ) -> AppResult<(ProfileOperationResult, Option<SubscriptionUsage>)> {
     let profile_id = profile.id;
     let latest = storage.list_revisions(profile_id)?.into_iter().next();
@@ -478,14 +507,34 @@ async fn refresh_subscription_candidate(
         .as_ref()
         .and_then(|revision| revision.subscription.as_ref())
         .and_then(|metadata| metadata.last_modified.as_deref());
-    let fetched = SubscriptionFetcher::for_app(app)?
+    let fetched = SubscriptionFetcher::for_task(app, download, Some(task.clone()))?
         .fetch(url, user_agent, etag, last_modified)
         .await?;
     let usage = fetched.metadata.usage.clone();
+    let permit = user_rules::acquire_configuration_for_task(app, &task).await?;
+    let current = storage.load_profile(profile_id)?;
+    let now_latest = storage.list_revisions(profile_id)?.into_iter().next();
+    // Policy-only revisions may legitimately change while fetching; rebase on
+    // their fresh settings. A different source must never be overwritten by an older request.
+    if now_latest.as_ref().map(|r| &r.source_sha256) != latest.as_ref().map(|r| &r.source_sha256) {
+        if let (Some(revision), Some(source)) = (&now_latest, fetched.content.as_deref()) {
+            if let Some(result) =
+                unchanged_operation_if_source_matches(storage, &current, revision, source)?
+            {
+                task.begin_commit()?;
+                return Ok((result, usage));
+            }
+        }
+        return Err(AppError::Conflict(
+            "下载期间订阅版本已变化，请重新更新".into(),
+        ));
+    }
+    task.check()?;
     if fetched.not_modified {
-        let revision = latest.ok_or_else(|| AppError::NotFound("当前订阅版本".to_string()))?;
+        task.begin_commit()?;
+        let revision = now_latest.ok_or_else(|| AppError::NotFound("当前订阅版本".to_string()))?;
         let source = storage.load_revision_source(profile_id, revision.id)?;
-        return unchanged_operation_result(profile, revision, &source)
+        return unchanged_operation_result(&current, revision, &source)
             .map(|result| (result, usage));
     }
     let source = fetched
@@ -494,23 +543,26 @@ async fn refresh_subscription_candidate(
     // The fetch stays outside the configuration transaction. Once mutation is
     // serialized, re-read the latest revision so concurrent refreshes cannot
     // both persist and hot-reload the same response body.
-    let permit = user_rules::acquire_configuration(app)?;
     let profile = storage.load_profile(profile_id)?;
     if let Some(revision) = storage.list_revisions(profile_id)?.into_iter().next() {
         if let Some(result) =
             unchanged_operation_if_source_matches(storage, &profile, &revision, &source)?
         {
+            task.begin_commit()?;
             return Ok((result, usage));
         }
     }
-    persist_candidate_with_permit(
-        app,
+    persist_candidate_with_configuration(
         storage,
         profile,
         source,
         Some(fetched.metadata),
         CandidateActivation::IfCurrent,
-        &permit,
+        &AppProfileConfiguration {
+            app,
+            permit: &permit,
+            task: Some(task),
+        },
     )
     .await
     .map(|result| (result, usage))
@@ -534,6 +586,7 @@ pub async fn activate_profile(
         &AppProfileConfiguration {
             app,
             permit: &permit,
+            task: None,
         },
     )
     .await?;
@@ -597,6 +650,9 @@ pub fn set_routing_mode(
 /// rollback transaction. Tests provide an isolated adapter without a Tauri app
 /// or a real core process; neither interface offers a start/proxy operation.
 trait ProfileConfiguration {
+    fn begin_commit(&self) -> AppResult<()> {
+        Ok(())
+    }
     async fn validate(&self, candidate: &str) -> AppResult<()>;
 
     async fn apply(
@@ -610,11 +666,18 @@ trait ProfileConfiguration {
 struct AppProfileConfiguration<'a> {
     app: &'a AppHandle,
     permit: &'a user_rules::ConfigurationMutationPermit,
+    task: Option<Arc<Task>>,
 }
 
 impl ProfileConfiguration for AppProfileConfiguration<'_> {
+    fn begin_commit(&self) -> AppResult<()> {
+        if let Some(task) = &self.task {
+            task.begin_commit()?;
+        }
+        Ok(())
+    }
     async fn validate(&self, candidate: &str) -> AppResult<()> {
-        user_rules::validate_config(self.app, candidate).await
+        user_rules::validate_config_with_task(self.app, candidate, self.task.clone()).await
     }
 
     async fn apply(
@@ -623,7 +686,15 @@ impl ProfileConfiguration for AppProfileConfiguration<'_> {
         candidate: &str,
         commit: impl FnOnce() -> AppResult<()>,
     ) -> AppResult<()> {
-        user_rules::apply_profile_config(self.app, storage, candidate, commit, self.permit).await
+        user_rules::apply_profile_config_with_task(
+            self.app,
+            storage,
+            candidate,
+            commit,
+            self.permit,
+            self.task.clone(),
+        )
+        .await
     }
 }
 
@@ -655,7 +726,11 @@ async fn persist_candidate_with_permit(
         source,
         metadata,
         activation,
-        &AppProfileConfiguration { app, permit },
+        &AppProfileConfiguration {
+            app,
+            permit,
+            task: None,
+        },
     )
     .await
 }
@@ -709,6 +784,7 @@ async fn persist_candidate_with_configuration(
             .await?;
     } else {
         configuration.validate(&effective.yaml).await?;
+        configuration.begin_commit()?;
         let saved = storage.save_revision(
             profile.id,
             &source,
@@ -1512,5 +1588,57 @@ mod tests {
         .expect("comparison")
         .is_none());
         std::fs::remove_dir_all(root).expect("cleanup");
+    }
+    struct CancelBeforeCommit {
+        task: Arc<Task>,
+    }
+    impl ProfileConfiguration for CancelBeforeCommit {
+        fn begin_commit(&self) -> AppResult<()> {
+            self.task.begin_commit()
+        }
+        async fn validate(&self, _candidate: &str) -> AppResult<()> {
+            self.task.cancel();
+            Ok(())
+        }
+        async fn apply(
+            &self,
+            _storage: &AppStorage,
+            _candidate: &str,
+            _commit: impl FnOnce() -> AppResult<()>,
+        ) -> AppResult<()> {
+            panic!("save-only import must not apply");
+        }
+    }
+    #[tokio::test]
+    async fn cancellation_after_validation_leaves_no_new_profile_or_active_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = AppStorage::from_root(root.path().to_owned()).unwrap();
+        let before = state_snapshot(&storage);
+        let task = crate::subscription_task::TaskManager::default()
+            .start(None, "import", None, None)
+            .unwrap();
+        let configuration = CancelBeforeCommit { task };
+        let result = persist_new_subscription(
+            &storage,
+            "cancelled".into(),
+            ProfileSource::RemoteSubscription {
+                url: IMPORT_URL.into(),
+                user_agent: "clash.meta".into(),
+            },
+            IMPORT_SOURCE.into(),
+            SubscriptionMetadata {
+                content_type: None,
+                etag: None,
+                last_modified: None,
+                bytes: IMPORT_SOURCE.len(),
+                usage: None,
+            },
+            false,
+            &configuration,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(storage.list_profiles().unwrap().is_empty());
+        assert_eq!(state_snapshot(&storage), before);
     }
 }

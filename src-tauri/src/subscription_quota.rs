@@ -57,11 +57,28 @@ pub fn start(app: AppHandle) {
                     continue;
                 }
                 // Choose the current path per request, not once per polling batch.
-                let Ok(fetcher) = SubscriptionFetcher::for_app(&app) else {
+                let Ok(task) = app.state::<crate::subscription_task::TaskManager>().start(
+                    None,
+                    "quota",
+                    Some(profile.id),
+                    Some(app.clone()),
+                ) else {
                     continue;
+                };
+                let fetcher = match SubscriptionFetcher::for_task(
+                    &app,
+                    &Default::default(),
+                    Some(task.clone()),
+                ) {
+                    Ok(fetcher) => fetcher,
+                    Err(error) => {
+                        task.finish(Some(&error));
+                        continue;
+                    }
                 };
                 let started = Utc::now();
                 let result = fetcher.fetch_usage(url, user_agent).await;
+                task.finish(result.as_ref().err());
                 if app
                     .state::<crate::session_resume::SessionResumeManager>()
                     .is_shutting_down()

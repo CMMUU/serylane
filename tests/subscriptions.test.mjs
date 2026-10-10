@@ -154,6 +154,7 @@ function importControllerFixture(options = {}) {
     subscriptionImporting: false, subscriptionDraftDirty: true, subscriptionActivationTouched: true,
     highlightedSubscriptionId: null, store: { view: options.view ?? "subscriptions" },
     describeSubscriptionImport, errorMessage: realErrorMessage,
+    runSubscriptionTask: (_operation, invoke) => invoke("fixture-task", { path: "follow_core" }),
     api: { createSubscriptionProfile: async (...args) => { calls.push(args); if (options.wait) await options.wait; if (options.failure) throw typeof options.failure === "string" ? new Error(options.failure) : options.failure; return options.result ?? importResult(); } },
     refreshBase: async () => { calls.push("refresh"); if (options.refreshFailure) throw new Error("refresh failed"); return options.refreshApplied !== false; },
     closeSubscriptionForm: () => { calls.push("close"); },
