@@ -44,4 +44,3 @@ export function observeSubscriptionTask(
   void poll();
   return () => { stopped = true; if (timer !== undefined) unschedule(timer); };
 }
-

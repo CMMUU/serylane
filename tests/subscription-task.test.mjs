@@ -44,4 +44,3 @@ test("cancel control remains outside the disabled import fieldset", () => {
   assert.ok(markup.indexOf('id="managed-subscription-abort"') < markup.indexOf("<fieldset"));
   assert.match(markup,/不自动改走直连/);
 });
-
