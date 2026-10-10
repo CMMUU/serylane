@@ -244,6 +244,79 @@ pub fn verify_system_proxy(port: u16) -> AppResult<()> {
     verify_system_proxy_inner(port)
 }
 
+/// Deletion must not overwrite an external proxy change using a legacy Unix
+/// snapshot. Windows already has a tracked, field-aware restoration lease.
+pub(crate) fn verify_profile_deletion_cleanup(app: &AppHandle) -> AppResult<()> {
+    #[cfg(not(windows))]
+    {
+        let path = snapshot_path(app)?;
+        if path.exists() {
+            let saved: SystemProxySnapshot = serde_json::from_slice(&fs::read(path)?)
+                .map_err(|e| AppError::Platform(e.to_string()))?;
+            let current = capture_system_proxy()?;
+            let port = crate::storage::AppStorage::from_app(app)?
+                .settings()?
+                .mixed_port;
+            if !deletion_snapshot_owned(&saved, &current, port) {
+                return Err(AppError::Conflict("系统代理已被其他设置修改，当前配置尚未删除。请先核对系统代理，避免覆盖其他应用的设置。".into()));
+            }
+        }
+    }
+    #[cfg(windows)]
+    let _ = app;
+    Ok(())
+}
+
+#[cfg(any(not(windows), test))]
+fn deletion_snapshot_owned(
+    saved: &SystemProxySnapshot,
+    current: &SystemProxySnapshot,
+    port: u16,
+) -> bool {
+    if saved == current {
+        return true;
+    } // A previous Stop already restored it.
+    let mut expected = saved.clone();
+    match &mut expected {
+        SystemProxySnapshot::Macos { services } => {
+            for service in services {
+                let applied = ProxyProtocolState {
+                    enabled: true,
+                    server: "127.0.0.1".into(),
+                    port,
+                };
+                service.http = applied.clone();
+                service.https = applied.clone();
+                service.socks = applied;
+                for required in ["localhost", "127.0.0.1", "::1", "*.local"] {
+                    if !service.bypass_domains.iter().any(|v| v == required) {
+                        service.bypass_domains.push(required.into());
+                    }
+                }
+            }
+        }
+        SystemProxySnapshot::Linux { values } => {
+            values.insert("org.gnome.system.proxy|mode".into(), "'manual'".into());
+            values.insert(
+                "org.gnome.system.proxy|ignore-hosts".into(),
+                "['localhost', '127.0.0.0/8', '::1']".into(),
+            );
+            for protocol in ["http", "https", "socks"] {
+                values.insert(
+                    format!("org.gnome.system.proxy.{protocol}|host"),
+                    "'127.0.0.1'".into(),
+                );
+                values.insert(
+                    format!("org.gnome.system.proxy.{protocol}|port"),
+                    port.to_string(),
+                );
+            }
+        }
+        SystemProxySnapshot::Windows { .. } => return false,
+    }
+    &expected == current
+}
+
 pub fn restore_system_proxy(app: &AppHandle) -> AppResult<SystemProxyStatus> {
     let path = snapshot_path(app)?;
     if !path.exists() {
@@ -1503,6 +1576,73 @@ mod local_proxy_transaction_tests {
         assert!(!proxy_matches_port(
             &SystemProxySnapshot::Macos { services: vec![] },
             7895
+        ));
+    }
+}
+
+#[cfg(test)]
+mod profile_delete_ownership_tests {
+    use super::*;
+    #[test]
+    fn deletion_does_not_overwrite_new_proxy_or_bypass_settings() {
+        let original = SystemProxySnapshot::Macos {
+            services: vec![MacServiceProxyState {
+                service: "Wi-Fi".into(),
+                ..Default::default()
+            }],
+        };
+        assert!(deletion_snapshot_owned(&original, &original, 7890));
+        let mut current = original.clone();
+        if let SystemProxySnapshot::Macos { services } = &mut current {
+            let p = ProxyProtocolState {
+                enabled: true,
+                server: "127.0.0.1".into(),
+                port: 7890,
+            };
+            services[0].http = p.clone();
+            services[0].https = p.clone();
+            services[0].socks = p;
+            services[0].bypass_domains = ["localhost", "127.0.0.1", "::1", "*.local"]
+                .map(String::from)
+                .to_vec();
+        }
+        assert!(deletion_snapshot_owned(&original, &current, 7890));
+        assert!(!deletion_snapshot_owned(&original, &current, 7891));
+        if let SystemProxySnapshot::Macos { services } = &mut current {
+            services[0].bypass_domains.push("user-added.invalid".into());
+        }
+        assert!(!deletion_snapshot_owned(&original, &current, 7890));
+        let original = SystemProxySnapshot::Linux {
+            values: BTreeMap::new(),
+        };
+        let mut values = BTreeMap::new();
+        values.insert("org.gnome.system.proxy|mode".into(), "'manual'".into());
+        values.insert(
+            "org.gnome.system.proxy|ignore-hosts".into(),
+            "['localhost', '127.0.0.0/8', '::1']".into(),
+        );
+        for protocol in ["http", "https", "socks"] {
+            values.insert(
+                format!("org.gnome.system.proxy.{protocol}|host"),
+                "'127.0.0.1'".into(),
+            );
+            values.insert(
+                format!("org.gnome.system.proxy.{protocol}|port"),
+                "7890".into(),
+            );
+        }
+        assert!(deletion_snapshot_owned(
+            &original,
+            &SystemProxySnapshot::Linux {
+                values: values.clone()
+            },
+            7890
+        ));
+        values.insert("org.gnome.system.proxy|mode".into(), "'auto'".into());
+        assert!(!deletion_snapshot_owned(
+            &original,
+            &SystemProxySnapshot::Linux { values },
+            7890
         ));
     }
 }

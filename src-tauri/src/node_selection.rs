@@ -47,14 +47,17 @@ pub(crate) fn validate_choice(group: &Value, node: &str) -> AppResult<()> {
 pub async fn proxies(app: &AppHandle) -> AppResult<Value> {
     let _permit = crate::user_rules::acquire_configuration(app)?;
     let storage = AppStorage::from_app(app)?;
-    crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
     let state = storage.state()?;
-    let mut payload = MihomoApiClient::new(&storage.settings()?)?
-        .proxies()
-        .await?;
+    let settings = storage.settings()?;
+    let mut payload = MihomoApiClient::new(&settings)?.proxies().await?;
+    payload["modeRevision"] =
+        serde_json::to_value(settings.proxy_mode_revision).unwrap_or(Value::Null);
     payload["profileId"] = serde_json::to_value(state.active_profile_id).unwrap_or(Value::Null);
     payload["revisionId"] = serde_json::to_value(state.active_revision_id).unwrap_or(Value::Null);
-    if let Some(id) = state.active_profile_id {
+    if let Some(id) = state
+        .active_profile_id
+        .filter(|_| settings.proxy_mode == crate::manual_outbound::ProxyMode::Ai)
+    {
         if let Some(revision) = state.active_revision_id {
             let source = storage.load_revision_source(id, revision)?;
             let preferences = storage.openai_costs(id)?;
@@ -104,9 +107,17 @@ pub async fn select(
     node: Option<&str>,
     id: Uuid,
     revision: Uuid,
+    mode_revision: Uuid,
 ) -> AppResult<()> {
     let _permit = crate::user_rules::acquire_configuration(app)?;
     let storage = AppStorage::from_app(app)?;
+    let settings = storage.settings()?;
+    crate::manual_outbound::require_revision(&settings, mode_revision)?;
+    if group == GROUP {
+        crate::manual_outbound::require_proxy_mode(&settings)?;
+    } else {
+        crate::manual_outbound::require_manual_mode(&settings)?;
+    }
     let profile = active_profile(app, &storage, id, revision)?;
     let api = MihomoApiClient::new(&storage.settings()?)?;
     let payload = api.proxies().await?;

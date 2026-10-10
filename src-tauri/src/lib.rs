@@ -361,9 +361,48 @@ async fn rollback_profile(app: AppHandle, profile_id: Uuid) -> Result<ProfileDet
 }
 
 #[tauri::command]
-fn delete_profile(app: AppHandle, profile_id: Uuid) -> Result<(), AppErrorDto> {
-    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
-    profile_service::delete_profile(&app, profile_id).map_err(dto)
+async fn delete_profile(
+    app: AppHandle,
+    profile_id: Uuid,
+    confirmed: bool,
+) -> Result<(), AppErrorDto> {
+    if !confirmed {
+        return Err(dto(AppError::InvalidInput(
+            "请确认删除及其对当前代理的影响。".into(),
+        )));
+    }
+    let storage = AppStorage::from_app(&app).map_err(dto)?;
+    let _configuration = if storage.state().map_err(dto)?.active_profile_id == Some(profile_id) {
+        session_resume::acquire_manual_configuration(&app)
+            .await
+            .map_err(dto)?
+    } else {
+        // Deleting a backup must not cancel another profile's queued restoration.
+        user_rules::acquire_configuration(&app).map_err(dto)?
+    };
+    storage.load_profile(profile_id).map_err(dto)?;
+    let active = storage.state().map_err(dto)?.active_profile_id == Some(profile_id);
+    if active {
+        // Same cleanup as an explicit Stop; only restore the proxy state owned by
+        // Serylane. Codex route settings and unrelated local YAML are untouched.
+        app.state::<session_resume::SessionResumeManager>()
+            .cancel_pending(&app);
+        stop_runtime_with_permit(&app, true).map_err(dto)?;
+    }
+    let manager = app.state::<OpenAiPolicyTaskManager>();
+    if manager.snapshot().map_err(dto)?.profile_id == Some(profile_id) {
+        manager.cancel().map_err(dto)?;
+    }
+    // Shutdown shares the transition lock with state.json updates.
+    app.state::<session_resume::SessionResumeManager>()
+        .while_open(|| storage.delete_profile_transaction(profile_id))
+        .map_err(dto)?;
+    if active {
+        app.state::<openai_stability::StabilityManager>()
+            .update_policy_status(&app);
+        app.state::<ConnectionFeedback>().invalidate(&app);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -794,7 +833,14 @@ async fn stop_runtime_by_user(app: &AppHandle) -> Result<RuntimeStatus, AppError
     let _configuration = session_resume::acquire_manual_configuration(app)
         .await
         .map_err(dto)?;
-    let storage = AppStorage::from_app(app).map_err(dto)?;
+    stop_runtime_with_permit(app, false).map_err(dto)
+}
+
+fn stop_runtime_with_permit(
+    app: &AppHandle,
+    deleting_profile: bool,
+) -> Result<RuntimeStatus, AppError> {
+    let storage = AppStorage::from_app(app)?;
     // Persist the accepted Stop intent before cleanup. Even an interrupted
     // cleanup or failed proxy restoration must not turn it into an auto-start.
     let state = app.state::<MihomoRuntime>();
@@ -802,6 +848,9 @@ async fn stop_runtime_by_user(app: &AppHandle) -> Result<RuntimeStatus, AppError
         .while_open(|| {
             // The state.json read/modify/write shares cleanup's transition lock.
             // Shutdown cannot read the old true intent and overwrite this Stop.
+            if deleting_profile {
+                platform::verify_profile_deletion_cleanup(app)?;
+            }
             storage.set_desired_running(false)?;
             app_log::record(
                 0,
@@ -815,7 +864,6 @@ async fn stop_runtime_by_user(app: &AppHandle) -> Result<RuntimeStatus, AppError
             proxy_result?;
             Ok(status)
         })
-        .map_err(dto)
 }
 
 #[tauri::command]
@@ -942,7 +990,7 @@ async fn set_profile_routing_mode(
 ) -> Result<ProfileDetails, AppErrorDto> {
     let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
-    manual_outbound::require_proxy_mode(&storage.settings().map_err(dto)?).map_err(dto)?;
+    manual_outbound::require_manual_mode(&storage.settings().map_err(dto)?).map_err(dto)?;
     let old_mode = storage.load_profile(profile_id).map_err(dto)?.routing_mode;
     let details = profile_service::set_routing_mode(&app, profile_id, mode).map_err(dto)?;
     let active = storage.state().map_err(dto)?.active_profile_id == Some(profile_id);
@@ -968,12 +1016,11 @@ fn get_manual_outbound(app: AppHandle) -> Result<manual_outbound::Snapshot, AppE
 #[tauri::command]
 async fn set_manual_outbound(
     app: AppHandle,
-    profile_id: Option<Uuid>,
-    revision_id: Option<Uuid>,
-    node_name: Option<String>,
+    mode: manual_outbound::ProxyMode,
+    expected_revision: Uuid,
     confirmed: bool,
 ) -> Result<manual_outbound::Snapshot, AppErrorDto> {
-    manual_outbound::set(&app, profile_id, revision_id, node_name, confirmed)
+    manual_outbound::set(&app, mode, expected_revision, confirmed)
         .await
         .map_err(dto)
 }
@@ -1005,10 +1052,18 @@ async fn select_proxy(
     proxy: String,
     profile_id: Uuid,
     revision_id: Uuid,
+    mode_revision: Uuid,
 ) -> Result<(), AppErrorDto> {
-    node_selection::select(&app, &group, Some(&proxy), profile_id, revision_id)
-        .await
-        .map_err(dto)
+    node_selection::select(
+        &app,
+        &group,
+        Some(&proxy),
+        profile_id,
+        revision_id,
+        mode_revision,
+    )
+    .await
+    .map_err(dto)
 }
 
 #[tauri::command]
@@ -1017,8 +1072,9 @@ async fn clear_proxy_selection(
     group: String,
     profile_id: Uuid,
     revision_id: Uuid,
+    mode_revision: Uuid,
 ) -> Result<(), AppErrorDto> {
-    node_selection::select(&app, &group, None, profile_id, revision_id)
+    node_selection::select(&app, &group, None, profile_id, revision_id, mode_revision)
         .await
         .map_err(dto)
 }
@@ -1207,6 +1263,9 @@ pub fn run() {
         .manage(user_rules::ConfigurationMutationGuard::default())
         .setup(|app| {
             let storage = AppStorage::from_app(app.handle()).map_err(|error| error.to_string())?;
+            storage
+                .recover_profile_deletion()
+                .map_err(|error| error.to_string())?;
             let settings = storage.settings().map_err(|error| error.to_string())?;
             app_log::initialize(storage.app_log_path(), settings.app_log_retention_days);
             app_log::record(

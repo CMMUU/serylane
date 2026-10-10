@@ -810,12 +810,10 @@ function fixtureHealthProbe() {
     ] });
   }, 3000);
 }
-let fixtureManualSelection: {profileId: string; nodeName: string} | null = null;
+let fixtureProxyMode: 'manual' | 'ai' = 'manual';
+let fixtureModeRevision = 'fixture-mode-0';
 function fixtureManualState() {
-  return {selection: fixtureManualSelection, notices: [], nodes: profiles.filter(p => p.source.type === "remote_subscription").flatMap(p => [
-    {profileId: p.id, revisionId: p.activeRevisionId, profileName: p.displayName, name: "演示东京 01（虚构）", protocol: "trojan"},
-    {profileId: p.id, revisionId: p.activeRevisionId, profileName: p.displayName, name: "演示新加坡 02（虚构）", protocol: "socks5"},
-  ])};
+  return { mode: fixtureProxyMode, revision: fixtureModeRevision, activeProfileId, legacySelection: false };
 }
 
 const readonlyReplies: Record<string, () => unknown> = {
@@ -853,7 +851,7 @@ const readonlyReplies: Record<string, () => unknown> = {
   get_openai_policy_task: () => structuredClone(subscriptionImportOpenAiTask),
   get_proxies: () => {
     if (failNodeRead) throw new Error("合成读取失败");
-    return { profileId: activeProfileId, revisionId: activeProfileId ? profileDetails(activeProfileId).profile.activeRevisionId : null, costMode: fixtureCosts?.mode ?? "quality", proxies: structuredClone(fixtureNodes) };
+    return { modeRevision: fixtureModeRevision, profileId: activeProfileId, revisionId: activeProfileId ? profileDetails(activeProfileId).profile.activeRevisionId : null, costMode: fixtureCosts?.mode ?? "quality", proxies: structuredClone(fixtureNodes) };
   },
   get_rules: () => ({ rules: [
     ...rulesPersisted.rules.filter((rule) => rule.enabled).map((rule) => {
@@ -910,7 +908,9 @@ mockIPC(async (command, payload) => {
     return structuredClone(fixtureCosts);
   }
   if (nodeScenario && ["select_proxy", "clear_proxy_selection"].includes(command)) {
+    if (args.modeRevision !== fixtureModeRevision) throw ruleError("STATE_CONFLICT", "选点方式已变化");
     const group = String(args.group), node = fixtureNodes[group];
+    if ((group === "🤖 OpenAI 自动灾备") !== (fixtureProxyMode === "ai")) throw ruleError("STATE_CONFLICT", "请先确认切换选点方式");
     if (!node || args.profileId !== activeProfileId || args.revisionId !== profileDetails(activeProfileId!).profile.activeRevisionId) throw new Error("合成配置状态冲突");
     nodeCalls.push({ command, group, ...(command === "select_proxy" ? { proxy: String(args.proxy) } : {}) });
     document.documentElement.dataset.fixtureNodeCalls = JSON.stringify(nodeCalls);
@@ -1062,7 +1062,9 @@ mockIPC(async (command, payload) => {
       reportSubscriptions();
       return profileDetails(profile.id); // In-memory selection only; never start a core.
     }
-    if (activeProfileId === profile.id) throw ruleError("STATE_CONFLICT", "当前合成订阅正在使用，请先激活其他订阅后再删除。");
+    if (args.confirmed !== true) throw ruleError("INVALID_INPUT", "请确认删除");
+    if (activeProfileId === profile.id) { activeProfileId = null; fixtureRuntimePhase = 'stopped'; fixtureSystemProxyActive = false; }
+
     profiles = profiles.filter(entry => entry.id !== profile.id);
     subscriptionSamples.delete(profile.id);
     reportSubscriptions();
@@ -1166,14 +1168,19 @@ mockIPC(async (command, payload) => {
     return settings();
   }
   if (command === "set_manual_outbound") {
-    if (args.confirmed !== true) throw ruleError("INVALID_INPUT", "请先确认出口切换");
-    if (args.profileId) {
-      const node = fixtureManualState().nodes.find(n => n.profileId === args.profileId && n.revisionId === args.revisionId && n.name === args.nodeName);
-      if (!node) throw ruleError("STATE_CONFLICT", "节点已变化，请刷新");
-      activeProfileId = node.profileId;
-      fixtureManualSelection = {profileId: node.profileId, nodeName: node.name};
-    } else { fixtureManualSelection = null; }
+    if (args.confirmed !== true || args.expectedRevision !== fixtureModeRevision) throw ruleError("STATE_CONFLICT", "选点方式已变化，请刷新");
+    if (!['manual','ai'].includes(args.mode)) throw ruleError("INVALID_INPUT", "未知模式");
+    fixtureProxyMode = args.mode;
+    fixtureModeRevision = `fixture-mode-${Date.now()}`;
+    subscriptionImportOpenAiTask.running = false;
     return structuredClone(fixtureManualState());
+  }
+  if (command === "set_profile_routing_mode") {
+    if (fixtureProxyMode !== 'manual') throw ruleError("STATE_CONFLICT", "请先切换为自选节点");
+    const profile = profiles.find(p => p.id === args.profileId);
+    if (!profile || !['rule','global','direct'].includes(args.mode)) throw ruleError("INVALID_INPUT", "配置或路由模式无效");
+    profile.routingMode = args.mode;
+    return profileDetails(profile.id);
   }
   if (command === "save_update_preferences") {
     const source = args.source as UpdateSource;
@@ -1445,7 +1452,7 @@ report("隔离桥接已安装，正在加载真实 src/main.ts");
 void import("../../src/main").then(() => {
   // Navigation only, never a command or actual application launch.
   const view = previewQuery.get("view");
-  if (view === "routing" || view === "subscriptions" || view === "settings") document.querySelector<HTMLButtonElement>(`[data-view="${view}"]`)?.click();
+  if (view === "routing" || view === "subscriptions" || view === "settings" || view === "manual") document.querySelector<HTMLButtonElement>(`[data-view="${view}"]`)?.click();
   report("预览已就绪；可测试主题、规则、路由合成状态、独立确认、失败与版本冲突");
 }).catch((error: unknown) => {
   runtimeErrorCount += 1;

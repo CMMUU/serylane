@@ -100,6 +100,10 @@ impl RoutingMode {
 pub struct AppSettings {
     #[serde(default)]
     pub manual_outbound: Option<crate::manual_outbound::ManualOutbound>,
+    #[serde(default = "crate::manual_outbound::legacy_mode")]
+    pub proxy_mode: crate::manual_outbound::ProxyMode,
+    #[serde(default)]
+    pub proxy_mode_revision: Uuid,
     pub schema_version: u32,
     pub locale: String,
     pub theme: String,
@@ -142,6 +146,8 @@ impl Default for AppSettings {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             manual_outbound: None,
+            proxy_mode: crate::manual_outbound::ProxyMode::Manual,
+            proxy_mode_revision: Uuid::nil(),
             locale: "zh-CN".to_string(),
             theme: "system".to_string(),
             launch_at_login: false,
@@ -228,6 +234,8 @@ impl PublicAppSettings {
             controller_port: self.controller_port,
             controller_secret: current.controller_secret.clone(),
             manual_outbound: current.manual_outbound.clone(),
+            proxy_mode: current.proxy_mode,
+            proxy_mode_revision: current.proxy_mode_revision,
             update_channel: self.update_channel,
             auto_check_updates: self.auto_check_updates,
             update_source: self.update_source,

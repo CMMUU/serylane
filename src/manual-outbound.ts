@@ -1,49 +1,45 @@
-export type ManualNode = { profileId: string; revisionId: string; profileName: string; name: string; protocol: string };
-export type ManualOutboundState = { selection: { profileId: string; nodeName: string } | null; nodes: ManualNode[]; notices: string[] };
-const escape = (v: string) => v.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);
-
+import type { ProxyMap } from './node-selection';
+export type ProxyMode = 'manual' | 'ai';
+export type ManualOutboundState = { mode: ProxyMode; revision: string; activeProfileId: string | null; legacySelection: boolean };
+const escape = (v: string) => v.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]!);
 export const manualOutboundMarkup = `<article class="panel manual-outbound-panel">
-  <div class="panel-heading"><div><h2>自选节点</h2><p>从已添加订阅中固定一个出口。</p></div><button class="button button-quiet" id="manual-refresh">刷新节点</button></div>
-  <p class="warning-box">与「代理」页互斥，二选一。启用后，订阅策略组、自动灾备及用户分流规则暂不参与，进入核心的流量使用所选节点；切回代理模式后恢复订阅策略。节点失效不会自动改选其他出口。</p>
-  <p id="manual-current" role="status">正在读取出口方式…</p>
-  <button class="button button-quiet" id="manual-disable" disabled>切回代理模式</button>
-  <div class="manual-filters"><label>订阅<select id="manual-profile" aria-label="自选节点所属订阅"><option value="">全部订阅</option></select></label><label>筛选节点<input id="manual-search" type="search" placeholder="节点名称或协议" /></label></div>
-  <p id="manual-notices" class="hint"></p>
-  <div id="manual-node-list" class="manual-node-list" role="radiogroup" aria-label="可自选节点"></div>
-  <div class="manual-apply"><button class="button button-primary" id="manual-apply" disabled>启用所选节点</button><span class="hint">不会自动开启系统代理或 TUN。</span></div>
+  <div class="panel-heading"><div><h2>自选节点</h2><p>按订阅策略组选择出口，保留原有分流规则。</p></div><button class="button button-quiet" id="manual-refresh">刷新</button></div>
+  <div class="mode-banner"><p id="manual-current" role="status">正在读取选点方式…</p><button class="button button-primary" id="manual-apply" disabled>使用自选节点</button></div>
+  <p class="hint">与 AI 代理互斥，二者仅一个生效；Codex 路由接入独立，不受切换影响。不会自动开启系统代理或 TUN。</p>
   <p id="manual-result" role="status"></p>
+  <fieldset id="manual-controls"><legend class="sr-only">订阅策略组选点</legend>
+    <div class="manual-filters"><label>当前配置<select id="manual-profile" aria-label="选用订阅或本地配置"></select></label><label>筛选节点<input id="manual-search" type="search" placeholder="搜索节点名称或协议" /></label><label>排序<select id="manual-sort"><option value="source">订阅顺序</option><option value="delay">延迟优先</option><option value="name">名称</option></select></label></div>
+    <div class="routing-segments" id="manual-routing-mode" role="group" aria-label="自选节点路由模式"><button type="button" data-routing-mode="rule">规则</button><button type="button" data-routing-mode="global">全局</button><button type="button" data-routing-mode="direct">直连</button></div>
+    <p class="hint">规则：按分流规则使用各组；全局：使用 GLOBAL；直连：不使用代理节点。自动组手动优先，失效时仍可由核心回退。</p>
+    <div id="proxy-groups" class="card-list empty-state">添加并选用配置、启动核心后查看节点。</div>
+  </fieldset>
 </article>`;
+
+export function nodeGridMarkup(group: string, map: ProxyMap, query: string, sort: string, busy: boolean): string {
+  const value = map[group] ?? {};
+  const selectable = ['Selector', 'Fallback', 'URLTest'].includes(value.type ?? '');
+  const delay = (name: string) => { const history = map[name]?.history; const sample = history?.[history.length - 1]?.delay; return typeof sample === 'number' && sample > 0 ? sample : null; };
+  const nodes = (value.all ?? []).filter(name => `${name} ${map[name]?.type ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  if (sort === 'name') nodes.sort((a,b) => a.localeCompare(b));
+  if (sort === 'delay') nodes.sort((a,b) => (delay(a) ?? Infinity) - (delay(b) ?? Infinity));
+  return `<div class="manual-node-list" role="group" aria-label="${escape(group)} 节点">${nodes.map(name => `<div class="manual-node${value.now === name ? ' is-selected' : ''}"><button type="button" data-node-choice="${escape(name)}" data-node-group="${escape(group)}" aria-pressed="${value.now === name}" ${busy || !selectable ? 'disabled' : ''}><strong>${escape(name)}</strong><small>${escape(map[name]?.type ?? '节点')} · ${value.now === name ? '当前选中' : '候选'}</small></button><button type="button" class="proxy-delay node-latency" data-proxy="${escape(name)}" aria-label="测试 ${escape(name)} 延迟" ${busy ? 'disabled' : ''}>${delay(name) === null ? '测速' : `${delay(name)} ms`}</button></div>`).join('') || '<p class="empty-state">没有匹配节点。</p>'}</div>`;
+}
 
 export function mountManualOutbound(root: HTMLElement, options: {
   read(): Promise<ManualOutboundState>;
-  write(node: ManualNode | null): Promise<ManualOutboundState>;
+  write(mode: ProxyMode, expectedRevision: string): Promise<ManualOutboundState>;
   confirm(input: {title: string; message: string; confirmLabel: string}): Promise<boolean>;
   changed(state: ManualOutboundState): Promise<void>;
   error(error: unknown): string;
 }) {
-  let state: ManualOutboundState | null = null, chosen: ManualNode | null = null, busy = false, readVersion = 0;
+  let state: ManualOutboundState | null = null, busy = false, readVersion = 0;
   const el = <T extends HTMLElement>(id: string) => root.querySelector<T>(`#${id}`)!;
-  const key = (node: ManualNode) => JSON.stringify([node.profileId, node.revisionId, node.name]);
   const message = (text: string) => { el('manual-result').textContent = text; };
-  function list() {
-    const profile = el<HTMLSelectElement>('manual-profile').value;
-    const query = el<HTMLInputElement>('manual-search').value.trim().toLocaleLowerCase();
-    const rows = (state?.nodes ?? []).map((node, index) => ({node, index})).filter(({node}) => (!profile || node.profileId === profile) && `${node.name} ${node.protocol}`.toLocaleLowerCase().includes(query));
-    if (chosen && !rows.some(({node}) => key(node) === key(chosen!))) chosen = null;
-    el('manual-node-list').innerHTML = rows.map(({node, index}) => `<label class="manual-node"><input type="radio" name="manual-node" value="${index}" ${chosen && key(chosen) === key(node) ? 'checked' : ''} ${busy ? 'disabled' : ''}/><span><strong>${escape(node.name)}</strong><small>${escape(node.profileName)} · ${escape(node.protocol)}</small></span></label>`).join('') || '<p class="empty-state">没有匹配的独立节点。可先添加或更新订阅。</p>';
-    el<HTMLButtonElement>('manual-apply').disabled = busy || !chosen;
-  }
   function accept(next: ManualOutboundState) {
     state = next;
-    if (chosen && !next.nodes.some(n => key(n) === key(chosen!))) chosen = null;
-    el('manual-current').textContent = next.selection ? `当前：自选节点 · ${next.selection.nodeName}` : '当前：代理模式 · 使用订阅策略组与选点设置';
-    el<HTMLButtonElement>('manual-disable').disabled = busy || !next.selection;
-    const select = el<HTMLSelectElement>('manual-profile'), previous = select.value;
-    const profiles = new Map(next.nodes.map(n => [n.profileId, n.profileName]));
-    select.innerHTML = '<option value="">全部订阅</option>' + [...profiles].map(([id, name]) => `<option value="${escape(id)}">${escape(name)}</option>`).join('');
-    select.value = profiles.has(previous) ? previous : '';
-    el('manual-notices').textContent = next.notices.join(' ');
-    list();
+    el('manual-current').textContent = next.legacySelection ? '旧版固定出口待迁移：请确认使用订阅策略组选点。' : !next.activeProfileId ? `未启用 · 请先添加并选用配置（已选${next.mode === 'manual' ? '自选节点' : 'AI 代理'}）` : `当前选点方式：${next.mode === 'manual' ? '自选节点' : 'AI 代理'}`;
+    el<HTMLButtonElement>('manual-apply').disabled = busy || next.mode === 'manual' && !next.legacySelection;
+    el<HTMLFieldSetElement>('manual-controls').disabled = busy || next.mode !== 'manual' || next.legacySelection;
   }
   async function refresh() {
     if (busy) return;
@@ -51,31 +47,21 @@ export function mountManualOutbound(root: HTMLElement, options: {
     try { const next = await options.read(); if (version === readVersion && !busy) { accept(next); message(''); } }
     catch (error) { if (version === readVersion) message(options.error(error)); }
   }
-  async function apply(node: ManualNode | null) {
+  async function apply(mode: ProxyMode) {
     if (busy || !state) return;
     busy = true; ++readVersion;
     el<HTMLButtonElement>('manual-refresh').disabled = true;
-    el<HTMLButtonElement>('manual-disable').disabled = true;
-    list();
+    accept(state);
     try {
-      if (!await options.confirm({title: node ? '启用自选节点' : '切回代理模式',
-        message: node ? `选用“${node.profileName}”中的“${node.name}”并重新加载配置。代理页的策略组、自动灾备及用户分流规则暂不参与，后续进入核心的请求固定使用此节点。` : '退出固定出口，重新加载当前订阅的原有策略组、自动选点及用户分流设置。',
-        confirmLabel: node ? '确认启用' : '确认切回'})) return;
-      const next = await options.write(node);
-      accept(next);
-      message(node ? '自选节点已保存；核心已运行时立即生效，未运行时下次启动生效。' : '已恢复代理模式。');
-      try { await options.changed(next); } catch { message('出口方式已保存，页面状态暂未刷新，请点击刷新。'); }
+      const name = mode === 'manual' ? '自选节点' : 'AI 代理';
+      if (!await options.confirm({title: `切换为${name}？`, message: mode === 'manual' ? '暂停 AI 自动筛选与灾备，恢复订阅原有策略组和分流规则。既有 AI 偏好会保留，Codex 路由接入不变。核心运行中会重新加载配置。' : '暂停自选节点操作，启用当前配置中已保存的 AI 策略；尚未生成策略时需在 AI 代理页生成。Codex 路由接入不变。核心运行中会重新加载配置。', confirmLabel: `使用${name}`})) return;
+      const next = await options.write(mode, state.revision);
+      accept(next); message(`已切换为${name}；核心未运行时，下次启动生效。`);
+      try { await options.changed(next); } catch { message('选点方式已保存，请刷新页面状态。'); }
     } catch (error) { message(options.error(error)); }
     finally { busy = false; el<HTMLButtonElement>('manual-refresh').disabled = false; if (state) accept(state); }
   }
-  el('manual-node-list').addEventListener('change', event => {
-    const input = event.target as HTMLInputElement;
-    if (!busy && input.name === 'manual-node') { chosen = state?.nodes[Number(input.value)] ?? null; el<HTMLButtonElement>('manual-apply').disabled = !chosen; }
-  });
-  el('manual-search').addEventListener('input', list);
-  el('manual-profile').addEventListener('change', list);
   el('manual-refresh').addEventListener('click', () => void refresh());
-  el('manual-apply').addEventListener('click', () => void apply(chosen));
-  el('manual-disable').addEventListener('click', () => void apply(null));
-  return { refresh, accept: (next: ManualOutboundState) => { if (!busy) accept(next); }, disable: () => apply(null) };
+  el('manual-apply').addEventListener('click', () => void apply('manual'));
+  return { refresh, accept: (next: ManualOutboundState) => { if (!busy) accept(next); }, enableAi: () => apply('ai') };
 }

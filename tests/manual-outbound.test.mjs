@@ -4,43 +4,54 @@ import {readFileSync} from 'node:fs';
 import ts from 'typescript';
 const source = readFileSync(new URL('../src/manual-outbound.ts', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
-const {mountManualOutbound, manualOutboundMarkup} = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
-const node = {profileId:'p',revisionId:'r',profileName:'<private-name>',name:'<node>',protocol:'socks5'};
-const state = {selection:null,nodes:[node],notices:[]};
+const {mountManualOutbound, manualOutboundMarkup, nodeGridMarkup} = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+const state = {mode:'ai',revision:'r1',activeProfileId:'p',legacySelection:false};
 const deferred = () => {let resolve;const promise = new Promise(r=>resolve=r);return {promise,resolve};};
 const flush = () => new Promise(r=>setImmediate(r));
 function fixture(overrides={}) {
   const els = new Map([...manualOutboundMarkup.matchAll(/id="([^"]+)"/g)].map(m=>[m[1],{value:'',textContent:'',innerHTML:'',disabled:false,handlers:{},addEventListener(k,v){this.handlers[k]=v;}}]));
   const writes=[];
   const manager=mountManualOutbound({querySelector:s=>els.get(s.slice(1))},{
-    read:async()=>structuredClone(state), write:async n=>{writes.push(n);return {...state,selection:n?{profileId:n.profileId,nodeName:n.name}:null};},
+    read:async()=>structuredClone(state), write:async (mode,revision)=>{writes.push([mode,revision]);return {...state,mode,revision:'r2'};},
     confirm:async()=>true,changed:async()=>{},error:e=>e.message,...overrides});
   manager.accept(structuredClone(state));
-  return {manager,writes,els,click:id=>els.get(id).handlers.click(),choose:()=>els.get('manual-node-list').handlers.change({target:{name:'manual-node',value:'0'}})};
+  return {manager,writes,els,click:id=>els.get(id).handlers.click()};
 }
-test('manual markup states actual mutual exclusion and never opts into system networking',()=>{
-  assert.match(manualOutboundMarkup,/与「代理」页互斥/);
-  assert.match(manualOutboundMarkup,/不会自动开启系统代理或 TUN/);
-  const f=fixture();assert.match(f.els.get('manual-node-list').innerHTML,/&lt;node&gt;/);assert.doesNotMatch(f.els.get('manual-node-list').innerHTML,/<node>/);
+test('group UI explains rules, exclusivity and independent Codex route without turning on networking',()=>{
+  assert.match(manualOutboundMarkup,/与 AI 代理互斥/);assert.match(manualOutboundMarkup,/Codex 路由接入独立/);
+  assert.match(manualOutboundMarkup,/不会自动开启系统代理或 TUN/);assert.match(manualOutboundMarkup,/保留原有分流规则/);
 });
-test('cancel sends no write; successful apply and return update actual mode',async()=>{
-  const cancelled=fixture({confirm:async()=>false}); cancelled.choose();cancelled.click('manual-apply');await flush();assert.equal(cancelled.writes.length,0);
-  const f=fixture();f.choose();f.click('manual-apply');await flush();assert.deepEqual(f.writes,[node]);assert.match(f.els.get('manual-current').textContent,/自选节点/);
-  await f.manager.disable();assert.equal(f.writes[1],null);assert.match(f.els.get('manual-current').textContent,/代理模式/);
+test('cancel writes nothing; apply sends expected revision and returning to AI is explicit',async()=>{
+  const cancelled=fixture({confirm:async()=>false});cancelled.click('manual-apply');await flush();assert.equal(cancelled.writes.length,0);
+  const f=fixture();f.click('manual-apply');await flush();assert.deepEqual(f.writes,[['manual','r1']]);assert.match(f.els.get('manual-current').textContent,/自选节点/);
+  await f.manager.enableAi();assert.deepEqual(f.writes[1],['ai','r2']);assert.match(f.els.get('manual-current').textContent,/AI 代理/);
 });
-test('failed mode write keeps previous mode and allows retry',async()=>{
-  const f=fixture({write:async()=>{throw new Error('校验未通过，原模式已保留');}});f.choose();f.click('manual-apply');await flush();
-  assert.match(f.els.get('manual-current').textContent,/代理模式/);assert.match(f.els.get('manual-result').textContent,/原模式已保留/);assert.equal(f.els.get('manual-apply').disabled,false);
+test('failed mode commit retains previous mode and allows retry',async()=>{
+  const f=fixture({write:async()=>{throw new Error('校验未通过，原模式已保留');}});f.click('manual-apply');await flush();
+  assert.match(f.els.get('manual-current').textContent,/AI 代理/);assert.match(f.els.get('manual-result').textContent,/原模式已保留/);assert.equal(f.els.get('manual-apply').disabled,false);
 });
-test('a late read cannot overwrite a confirmed write and filtering clears hidden choices',async()=>{
-  const read=deferred();const f=fixture({read:()=>read.promise});const pending=f.manager.refresh();f.choose();f.click('manual-apply');await flush();read.resolve(state);await pending;
-  assert.match(f.els.get('manual-current').textContent,/自选节点/);
-  f.els.get('manual-search').value='no match';f.els.get('manual-search').handlers.input();assert.equal(f.els.get('manual-apply').disabled,true);
+test('late reads and double clicks cannot replace a confirmed mode switch',async()=>{
+  const read=deferred(),write=deferred();const f=fixture({read:()=>read.promise,write:()=>write.promise});
+  const pending=f.manager.refresh();f.click('manual-apply');f.click('manual-apply');await flush();
+  write.resolve({...state,mode:'manual',revision:'r2'});await flush();read.resolve(state);await pending;
+  assert.match(f.els.get('manual-current').textContent,/自选节点/);assert.equal(f.els.get('manual-controls').disabled,false);
 });
-test('base read is guarded throughout manual writes and backend mode guards cover policy paths',()=>{
-  const main=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
-  assert.match(main,/requestedDuringRuntimeWrite = .*manualModeSwitching/);
-  for(const file of ['node_selection.rs','openai_policy.rs','openai_stability.rs']) {
-    assert.match(readFileSync(new URL(`../src-tauri/src/${file}`,import.meta.url),'utf8'),/require_proxy_mode/);
-  }
+test('empty state stays usable and legacy selection requires explicit migration',()=>{
+  const f=fixture();f.manager.accept({...state,activeProfileId:null});assert.match(f.els.get('manual-current').textContent,/未启用/);
+  f.manager.accept({...state,mode:'manual',legacySelection:true});assert.equal(f.els.get('manual-apply').disabled,false);assert.equal(f.els.get('manual-controls').disabled,true);
+});
+test('node grid escapes names, filters full membership and sorts known delays ahead of unknowns',()=>{
+  const map={Group:{type:'Selector',all:['<A>','B','C'],now:'B'},'<A>':{type:'Trojan'},B:{type:'SS',history:[{delay:30}]},C:{type:'VMess',history:[{delay:10}]}};
+  const grid=nodeGridMarkup('Group',map,'','delay',false);
+  assert.ok(grid.indexOf('data-node-choice="C"')<grid.indexOf('data-node-choice="B"'));assert.ok(grid.indexOf('data-node-choice="B"')<grid.indexOf('data-node-choice="&lt;A&gt;"'));
+  assert.doesNotMatch(grid,/<A>/);assert.match(grid,/aria-pressed="true"/);
+  assert.doesNotMatch(nodeGridMarkup('Group',map,'vmess','source',false),/data-node-choice="B"/);
+  assert.match(nodeGridMarkup('Group',map,'','source',true),/aria-pressed="true" disabled/);
+});
+test('backend guards cover policy paths, stale tasks, and startup deletion recovery; no Codex writes',()=>{
+  const read=f=>readFileSync(new URL(`../src-tauri/src/${f}`,import.meta.url),'utf8');
+  for(const file of ['node_selection.rs','openai_policy.rs','openai_stability.rs']) {assert.match(read(file),/require_proxy_mode/);assert.match(read(file),/require_revision/);}
+  assert.doesNotMatch(read('manual_outbound.rs'),/set_codex|set_local_route|set_local_route_enabled/);
+  const main=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');assert.match(main,/requestedDuringRuntimeWrite = .*manualModeSwitching/);
+  assert.ok(read('lib.rs').indexOf('storage.recover_profile_deletion()')<read('lib.rs').indexOf('let persistent = storage.state().map_err'));
 });

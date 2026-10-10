@@ -6,13 +6,22 @@ use crate::models::{
 };
 use crate::user_rules::UserRulesDocument;
 use chrono::Utc;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
+
+// Quota observations may finish outside the configuration permit. Coordinate
+// their final write with deletion so a late response cannot recreate a directory.
+static OBSERVATION_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[derive(Serialize, Deserialize)]
+struct ProfileDeletion {
+    profile_id: Uuid,
+    was_active: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct AppStorage {
@@ -281,7 +290,6 @@ impl AppStorage {
         error: Option<&AppError>,
         request_started: chrono::DateTime<Utc>,
     ) -> AppResult<()> {
-        static OBSERVATION_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _permit = OBSERVATION_WRITE
             .lock()
             .map_err(|_| AppError::Io("订阅检查记录暂时无法保存".into()))?;
@@ -315,6 +323,9 @@ impl AppStorage {
     }
 
     pub fn delete_profile(&self, profile_id: Uuid) -> AppResult<()> {
+        let _observation = OBSERVATION_WRITE
+            .lock()
+            .map_err(|_| AppError::Io("订阅记录锁已损坏".into()))?;
         let state = self.state()?;
         if state.active_profile_id == Some(profile_id) {
             return Err(AppError::Conflict("正在使用的配置不能删除".to_string()));
@@ -325,6 +336,117 @@ impl AppStorage {
         }
         fs::remove_dir_all(directory)?;
         Ok(())
+    }
+
+    /// Caller owns the configuration permit and has stopped an active runtime.
+    /// Keep recoverable bytes until state/settings/YAML have committed. An
+    /// interrupted transaction is completed on next startup before session restore.
+    pub fn delete_profile_transaction(&self, profile_id: Uuid) -> AppResult<()> {
+        let _observation = OBSERVATION_WRITE
+            .lock()
+            .map_err(|_| AppError::Io("订阅记录锁已损坏".into()))?;
+        self.load_profile(profile_id)?;
+        let old_state = self.state()?;
+        if old_state.active_profile_id == Some(profile_id) && old_state.desired_running {
+            return Err(AppError::Conflict(
+                "请先停止当前代理，再删除正在使用的配置。".into(),
+            ));
+        }
+        let old_settings = self.settings()?;
+        let old_yaml = self.active_runtime_config()?;
+        let journal = self.root.join("profile-deletion.json");
+        if journal.exists() {
+            return Err(AppError::Conflict(
+                "上次删除尚未清理完成，请重启应用后重试。".into(),
+            ));
+        }
+        write_json_atomic(
+            &journal,
+            &ProfileDeletion {
+                profile_id,
+                was_active: old_state.active_profile_id == Some(profile_id),
+            },
+        )?;
+        let result = self
+            .commit_profile_deletion(profile_id, old_state.active_profile_id == Some(profile_id));
+        if let Err(error) = result {
+            // No irrecoverable removal occurs before the commit point.
+            let rollback = (|| -> AppResult<()> {
+                let staged = self.root.join(format!(".deleted-profile-{profile_id}"));
+                if staged.exists() {
+                    fs::rename(staged, self.profile_dir(profile_id))?;
+                }
+                self.save_settings(&old_settings)?;
+                self.restore_active_runtime_config(old_yaml.as_deref())?;
+                self.save_state(&old_state)?;
+                fs::remove_file(&journal)?;
+                Ok(())
+            })();
+            return match rollback {
+                Ok(()) => Err(error),
+                Err(_) => Err(AppError::Io(
+                    "删除尚未完成，记录已保留；请重启应用完成恢复后重试。".into(),
+                )),
+            };
+        }
+        self.finish_profile_deletion(profile_id)
+    }
+
+    fn commit_profile_deletion(&self, profile_id: Uuid, was_active: bool) -> AppResult<()> {
+        let mut state = self.state()?;
+        if state.active_profile_id == Some(profile_id) {
+            state.active_profile_id = None;
+            state.active_revision_id = None;
+            state.desired_running = false;
+            state.updated_at = Some(Utc::now());
+            self.save_state(&state)?;
+        }
+        // Recovery may find state already cleared but active.yaml not yet removed.
+        // Never clear a newly selected, unrelated profile after a cleanup failure.
+        if was_active && state.active_profile_id.is_none() {
+            self.restore_active_runtime_config(None)?;
+        }
+        let mut settings = self.settings()?;
+        if settings
+            .manual_outbound
+            .as_ref()
+            .is_some_and(|selection| selection.profile_id == profile_id)
+        {
+            settings.manual_outbound = None;
+            self.save_settings(&settings)?;
+        }
+        let directory = self.profile_dir(profile_id);
+        let staged = self.root.join(format!(".deleted-profile-{profile_id}"));
+        if directory.exists() {
+            fs::rename(directory, staged)?;
+        }
+        Ok(())
+    }
+
+    fn finish_profile_deletion(&self, profile_id: Uuid) -> AppResult<()> {
+        let staged = self.root.join(format!(".deleted-profile-{profile_id}"));
+        if staged.exists() {
+            fs::remove_dir_all(staged)?;
+        }
+        let journal = self.root.join("profile-deletion.json");
+        if journal.exists() {
+            fs::remove_file(journal)?;
+        }
+        Ok(())
+    }
+
+    /// Invoke only once during startup, before background tasks and auto-resume.
+    pub fn recover_profile_deletion(&self) -> AppResult<()> {
+        let _observation = OBSERVATION_WRITE
+            .lock()
+            .map_err(|_| AppError::Io("订阅记录锁已损坏".into()))?;
+        let journal = self.root.join("profile-deletion.json");
+        if !journal.exists() {
+            return Ok(());
+        }
+        let deletion: ProfileDeletion = read_json(&journal)?;
+        self.commit_profile_deletion(deletion.profile_id, deletion.was_active)?;
+        self.finish_profile_deletion(deletion.profile_id)
     }
 
     pub fn save_revision(
@@ -937,5 +1059,128 @@ mod tests {
                 .enabled
         );
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+    fn profile(storage: &AppStorage, label: &str) -> (Uuid, Uuid) {
+        let p = storage
+            .create_profile(
+                label.into(),
+                ProfileSource::Inline {
+                    label: label.into(),
+                },
+            )
+            .unwrap();
+        let r = storage
+            .save_revision(
+                p.id,
+                "rules: ['MATCH,DIRECT']",
+                "rules: ['MATCH,DIRECT']",
+                None,
+                ValidationReport {
+                    valid: true,
+                    ..Default::default()
+                },
+                OpenAiPolicy::default(),
+            )
+            .unwrap();
+        storage.update_profile_revision(p.id, r.id).unwrap();
+        (p.id, r.id)
+    }
+    #[test]
+    fn deleting_active_last_profile_clears_selection_yaml_and_resume_but_not_routing_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = AppStorage::from_root(dir.path().into()).unwrap();
+        let (id, rev) = profile(&s, "last");
+        s.activate_revision(id, rev).unwrap();
+        fs::create_dir_all(s.routing_dir()).unwrap();
+        fs::write(s.routing_dir().join("sentinel"), "independent").unwrap();
+        s.delete_profile_transaction(id).unwrap();
+        let state = s.state().unwrap();
+        assert!(state.active_profile_id.is_none());
+        assert!(state.active_revision_id.is_none());
+        assert!(!state.desired_running);
+        assert!(s.list_profiles().unwrap().is_empty());
+        assert!(s.active_runtime_config().unwrap().is_none());
+        assert_eq!(
+            fs::read_to_string(s.routing_dir().join("sentinel")).unwrap(),
+            "independent"
+        );
+        assert!(s.record_subscription_check(id, None, None).is_err());
+        assert!(!s.profile_dir(id).exists());
+        // Re-adding is normal, but never revives an old UUID or starts networking.
+        let (new, _) = profile(&s, "again");
+        assert_ne!(new, id);
+        assert!(s.state().unwrap().active_profile_id.is_none());
+    }
+    #[test]
+    fn inactive_deletion_preserves_other_active_local_yaml_and_running_intent() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = AppStorage::from_root(dir.path().into()).unwrap();
+        let (local, rev) = profile(&s, "local");
+        let (remote, _) = profile(&s, "remote");
+        s.activate_revision(local, rev).unwrap();
+        s.set_desired_running(true).unwrap();
+        let yaml = s.active_runtime_config().unwrap();
+        s.delete_profile_transaction(remote).unwrap();
+        assert_eq!(s.state().unwrap().active_profile_id, Some(local));
+        assert!(s.state().unwrap().desired_running);
+        assert_eq!(s.active_runtime_config().unwrap(), yaml);
+        assert!(s.delete_profile_transaction(local).is_err());
+    }
+    #[test]
+    fn interrupted_delete_recovery_is_idempotent_and_precedes_resume() {
+        for stage in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let s = AppStorage::from_root(dir.path().into()).unwrap();
+            let (id, rev) = profile(&s, "interrupted");
+            s.activate_revision(id, rev).unwrap();
+            write_json_atomic(
+                &s.root.join("profile-deletion.json"),
+                &ProfileDeletion {
+                    profile_id: id,
+                    was_active: true,
+                },
+            )
+            .unwrap();
+            if stage == 1 {
+                fs::rename(
+                    s.profile_dir(id),
+                    s.root.join(format!(".deleted-profile-{id}")),
+                )
+                .unwrap();
+            }
+            if stage == 2 {
+                let mut state = s.state().unwrap();
+                state.active_profile_id = None;
+                state.active_revision_id = None;
+                s.save_state(&state).unwrap();
+                assert!(s.active_runtime_config().unwrap().is_some());
+            }
+            let reopened = AppStorage::from_root(dir.path().into()).unwrap();
+            reopened.recover_profile_deletion().unwrap();
+            reopened.recover_profile_deletion().unwrap();
+            assert!(reopened.list_profiles().unwrap().is_empty());
+            assert!(reopened.state().unwrap().active_profile_id.is_none());
+            assert!(reopened.active_runtime_config().unwrap().is_none());
+            assert!(!reopened.state().unwrap().desired_running);
+        }
+    }
+    #[test]
+    fn failed_state_commit_keeps_profile_bytes_and_recoverable_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = AppStorage::from_root(dir.path().into()).unwrap();
+        let (id, rev) = profile(&s, "failed");
+        s.activate_revision(id, rev).unwrap();
+        fs::create_dir(s.root.join(".state.json.backup")).unwrap();
+        assert!(s.delete_profile_transaction(id).is_err());
+        assert!(s.load_profile(id).is_ok());
+        assert!(s.root.join("profile-deletion.json").exists());
+        fs::remove_dir(s.root.join(".state.json.backup")).unwrap();
+        s.recover_profile_deletion().unwrap();
+        assert!(s.list_profiles().unwrap().is_empty());
     }
 }

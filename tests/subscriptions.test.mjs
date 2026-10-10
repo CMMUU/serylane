@@ -17,7 +17,7 @@ test("provider upload plus download produce quota and remaining, not response by
   assert.equal(result.used, 30 * GiB); assert.equal(result.remaining, 70 * GiB);
   assert.equal(result.progress, 30); assert.equal(result.expired, false);
   const card = subscriptionCardMarkup(subscription(), null, now);
-  assert.match(card, /30 GiB/); assert.match(card, /共 100 GiB/); assert.match(card, /4 KiB · 3 个版本/);
+  assert.match(card, /30 GiB/); assert.match(card, /100 GiB/); assert.match(card, /4 KiB · 3 个版本/);
 });
 test("zero is a real usage value while missing, negative and unsafe numbers stay unknown", () => {
   assert.equal(subscriptionBytes(0), "0 B"); assert.equal(subscriptionBytes(undefined), "—");
@@ -25,10 +25,10 @@ test("zero is a real usage value while missing, negative and unsafe numbers stay
   assert.equal(describeSubscriptionUsage(sample({ uploadBytes: 0, downloadBytes: 0 }), now).progress, 0);
   assert.equal(describeSubscriptionUsage(sample({ downloadBytes: null }), now).used, null);
 });
-test("remaining quota is primary and periodic observations cannot apply or switch configuration", () => {
+test("used / total quota is compact and periodic observations cannot apply or switch configuration", () => {
   const card = subscriptionCardMarkup(subscription(), null, now);
-  assert.match(card, /剩余流量/);
-  assert.match(card, /subscription-usage-value"><strong>70 GiB/);
+  assert.match(card, /剩余 70 GiB/);
+  assert.match(card, /已用 <strong>30 GiB<\/strong> \/ 100 GiB/);
   assert.match(card, /每 5 分钟直接检查订阅用量/);
   const poller = readFileSync(new URL('../src-tauri/src/subscription_quota.rs', import.meta.url), 'utf8');
   assert.match(poller, /POLL_SECONDS: i64 = 300/);
@@ -82,7 +82,7 @@ test("all real subscription actions remain available and selecting an active pro
   for (const action of ["refresh", "activate", "versions", "delete", "openai-generate"]) assert.match(card, new RegExp(`data-subscription-action="${action}"`));
   assert.match(card, /data-subscription-action="activate"[^>]*disabled/);
   assert.match(card, /<details class="subscription-more"/);
-  const main = read("main.ts"); assert.match(main, /title: "删除订阅"/); assert.match(main, /当前订阅正在使用，请先激活其他订阅后再删除/);
+  const main = read("main.ts"); assert.match(main, /停止并删除当前配置/); assert.doesNotMatch(main, /请先激活其他订阅后再删除/); assert.match(main, /deleteProfileConfirmed/);
 });
 test("running disaster recovery generation keeps cancel action and blocks competing generation", () => {
   const task = { profileId: "fixture-only", running: true, completed: 1, total: 3 };

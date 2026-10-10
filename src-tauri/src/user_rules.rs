@@ -599,6 +599,8 @@ fn capture_context(app: &AppHandle, storage: &AppStorage) -> AppResult<ActiveCon
         "networkMode": settings.network_mode, "mixedPort": settings.mixed_port,
         "controllerPort": settings.controller_port, "secret": settings.controller_secret,
         "manualOutbound": settings.manual_outbound,
+        "proxyMode": settings.proxy_mode,
+        "proxyModeRevision": settings.proxy_mode_revision,
         "phase": runtime.phase, "pid": runtime.pid, "startedAt": runtime.started_at,
     })
     .to_string();
@@ -639,9 +641,7 @@ fn warnings(context: &ActiveContext, rules: &[UserRule]) -> Vec<String> {
             .to_string(),
     ];
     if context.settings.manual_outbound.is_some() {
-        warnings.push(
-            "自选节点模式下用户分流规则暂不参与；保存不会切换出口，切回代理模式后恢复。".into(),
-        );
+        warnings.push("旧版固定出口设置待确认迁移；请先前往自选节点页确认选点方式。".into());
     }
     if !context.active {
         warnings.push(
@@ -1190,6 +1190,7 @@ mod tests {
     #[test]
     fn rule_order_precedes_ai_and_subscription_without_mutating_source() {
         let mut context = context(true);
+        context.settings.proxy_mode = crate::manual_outbound::ProxyMode::Ai;
         context.policy = Some(OpenAiPolicy {
             enabled: true,
             selected_nodes: ["sample-a", "sample-b"]

@@ -580,10 +580,6 @@ pub async fn rollback_profile(app: &AppHandle, profile_id: Uuid) -> AppResult<Pr
     activate_profile(app, profile_id, Some(revision_id)).await
 }
 
-pub fn delete_profile(app: &AppHandle, profile_id: Uuid) -> AppResult<()> {
-    AppStorage::from_app(app)?.delete_profile(profile_id)
-}
-
 pub fn set_routing_mode(
     app: &AppHandle,
     profile_id: Uuid,

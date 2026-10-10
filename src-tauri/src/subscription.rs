@@ -1187,31 +1187,12 @@ mod tests {
             crate::runtime::validate_file(&binary, directory.path(), &config).is_ok(),
             "isolated native validation failed"
         );
-        // Validate a real subscription's fixed-outbound overlay too, without
-        // activating it, persisting the subscription, or disclosing credentials.
-        let source: serde_yaml::Value = serde_yaml::from_str(&content).expect("validated yaml");
-        if let Some(node) = source["proxies"]
-            .as_sequence()
-            .into_iter()
-            .flatten()
-            .find(|node| crate::manual_outbound::fixed_node(node))
-        {
-            let settings = AppSettings {
-                manual_outbound: Some(crate::manual_outbound::ManualOutbound {
-                    profile_id: uuid::Uuid::nil(),
-                    node_name: node["name"].as_str().unwrap().into(),
-                    identity: crate::manual_outbound::identity(node).unwrap(),
-                }),
-                ..Default::default()
-            };
-            let manual = build_effective_config(&content, &settings, RoutingMode::Rule);
-            assert!(manual.is_ok(), "manual config generation failed");
-            crate::runtime::write_private_file(&config, manual.unwrap().yaml.as_bytes())
-                .expect("private config");
-            assert!(
-                crate::runtime::validate_file(&binary, directory.path(), &config).is_ok(),
-                "isolated manual native validation failed"
-            );
+        // Validate regular group selection modes against the same isolated source.
+        for mode in [RoutingMode::Global, RoutingMode::Direct] {
+            let config_value =
+                build_effective_config(&content, &AppSettings::default(), mode).unwrap();
+            crate::runtime::write_private_file(&config, config_value.yaml.as_bytes()).unwrap();
+            assert!(crate::runtime::validate_file(&binary, directory.path(), &config).is_ok());
         }
     }
 }

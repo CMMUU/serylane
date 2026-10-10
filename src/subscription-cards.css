@@ -131,3 +131,16 @@
 .subscription-compact-facts .is-expired { color: var(--warning); }
 .subscription-alert { margin: 0; color: var(--warning); font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
 .subscription-alert.is-error { color: var(--danger); }
+
+/* Common actions stay on one row; infrequent operations expand on demand. */
+.subscription-tile { gap: 8px; padding: 12px 14px; }
+.subscription-tile .subscription-entry-head { align-items: center; }
+.subscription-quick-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.subscription-tile .subscription-usage { padding: 0; }
+.subscription-tile .subscription-usage-label { flex-wrap: wrap; font-size: 13px; gap: 4px 8px; }
+.subscription-tile .subscription-usage-label strong { color: var(--text); font-weight: 600; }
+.subscription-tile .subscription-usage-track { margin-top: 6px; height: 4px; }
+.subscription-tile .subscription-more { padding-top: 0; border-top: 0; }
+.subscription-tile .subscription-more > summary { min-height: 24px; width: fit-content; margin-left: auto; }
+.subscription-tile .subscription-more-body { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; }
+@container subscriptions (max-width: 450px) { .subscription-tile .subscription-entry-head { flex-wrap: wrap; } }

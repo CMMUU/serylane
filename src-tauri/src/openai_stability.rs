@@ -344,7 +344,7 @@ impl StabilityManager {
         };
         let proxy_mode = storage
             .settings()
-            .is_ok_and(|s| s.manual_outbound.is_none());
+            .is_ok_and(|s| crate::manual_outbound::require_proxy_mode(&s).is_ok());
         let profile = persistent
             .active_profile_id
             .filter(|_| proxy_mode)
@@ -462,7 +462,7 @@ impl StabilityManager {
     }
     async fn tick(&self, app: &AppHandle) -> AppResult<()> {
         let storage = AppStorage::from_app(app)?;
-        if storage.settings()?.manual_outbound.is_some() {
+        if crate::manual_outbound::require_proxy_mode(&storage.settings()?).is_err() {
             self.update_policy_status(app);
             return Ok(());
         }
@@ -548,6 +548,10 @@ impl StabilityManager {
         {
             let _permit = crate::user_rules::acquire_configuration(app)?;
             crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
+            crate::manual_outbound::require_revision(
+                &storage.settings()?,
+                settings.proxy_mode_revision,
+            )?;
             let latest = active.map(|id| storage.load_profile(id)).transpose()?;
             if storage.state()?.active_profile_id != active
                 || latest.as_ref().and_then(|p| p.active_revision_id) != revision
@@ -660,6 +664,10 @@ impl StabilityManager {
         // Gate both recording and selection, not just the eventual controller write.
         let _permit = crate::user_rules::acquire_configuration(app)?;
         crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
+        crate::manual_outbound::require_revision(
+            &storage.settings()?,
+            settings.proxy_mode_revision,
+        )?;
         let run_after = app.state::<MihomoRuntime>().status(Some(app));
         if self.stopped.load(Ordering::Acquire)
             || run_after.phase != RuntimePhase::Running

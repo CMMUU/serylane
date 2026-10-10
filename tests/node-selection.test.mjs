@@ -51,13 +51,13 @@ function controllerFixture(names) {
   const calls = [];
   const profile = { id: "one", activeRevisionId: "r1", routingMode: "rule", openaiPolicy: { enabled: true, stabilityEnabled: true } };
   const context = {
-    store: { view: "proxies", activeProfile: { profile }, runtime: { phase: "running", pid: 1 }, proxies: { proxies: map }, openAiTask: null },
-    nodeSelectionBusy: false, proxyReadSequence: 0, runtimeMutationRevision: 0, overviewNodeDetails: {}, proxyReadError: "", OPENAI_GROUP_NAME: OPENAI_GROUP,
+    store: { view: "proxies", activeProfile: { profile }, runtime: { phase: "running", pid: 1 }, manualOutbound: {mode:"ai",revision:"m1"}, proxies: { proxies: map, modeRevision: "m1" }, openAiTask: null },
+    manualModeSwitching: false, nodeSelectionBusy: false, proxyReadSequence: 0, runtimeMutationRevision: 0, overviewNodeDetails: {}, proxyReadError: "", OPENAI_GROUP_NAME: OPENAI_GROUP,
     confirmAction: async () => true,
     api: {
       selectProxy: async (...args) => calls.push(["select", ...args]),
       clearProxySelection: async (...args) => calls.push(["auto", ...args]),
-      proxies: async () => ({ profileId: "one", revisionId: "r1", proxies: map }),
+      proxies: async () => ({ profileId: "one", revisionId: "r1", modeRevision: "m1", proxies: map }),
     },
     action: async (_label, run) => { try { return await run(); } catch { return null; } },
     toast: (...args) => calls.push(["toast", ...args]), errorMessage: e => e.message,
@@ -80,7 +80,7 @@ test("selection cancel, failures and duplicate submissions never claim an optimi
   const first = c.changeNode(OPENAI_GROUP, "B");
   await c.changeNode(OPENAI_GROUP, "A");
   finish(true); await first;
-  assert.deepEqual(calls.filter(call => call[0] === "select"), [["select", OPENAI_GROUP, "B", "one", "r1"]]);
+  assert.deepEqual(calls.filter(call => call[0] === "select"), [["select", OPENAI_GROUP, "B", "one", "r1", "m1"]]);
   c.api.selectProxy = async () => { throw new Error("synthetic failure"); };
   c.confirmAction = async () => true;
   const previous = c.store.proxies;
@@ -100,13 +100,13 @@ test("late node reads never revive stopped or switched-profile state", async () 
     c.api.proxies = () => new Promise(resolve => { finish = resolve; });
     const pending = c.refreshProxies(true);
     mutation(c); c.store.proxies = null;
-    finish({ profileId: "one", revisionId: "r1", proxies: map }); await pending;
+    finish({ profileId: "one", revisionId: "r1", modeRevision: "m1", proxies: map }); await pending;
     assert.equal(c.store.proxies, null);
   }
 });
 test("mismatched node snapshot context clears stale details and exposes the read failure", async () => {
   const { context: c } = controllerFixture(["refreshProxies"]);
-  c.api.proxies = async () => ({ profileId: "one", revisionId: "old", proxies: map });
+  c.api.proxies = async () => ({ profileId: "one", revisionId: "old", modeRevision: "m1", proxies: map });
   await c.refreshProxies(true);
   assert.equal(c.store.proxies, null); assert.match(c.proxyReadError, /不一致/);
   assert.equal(Object.keys(c.overviewNodeDetails).length, 0);

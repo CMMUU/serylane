@@ -77,25 +77,40 @@ class AppleReleaseEnvironmentTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github/workflows/release.yml").read_text()
         self.assertIn("apple_mode: ${{ steps.apple_signing.outputs.apple_mode }}", workflow)
-        self.assertIn('if [ -n "$RELEASE_TAG" ]; then\n            bash scripts/check-apple-release-env.sh', workflow)
+        self.assertIn('elif [ -n "$RELEASE_TAG" ]; then\n            bash scripts/check-apple-release-env.sh', workflow)
         self.assertIn("if: runner.os == 'macOS' && needs.source.outputs.apple_mode == 'notarized'", workflow)
         self.assertIn('if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then', workflow)
         self.assertIn('./scripts/verify-macos-release.sh src-tauri/target/release/bundle/macos/Serylane.app', workflow)
         self.assertIn('./scripts/verify-macos-layout.sh src-tauri/target/release/bundle/macos/Serylane.app', workflow)
         self.assertNotIn('continue-on-error: true', workflow)
 
-    def test_actual_workflow_only_allows_adhoc_for_unpublished_builds(self):
+    def test_actual_workflow_requires_explicit_trusted_main_compatibility(self):
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github/workflows/release.yml").read_text()
-        step = workflow.split("      - name: Require Developer ID and notarization before a stable release\n", 1)[1]
+        step = workflow.split("      - name: Validate Apple release mode and explicit compatibility scope\n", 1)[1]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n  bundle:", 1)[0])
-        env = {k: v for k, v in os.environ.items() if k not in (*self.keys, "GITHUB_OUTPUT")}
-        for tag, expected in [("", 0), ("v0.7.19", 1)]:
-            result = subprocess.run(["bash", "-e", "-c", script], cwd=root,
-                                    env=dict(env, RELEASE_TAG=tag), capture_output=True, text=True, timeout=5)
-            self.assertEqual(result.returncode, expected, result.stderr)
-            if tag:
-                self.assertNotIn("apple_mode=legacy", result.stdout)
+        env = {k: v for k, v in os.environ.items()
+               if k not in (*self.keys, "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY")}
+        env.update(RELEASE_TAG="v0.7.19", COMPATIBILITY_RELEASE="false",
+                   GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_REF="refs/heads/main",
+                   PUBLISH_CURRENT="true", REQUESTED_RELEASE_TAG="")
+        cases = [({}, 1), ({"RELEASE_TAG": ""}, 0),
+                 ({"COMPATIBILITY_RELEASE": "true"}, 0)]
+        for field, value in [("GITHUB_EVENT_NAME", "push"),
+                             ("GITHUB_REF", "refs/heads/feature"),
+                             ("PUBLISH_CURRENT", "false"),
+                             ("REQUESTED_RELEASE_TAG", "v0.7.19"),
+                             ("RELEASE_TAG", ""),
+                             ("APPLE_API_KEY", "sensitive-fixture-never-print")]:
+            cases.append(({"COMPATIBILITY_RELEASE": "true", field: value}, 1))
+        for values, expected in cases:
+            with self.subTest(values=values):
+                result = subprocess.run(["bash", "-e", "-c", script], cwd=root,
+                                        env=dict(env, **values), capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertNotIn("sensitive-fixture", result.stdout + result.stderr)
+                if expected:
+                    self.assertNotIn("apple_mode=legacy", result.stdout)
 
     def test_actual_legacy_build_step_unsets_empty_apple_environment(self):
         # Execute the workflow's actual shell with fake package/verification

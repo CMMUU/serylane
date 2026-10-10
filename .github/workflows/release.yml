@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      compatibility_release:
+        description: Explicitly publish macOS compatibility packages without Developer ID, notarization or working macOS TUN (trusted main only)
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -59,7 +64,7 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-      - name: Require Developer ID and notarization before a stable release
+      - name: Validate Apple release mode and explicit compatibility scope
         id: apple_signing
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -70,8 +75,19 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+          COMPATIBILITY_RELEASE: ${{ inputs.compatibility_release }}
+          PUBLISH_CURRENT: ${{ inputs.publish_current }}
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          if [ -n "$RELEASE_TAG" ]; then
+          if [ "${COMPATIBILITY_RELEASE:-false}" = "true" ]; then
+            if [ "$GITHUB_EVENT_NAME" != 'workflow_dispatch' ] || [ "$GITHUB_REF" != 'refs/heads/main' ] || [ "$PUBLISH_CURRENT" != 'true' ] || [ -n "$REQUESTED_RELEASE_TAG" ] || [ -z "$RELEASE_TAG" ]; then
+              echo 'Compatibility publication requires an explicit trusted-main dispatch of the current version.' >&2
+              exit 1
+            fi
+            # Explicit feature-only release, not an automatic signing fallback.
+            # Partial Apple credentials and signing failures still stop the run.
+            bash scripts/check-apple-release-env.sh --allow-legacy
+          elif [ -n "$RELEASE_TAG" ]; then
             bash scripts/check-apple-release-env.sh
           else
             # Ad-hoc builds are retained only as unpublished CI artifacts.
