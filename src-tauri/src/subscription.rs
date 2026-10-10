@@ -1,11 +1,13 @@
 use crate::error::{AppError, AppResult};
 use crate::models::{SubscriptionMetadata, SubscriptionUsage};
+use crate::subscription_task::{DownloadOptions, DownloadPath, Phase, Task};
 use futures_util::StreamExt;
 use reqwest::header::{
     ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH,
     LAST_MODIFIED,
 };
 use serde::Serialize;
+use std::sync::Arc;
 use url::Url;
 
 const MAX_SUBSCRIPTION_BYTES: usize = 4 * 1024 * 1024;
@@ -125,6 +127,15 @@ impl TransportFailure {
         let mut dns = false;
         let mut interrupted = false;
         while let Some(value) = cause {
+            interrupted |= value.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                )
+            });
             let text = value.to_string().to_ascii_lowercase();
             if text.contains("certificate") || text.contains("tls handshake") {
                 return Self::Tls;
@@ -141,7 +152,7 @@ impl TransportFailure {
             Self::Dns
         } else if error.is_connect() {
             Self::Connection
-        } else if interrupted {
+        } else if interrupted || error.is_body() {
             Self::Interrupted
         } else {
             Self::Request
@@ -174,8 +185,24 @@ fn subscription_transport_error(error: reqwest::Error) -> AppError {
 pub(crate) fn subscription_user_message(
     message: &str,
 ) -> (&'static str, &'static str, &'static str) {
-    let (title, description) = if message.starts_with("HTTP 401") || message.starts_with("HTTP 403")
-    {
+    let (title, description) = if message == "订阅任务已取消" {
+        ("订阅任务已取消", "原有配置未改变，添加表单已保留。")
+    } else if message.contains("规则资源未就绪") {
+        (
+            "订阅已下载，校验资源尚未就绪",
+            "Mihomo 所需的地理规则资源缺失或下载失败。请检查资源下载网络后重试；原有配置未改变。",
+        )
+    } else if message.contains("网页") {
+        (
+            "服务商返回了网页内容",
+            "请使用 Clash / Mihomo 订阅地址，而非登录页或分享页面；原有配置未改变。",
+        )
+    } else if message.contains("格式不是") || message.contains("首次添加") {
+        (
+            "订阅内容不符合配置格式",
+            "请使用服务商提供的 Clash / Mihomo YAML 订阅；原有配置未改变。",
+        )
+    } else if message.starts_with("HTTP 401") || message.starts_with("HTTP 403") {
         ("订阅服务拒绝了请求", "请核对服务商要求的客户端标识（User-Agent）或重新复制订阅链接。其他客户端可用时，可填写相同的客户端标识后重试。")
     } else if message.starts_with("HTTP 429") {
         ("订阅请求过于频繁", "请稍等片刻再试，避免连续点击刷新。")
@@ -223,6 +250,7 @@ pub struct FetchedSubscription {
 
 #[derive(Debug, Clone)]
 pub struct SubscriptionFetcher {
+    task: Option<Arc<Task>>,
     client: reqwest::Client,
     total_timeout: std::time::Duration,
 }
@@ -244,7 +272,17 @@ impl SubscriptionFetcher {
             let attempt = request
                 .try_clone()
                 .ok_or_else(|| AppError::Subscription("订阅请求参数无效".into()))?;
-            match tokio::time::timeout(remaining, attempt.send()).await {
+            if let Some(task) = &self.task {
+                task.check()?;
+                task.request();
+            }
+            let send = async { Ok(tokio::time::timeout(remaining, attempt.send()).await) };
+            let sent = if let Some(task) = &self.task {
+                task.wait(send).await?
+            } else {
+                send.await?
+            };
+            match sent {
                 Ok(Ok(response)) => return Ok(response),
                 Err(_) => return Err(subscription_timeout_error()),
                 Ok(Err(error)) => {
@@ -256,7 +294,7 @@ impl SubscriptionFetcher {
                     if remaining <= std::time::Duration::from_millis(200) {
                         return Err(subscription_transport_error(error));
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    self.pause(std::time::Duration::from_millis(200)).await?;
                 }
             }
         }
@@ -271,6 +309,11 @@ impl SubscriptionFetcher {
         user_agent: &str,
     ) -> AppResult<Option<SubscriptionUsage>> {
         let parsed = validate_subscription_url(url)?;
+        if is_loopback_host(&parsed) {
+            if let Some(task) = &self.task {
+                task.path("direct");
+            }
+        }
         let configured = if user_agent.trim().is_empty() {
             DEFAULT_SUBSCRIPTION_USER_AGENT
         } else {
@@ -285,37 +328,46 @@ impl SubscriptionFetcher {
         let deadline = tokio::time::Instant::now() + self.total_timeout;
         let mut retry_available = true;
         for method in [reqwest::Method::HEAD, reqwest::Method::GET] {
-            for agent in &agents {
-                let response = self
-                    .send_request(
-                        self.client
-                            .request(method.clone(), parsed.clone())
-                            .header(reqwest::header::USER_AGENT, *agent)
-                            .header(ACCEPT, SUBSCRIPTION_ACCEPT)
-                            .header(CACHE_CONTROL, "no-cache"),
-                        deadline,
-                        &mut retry_available,
-                    )
-                    .await?;
-                if response.status() == reqwest::StatusCode::FORBIDDEN {
-                    continue;
+            'agents: for agent in &agents {
+                loop {
+                    let response = self
+                        .send_request(
+                            self.client
+                                .request(method.clone(), parsed.clone())
+                                .header(reqwest::header::USER_AGENT, *agent)
+                                .header(ACCEPT, SUBSCRIPTION_ACCEPT)
+                                .header(CACHE_CONTROL, "no-cache"),
+                            deadline,
+                            &mut retry_available,
+                        )
+                        .await?;
+                    let status = response.status().as_u16();
+                    if let Some(task) = &self.task {
+                        task.response(status);
+                    }
+                    if status == 403 {
+                        continue 'agents;
+                    }
+                    if method == reqwest::Method::HEAD && matches!(status, 405 | 501) {
+                        break 'agents;
+                    }
+                    if matches!(status, 429 | 502 | 503 | 504) {
+                        let delay = retry_delay(response.headers());
+                        drop(response);
+                        if self.retry(&mut retry_available, delay, deadline).await? {
+                            continue;
+                        }
+                        return Err(AppError::Subscription(format!("HTTP {status}")));
+                    }
+                    if !response.status().is_success() {
+                        return Err(AppError::Subscription(format!("HTTP {status}")));
+                    }
+                    let usage = response_usage(response.headers());
+                    if usage.is_some() || method == reqwest::Method::GET {
+                        return Ok(usage);
+                    }
+                    break 'agents;
                 }
-                if method == reqwest::Method::HEAD
-                    && matches!(response.status().as_u16(), 405 | 501)
-                {
-                    break;
-                }
-                if !response.status().is_success() {
-                    return Err(AppError::Subscription(format!(
-                        "HTTP {}",
-                        response.status().as_u16()
-                    )));
-                }
-                let usage = response_usage(response.headers());
-                if usage.is_some() || method == reqwest::Method::GET {
-                    return Ok(usage);
-                }
-                break;
             }
         }
         Err(AppError::Subscription("HTTP 403".into()))
@@ -323,23 +375,42 @@ impl SubscriptionFetcher {
 
     /// Reuse only this application's already-running core. This is a status read,
     /// not permission to start a core, change system proxy, or discover other apps.
-    pub fn for_app(app: &tauri::AppHandle) -> AppResult<Self> {
+    pub fn for_task(
+        app: &tauri::AppHandle,
+        options: &DownloadOptions,
+        task: Option<Arc<Task>>,
+    ) -> AppResult<Self> {
         use tauri::Manager;
         let running = app
             .state::<crate::runtime::MihomoRuntime>()
             .status(Some(app))
             .phase
             == crate::models::RuntimePhase::Running;
-        let port = if running {
-            Some(
-                crate::storage::AppStorage::from_app(app)?
-                    .settings()?
-                    .mixed_port,
-            )
-        } else {
-            None
+        let (port, label) = match options.path {
+            DownloadPath::Direct => (None, "direct"),
+            DownloadPath::LocalProxy => (
+                Some(options.proxy_port.filter(|p| *p != 0).ok_or_else(|| {
+                    AppError::InvalidInput("请填写已运行的本地 HTTP 代理端口".into())
+                })?),
+                "local_proxy",
+            ),
+            DownloadPath::FollowCore if running => (
+                Some(
+                    crate::storage::AppStorage::from_app(app)?
+                        .settings()?
+                        .mixed_port,
+                ),
+                "serylane",
+            ),
+            DownloadPath::FollowCore => (None, "direct"),
         };
-        Self::with_running_proxy(port)
+        let mut fetcher = Self::with_running_proxy(port)?;
+        if let Some(task) = &task {
+            task.path(label);
+            task.check()?;
+        }
+        fetcher.task = task;
+        Ok(fetcher)
     }
 
     #[cfg(test)]
@@ -348,7 +419,7 @@ impl SubscriptionFetcher {
     }
 
     fn with_running_proxy(port: Option<u16>) -> AppResult<Self> {
-        let mut builder = reqwest::Client::builder();
+        let mut builder = reqwest::Client::builder().no_proxy();
         if let Some(port) = port {
             // Never fall back to direct access after the selected core fails.
             // Local subscription fixtures remain local, avoiding a proxy loop.
@@ -358,6 +429,7 @@ impl SubscriptionFetcher {
             }));
         }
         let client = builder
+            .referer(false)
             .connect_timeout(std::time::Duration::from_secs(8))
             .timeout(std::time::Duration::from_secs(20))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -377,8 +449,37 @@ impl SubscriptionFetcher {
             .map_err(subscription_transport_error)?;
         Ok(Self {
             client,
+            task: None,
             total_timeout: TOTAL_FETCH_TIMEOUT,
         })
+    }
+
+    async fn pause(&self, duration: std::time::Duration) -> AppResult<()> {
+        if let Some(task) = &self.task {
+            task.phase(Phase::Retrying);
+            task.wait(async {
+                tokio::time::sleep(duration).await;
+                Ok(())
+            })
+            .await
+        } else {
+            tokio::time::sleep(duration).await;
+            Ok(())
+        }
+    }
+
+    async fn retry(
+        &self,
+        available: &mut bool,
+        delay: std::time::Duration,
+        deadline: tokio::time::Instant,
+    ) -> AppResult<bool> {
+        if !*available || delay >= deadline.saturating_duration_since(tokio::time::Instant::now()) {
+            return Ok(false);
+        }
+        *available = false;
+        self.pause(delay).await?;
+        Ok(true)
     }
 
     pub async fn fetch(
@@ -389,85 +490,136 @@ impl SubscriptionFetcher {
         last_modified: Option<&str>,
     ) -> AppResult<FetchedSubscription> {
         let parsed = validate_subscription_url(url)?;
-        let configured_user_agent = match user_agent.trim() {
-            "" => DEFAULT_SUBSCRIPTION_USER_AGENT,
-            value => value,
+        if is_loopback_host(&parsed) {
+            if let Some(task) = &self.task {
+                task.path("direct");
+            }
+        }
+        let agent = if user_agent.trim().is_empty() {
+            DEFAULT_SUBSCRIPTION_USER_AGENT
+        } else {
+            user_agent.trim()
         };
-        let mut attempts = vec![
-            (configured_user_agent, true, false),
-            (configured_user_agent, false, true),
-        ];
+        let mut attempts = vec![(agent, true, false), (agent, false, true)];
         for fallback in COMPATIBLE_USER_AGENTS {
-            if fallback != configured_user_agent {
+            if fallback != agent {
                 attempts.push((fallback, false, true));
             }
         }
-
-        let mut response = None;
         let deadline = tokio::time::Instant::now() + self.total_timeout;
+        // Shared across compatibility attempts, sends AND bodies; no multiplicative retry loops.
         let mut retry_available = true;
-        for (attempt_user_agent, include_validators, include_compatibility_headers) in attempts {
-            let mut request = self
-                .client
-                .get(parsed.clone())
-                .header(reqwest::header::USER_AGENT, attempt_user_agent);
-            if include_compatibility_headers {
-                request = request
-                    .header(ACCEPT, SUBSCRIPTION_ACCEPT)
-                    .header(ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.6")
-                    .header(CACHE_CONTROL, "no-cache");
-            }
-            if include_validators {
-                if let Some(etag) = etag {
-                    request = request.header(IF_NONE_MATCH, etag);
+        for (agent, validators, compat) in attempts {
+            loop {
+                let mut request = self
+                    .client
+                    .get(parsed.clone())
+                    .header(reqwest::header::USER_AGENT, agent);
+                if compat {
+                    request = request
+                        .header(ACCEPT, SUBSCRIPTION_ACCEPT)
+                        .header(ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.6")
+                        .header(CACHE_CONTROL, "no-cache");
                 }
-                if let Some(last_modified) = last_modified {
-                    request = request.header(IF_MODIFIED_SINCE, last_modified);
+                if validators {
+                    if let Some(etag) = etag {
+                        request = request.header(IF_NONE_MATCH, etag);
+                    }
+                    if let Some(modified) = last_modified {
+                        request = request.header(IF_MODIFIED_SINCE, modified);
+                    }
+                }
+                let response = self
+                    .send_request(request, deadline, &mut retry_available)
+                    .await?;
+                let status = response.status().as_u16();
+                if let Some(task) = &self.task {
+                    task.response(status);
+                }
+                if status == 403 {
+                    break;
+                }
+                if matches!(status, 429 | 502 | 503 | 504) {
+                    let delay = retry_delay(response.headers());
+                    if response
+                        .headers()
+                        .contains_key(reqwest::header::RETRY_AFTER)
+                    {
+                        if let Some(task) = &self.task {
+                            task.retry_after(delay.as_secs().max(1));
+                        }
+                    }
+                    drop(response);
+                    if self.retry(&mut retry_available, delay, deadline).await? {
+                        continue;
+                    }
+                    return Err(AppError::Subscription(format!("HTTP {status}")));
+                }
+                if status == 304 {
+                    if etag.is_none() && last_modified.is_none() {
+                        return Err(AppError::Subscription(
+                            "订阅服务未返回首次添加所需内容".into(),
+                        ));
+                    }
+                    return Ok(FetchedSubscription {
+                        content: None,
+                        not_modified: true,
+                        metadata: SubscriptionMetadata {
+                            content_type: None,
+                            etag: etag.map(str::to_string),
+                            last_modified: last_modified.map(str::to_string),
+                            bytes: 0,
+                            usage: response_usage(response.headers()),
+                        },
+                    });
+                }
+                if !response.status().is_success() {
+                    return Err(AppError::Subscription(format!("HTTP {status}")));
+                }
+                if let Some(task) = &self.task {
+                    task.phase(Phase::Downloading);
+                }
+                let body = self.read_response(response, deadline);
+                let result = if let Some(task) = &self.task {
+                    task.wait(body).await
+                } else {
+                    body.await
+                };
+                match result {
+                    Err(AppError::Subscription(ref text))
+                        if ["订阅请求超时", "订阅连接意外中断", "订阅服务器连接失败"]
+                            .contains(&text.as_str()) =>
+                    {
+                        if self
+                            .retry(
+                                &mut retry_available,
+                                std::time::Duration::from_millis(200),
+                                deadline,
+                            )
+                            .await?
+                        {
+                            continue;
+                        }
+                        return result;
+                    }
+                    result => return result,
                 }
             }
-            let candidate = self
-                .send_request(request, deadline, &mut retry_available)
-                .await?;
-            if candidate.status() != reqwest::StatusCode::FORBIDDEN {
-                response = Some(candidate);
-                break;
-            }
         }
-        let response = response.ok_or_else(|| {
-            AppError::Subscription(
-                "HTTP 403（订阅服务拒绝访问；已自动尝试兼容请求头。请确认链接或令牌未过期，或填写服务商指定的 User-Agent）"
-                    .to_string(),
-            )
-        })?;
-        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
-            let usage = response_usage(response.headers());
-            return Ok(FetchedSubscription {
-                content: None,
-                metadata: SubscriptionMetadata {
-                    content_type: None,
-                    etag: etag.map(str::to_string),
-                    last_modified: last_modified.map(str::to_string),
-                    bytes: 0,
-                    usage,
-                },
-                not_modified: true,
-            });
-        }
-        if !response.status().is_success() {
-            return Err(AppError::Subscription(format!(
-                "HTTP {}",
-                response.status().as_u16()
-            )));
-        }
+        Err(AppError::Subscription("HTTP 403".into()))
+    }
+
+    async fn read_response(
+        &self,
+        response: reqwest::Response,
+        deadline: tokio::time::Instant,
+    ) -> AppResult<FetchedSubscription> {
         if response
             .content_length()
-            .is_some_and(|size| size > MAX_SUBSCRIPTION_BYTES as u64)
+            .is_some_and(|s| s > MAX_SUBSCRIPTION_BYTES as u64)
         {
-            return Err(AppError::Subscription(
-                "订阅内容超过 4 MiB 限制".to_string(),
-            ));
+            return Err(AppError::Subscription("订阅内容超过 4 MiB 限制".into()));
         }
-
         let headers = response.headers().clone();
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::new();
@@ -484,38 +636,79 @@ impl SubscriptionFetcher {
             };
             let chunk = chunk.map_err(subscription_transport_error)?;
             if bytes.len() + chunk.len() > MAX_SUBSCRIPTION_BYTES {
-                return Err(AppError::Subscription(
-                    "订阅内容超过 4 MiB 限制".to_string(),
-                ));
+                return Err(AppError::Subscription("订阅内容超过 4 MiB 限制".into()));
             }
             bytes.extend_from_slice(&chunk);
         }
         if bytes.is_empty() {
-            return Err(AppError::Subscription("订阅内容为空".to_string()));
+            return Err(AppError::Subscription("订阅内容为空".into()));
         }
         let content = String::from_utf8(bytes)
-            .map_err(|_| AppError::Subscription("订阅内容不是 UTF-8 文本".to_string()))?;
+            .map_err(|_| AppError::Subscription("订阅内容不是 UTF-8 文本".into()))?;
+        if let Some(task) = &self.task {
+            task.bytes(content.len());
+            task.phase(Phase::Checking);
+        }
+        validate_content(&content)?;
         Ok(FetchedSubscription {
             metadata: SubscriptionMetadata {
                 bytes: content.len(),
                 usage: response_usage(&headers),
                 content_type: headers
                     .get(CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
+                    .and_then(|v| v.to_str().ok())
                     .map(str::to_string),
                 etag: headers
                     .get(ETAG)
-                    .and_then(|value| value.to_str().ok())
+                    .and_then(|v| v.to_str().ok())
                     .map(str::to_string),
                 last_modified: headers
                     .get(LAST_MODIFIED)
-                    .and_then(|value| value.to_str().ok())
+                    .and_then(|v| v.to_str().ok())
                     .map(str::to_string),
             },
             content: Some(content),
             not_modified: false,
         })
     }
+}
+
+fn retry_delay(headers: &reqwest::header::HeaderMap) -> std::time::Duration {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok());
+    if let Some(seconds) = value.and_then(|s| s.parse::<u64>().ok()) {
+        return std::time::Duration::from_secs(seconds).max(std::time::Duration::from_millis(200));
+    }
+    if let Some(at) = value.and_then(|s| chrono::DateTime::parse_from_rfc2822(s).ok()) {
+        return std::time::Duration::from_millis(
+            (at.timestamp_millis() - chrono::Utc::now().timestamp_millis()).max(200) as u64,
+        );
+    }
+    std::time::Duration::from_millis(500)
+}
+
+fn validate_content(content: &str) -> AppResult<()> {
+    let text = content.trim_start_matches('\u{feff}').trim_start();
+    let prefix = text
+        .chars()
+        .take(256)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if prefix.starts_with("<!doctype html")
+        || prefix.starts_with("<html")
+        || prefix.starts_with("<head")
+    {
+        return Err(AppError::Subscription("订阅服务返回了网页而非配置".into()));
+    }
+    let value: serde_yaml::Value = serde_yaml::from_str(text)
+        .map_err(|_| AppError::Subscription("订阅格式不是有效的 Clash / Mihomo YAML".into()))?;
+    if !value.is_mapping() {
+        return Err(AppError::Subscription(
+            "订阅格式不是有效的 Clash / Mihomo YAML".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_subscription_url(url: &str) -> AppResult<Url> {
@@ -539,8 +732,8 @@ fn is_loopback_host(url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_subscription_usage, response_usage, safe_subscription_error,
-        validate_subscription_url, SubscriptionFetcher,
+        parse_subscription_usage, response_usage, retry_delay, safe_subscription_error,
+        validate_content, validate_subscription_url, SubscriptionFetcher,
     };
     use crate::error::AppError;
     use crate::models::SubscriptionMetadata;
@@ -698,7 +891,10 @@ mod tests {
                     - usage.download_bytes.unwrap(),
                 70
             );
-            server.await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), server)
+                .await
+                .expect("expected request was not sent")
+                .unwrap();
         }
     }
 
@@ -1029,7 +1225,10 @@ mod tests {
                     .content
                     .is_some());
             }
-            server.await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), server)
+                .await
+                .expect("expected request was not sent")
+                .unwrap();
         }
     }
 
@@ -1060,7 +1259,10 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("中断"));
         assert!(!error.to_string().contains("fixture-secret"));
-        server.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), server)
+            .await
+            .expect("expected request was not sent")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1119,7 +1321,10 @@ mod tests {
             .await
             .unwrap();
         assert!(fetched.content.is_some());
-        server.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), server)
+            .await
+            .expect("expected request was not sent")
+            .unwrap();
     }
 
     #[test]
@@ -1194,5 +1399,165 @@ mod tests {
             crate::runtime::write_private_file(&config, config_value.yaml.as_bytes()).unwrap();
             assert!(crate::runtime::validate_file(&binary, directory.path(), &config).is_ok());
         }
+    }
+    async fn response_sequence(responses: Vec<Vec<u8>>) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let url = format!(
+            "http://{}/sub?token=fixture-only",
+            listener.local_addr().unwrap()
+        );
+        let server = tokio::spawn(async move {
+            for response in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 4096];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                socket.write_all(&response).await.unwrap();
+            }
+        });
+        (url, server)
+    }
+    fn good_response() -> Vec<u8> {
+        b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nETag: second\r\nConnection: close\r\n\r\nproxies: []\n".to_vec()
+    }
+    #[tokio::test]
+    async fn retries_complete_body_after_200_disconnect_without_appending_partial_bytes() {
+        let (url, server) = response_sequence(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nETag: first\r\nConnection: close\r\n\r\nproxies: [partial".to_vec(),
+            good_response(),
+        ]).await;
+        let result = SubscriptionFetcher::new()
+            .unwrap()
+            .fetch(&url, "clash.meta", None, None)
+            .await
+            .unwrap();
+        assert_eq!(result.content.as_deref(), Some("proxies: []\n"));
+        assert_eq!(result.metadata.etag.as_deref(), Some("second"));
+        tokio::time::timeout(std::time::Duration::from_secs(3), server)
+            .await
+            .expect("expected request was not sent")
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn a_second_interrupted_body_exhausts_shared_retry_budget() {
+        let broken =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nproxies:".to_vec();
+        let (url, server) = response_sequence(vec![broken.clone(), broken]).await;
+        let result = SubscriptionFetcher::new()
+            .unwrap()
+            .fetch(&url, "clash.meta", None, None)
+            .await;
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(!error.to_string().contains("fixture-only"));
+        tokio::time::timeout(std::time::Duration::from_secs(3), server)
+            .await
+            .expect("expected request was not sent")
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn retries_transient_http_once_but_honors_long_retry_after() {
+        for status in [429, 502, 503, 504] {
+            let response=format!("HTTP/1.1 {status} Temporary\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes();
+            let (url, server) = response_sequence(vec![response, good_response()]).await;
+            assert!(SubscriptionFetcher::new()
+                .unwrap()
+                .fetch(&url, "clash.meta", None, None)
+                .await
+                .is_ok());
+            tokio::time::timeout(std::time::Duration::from_secs(3), server)
+                .await
+                .expect("expected request was not sent")
+                .unwrap();
+        }
+        let (url,server)=response_sequence(vec![
+            b"HTTP/1.1 429 Limited\r\nRetry-After: 3600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+        ]).await;
+        let started = std::time::Instant::now();
+        let error = SubscriptionFetcher::new()
+            .unwrap()
+            .fetch(&url, "clash.meta", None, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("HTTP 429"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        tokio::time::timeout(std::time::Duration::from_secs(3), server)
+            .await
+            .expect("expected request was not sent")
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn content_rejection_is_not_retried_and_never_exposes_response() {
+        for (body, kind) in [
+            ("<html>secret response</html>", "网页"),
+            ("vmess://secret", "格式"),
+            ("", "为空"),
+            ("a: [secret", "格式"),
+        ] {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes();
+            let (url, server) = response_sequence(vec![response]).await;
+            let error = SubscriptionFetcher::new()
+                .unwrap()
+                .fetch(&url, "clash.meta", None, None)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(kind));
+            assert!(!error.to_string().contains("secret"));
+            tokio::time::timeout(std::time::Duration::from_secs(3), server)
+                .await
+                .expect("expected request was not sent")
+                .unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn cancelling_body_read_closes_request_promptly() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let url = format!("http://{}/sub", listener.local_addr().unwrap());
+        let (ready, received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut b = [0; 2048];
+            assert!(s.read(&mut b).await.unwrap() > 0);
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nproxies:")
+                .await
+                .unwrap();
+            ready.send(()).unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let task = crate::subscription_task::TaskManager::default()
+            .start(None, "import", None, None)
+            .unwrap();
+        let mut fetcher = SubscriptionFetcher::new().unwrap();
+        fetcher.task = Some(task.clone());
+        let future =
+            tokio::spawn(async move { fetcher.fetch(&url, "clash.meta", None, None).await });
+        received.await.unwrap();
+        assert!(task.cancel());
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), future)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.unwrap_err().to_string().contains("已取消"));
+        server.abort();
+    }
+    #[test]
+    fn retry_after_http_date_and_content_mapping_are_bounded() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let future = (chrono::Utc::now() + chrono::Duration::seconds(90)).to_rfc2822();
+        headers.insert(reqwest::header::RETRY_AFTER, future.parse().unwrap());
+        assert!(retry_delay(&headers).as_secs() >= 88);
+        headers.insert(reqwest::header::RETRY_AFTER, "invalid".parse().unwrap());
+        assert_eq!(retry_delay(&headers).as_millis(), 500);
+        assert!(validate_content("\u{feff}proxies: []").is_ok());
+        assert!(validate_content("- not-a-mapping").is_err());
     }
 }

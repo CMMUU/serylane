@@ -4,6 +4,10 @@ export const subscriptionImportMarkup = `
   <div class="subscription-import-card" id="managed-subscription-panel" hidden>
     <div class="subscription-import-heading"><h3 id="managed-subscription-title">添加订阅</h3><p>粘贴地址，验证后保存。选用与启动是独立操作。</p></div>
     <form id="managed-subscription-form" aria-labelledby="managed-subscription-title">
+      <div class="subscription-import-progress">
+        <p class="import-status" id="managed-subscription-import-status" role="status" aria-live="polite"></p>
+        <button class="button button-quiet" id="managed-subscription-abort" type="button" hidden disabled>取消添加</button>
+      </div>
       <fieldset id="managed-subscription-fields">
         <div class="subscription-import-fields">
           <label><span>订阅地址</span><input id="managed-subscription-url" required type="url" placeholder="https://example.com/subscribe?token=…" autocomplete="off" spellcheck="false" /></label>
@@ -11,10 +15,9 @@ export const subscriptionImportMarkup = `
         </div>
         <label class="subscription-import-option"><input id="managed-subscription-activate" type="checkbox" /><span><strong>添加后选用</strong><small id="managed-subscription-activate-hint">未勾选时仅保存，不替换当前配置。</small></span></label>
         <label class="subscription-import-option"><input id="managed-subscription-openai" type="checkbox" /><span><strong>OpenAI 灾备</strong><small>仅 AI 代理模式可用；生成结果单独提示，不自动切换模式。</small></span></label>
-        <details class="subscription-import-advanced"><summary>高级选项</summary><label><span>User-Agent</span><input id="managed-subscription-ua" value="clash.meta" autocomplete="off" spellcheck="false" /></label><p>通常保持默认即可。Serylane 核心运行时，下载复用其代理端口；未运行时不会为下载自动启动。订阅凭据仅在本机存储。</p></details>
+        <details class="subscription-import-advanced"><summary>高级选项</summary><label><span>User-Agent</span><input id="managed-subscription-ua" value="clash.meta" autocomplete="off" spellcheck="false" /></label><p>通常保持默认即可。下载路径可在上方「订阅下载路径」中选择，不会为下载自动启动核心或切换系统代理。订阅凭据仅在本机存储。</p></details>
         <div class="subscription-import-actions"><button class="button button-primary" id="managed-subscription-import-button" type="submit">验证并添加</button><button class="button button-quiet" id="managed-subscription-cancel" type="button">收起</button></div>
       </fieldset>
-      <p class="import-status" id="managed-subscription-import-status" role="status" aria-live="polite"></p>
     </form>
   </div>`;
 
@@ -28,3 +31,20 @@ export function describeSubscriptionImport(result: SubscriptionImportResult): { 
   }
   return { text: result.openAiGeneration === "started" ? `${text} OpenAI 灾备任务已提交，结果请查看订阅详情。` : text, warning: Boolean(result.observationError) };
 }
+
+
+export const subscriptionNetworkMarkup = `
+  <details class="subscription-network-options">
+    <summary>订阅下载路径 <span>仅影响本页手动添加与更新</span></summary>
+    <div class="subscription-network-fields">
+      <label><span>下载方式</span><select id="subscription-download-path">
+        <option value="follow_core">跟随 Serylane（核心未运行时直连）</option>
+        <option value="direct">直连订阅服务</option>
+        <option value="local_proxy">使用指定本地 HTTP 代理</option>
+      </select></label>
+      <label id="subscription-proxy-port-label" hidden><span>127.0.0.1 的 HTTP 代理端口</span><input id="subscription-proxy-port" type="number" min="1" max="65535" step="1" placeholder="例如 7890" /></label>
+    </div>
+    <p>只使用你已启动的代理；不自动启动核心、不更改系统代理。代理失败不自动改走直连；首次添加没有可用核心时，可明确选择已存在的本地代理。此选项不改变后台用量检查策略。</p>
+  </details>
+  <div id="subscription-task-list" class="subscription-task-list" aria-live="polite" hidden></div>
+`;

@@ -34,6 +34,7 @@ mod startup_macos;
 mod storage;
 mod subscription;
 mod subscription_quota;
+mod subscription_task;
 mod traffic_monitor;
 pub mod tun_service;
 mod user_rules;
@@ -302,6 +303,21 @@ async fn create_inline_profile(
 }
 
 #[tauri::command]
+fn subscription_task_status(app: AppHandle, task_id: Uuid) -> Option<subscription_task::Snapshot> {
+    app.state::<subscription_task::TaskManager>()
+        .get(task_id)
+        .map(|task| task.snapshot())
+}
+
+#[tauri::command]
+fn cancel_subscription_task(app: AppHandle, task_id: Uuid) -> bool {
+    app.state::<subscription_task::TaskManager>()
+        .get(task_id)
+        .is_some_and(|task| task.cancel())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // Existing IPC arguments retained for compatibility.
 async fn create_subscription_profile(
     app: AppHandle,
     guard: State<'_, SubscriptionImportGuard>,
@@ -310,17 +326,26 @@ async fn create_subscription_profile(
     user_agent: String,
     generate_openai: Option<bool>,
     activate_after_import: Option<bool>,
+    task_id: Option<Uuid>,
+    download: Option<subscription_task::DownloadOptions>,
 ) -> Result<SubscriptionImportResult, AppErrorDto> {
     let _permit = guard.acquire().map_err(dto)?;
+    let task = app
+        .state::<subscription_task::TaskManager>()
+        .start(task_id, "import", None, Some(app.clone()))
+        .map_err(dto)?;
     let mut result = profile_service::create_subscription_profile(
         &app,
         display_name,
         url,
         user_agent,
         activate_after_import.unwrap_or(false),
+        &download.unwrap_or_default(),
+        task.clone(),
     )
     .await
-    .map_err(dto)?;
+    .map_err(|e| task.error_dto(&e))?;
+    task.finish(None);
     let profile_id = result.operation.profile.id;
     result.start_openai_generation(generate_openai.unwrap_or(false), || {
         openai_policy::start_generation(&app, profile_id, true)
@@ -332,10 +357,22 @@ async fn create_subscription_profile(
 async fn refresh_profile(
     app: AppHandle,
     profile_id: Uuid,
+    task_id: Option<Uuid>,
+    download: Option<subscription_task::DownloadOptions>,
 ) -> Result<ProfileOperationResult, AppErrorDto> {
-    let result = profile_service::refresh_profile(&app, profile_id)
-        .await
+    let task = app
+        .state::<subscription_task::TaskManager>()
+        .start(task_id, "refresh", Some(profile_id), Some(app.clone()))
         .map_err(dto)?;
+    let result = profile_service::refresh_profile(
+        &app,
+        profile_id,
+        &download.unwrap_or_default(),
+        task.clone(),
+    )
+    .await
+    .map_err(|e| task.error_dto(&e))?;
+    task.finish(None);
     if result.updated && result.profile.openai_policy.auto_maintain {
         let _ = openai_policy::start_generation(&app, profile_id, true);
     }
@@ -1258,6 +1295,7 @@ pub fn run() {
         .manage(local_routing::LocalRoutingManager::default())
         .manage(openai_stability::StabilityManager::default())
         .manage(SubscriptionImportGuard::default())
+        .manage(subscription_task::TaskManager::default())
         .manage(OpenAiPolicyTaskManager::default())
         .manage(GlobalTrafficMonitor::default())
         .manage(user_rules::ConfigurationMutationGuard::default())
@@ -1416,6 +1454,8 @@ pub fn run() {
             get_active_profile,
             create_inline_profile,
             create_subscription_profile,
+            subscription_task_status,
+            cancel_subscription_task,
             refresh_profile,
             activate_profile,
             rollback_profile,

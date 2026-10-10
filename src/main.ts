@@ -1,3 +1,4 @@
+import { observeSubscriptionTask, taskDescription, downloadOptions, type SubscriptionTask, type DownloadOptions } from "./subscription-task";
 import "./styles.css";
 import "./connection-feedback.css";
 import { connectionFeedbackMarkup, mountConnectionFeedback, friendlyError } from "./connection-feedback";
@@ -10,7 +11,7 @@ import { manualOutboundMarkup, mountManualOutbound, nodeGridMarkup, type ManualO
 import { generalGroups, currentNodeMarkup, nodeSelectionMarkup, type ProxyMap } from "./node-selection";
 import { mountOpenAiCosts, openAiCostsMarkup } from "./openai-costs";
 import { subscriptionCardMarkup, newestSubscriptionStatus, synchronizedProfiles } from "./subscription-cards";
-import { subscriptionImportMarkup, describeSubscriptionImport } from "./subscription-import";
+import { subscriptionImportMarkup, subscriptionNetworkMarkup, describeSubscriptionImport } from "./subscription-import";
 import { NAV_ITEMS, navigationMarkup, type ViewName } from "./ui";
 import { preferencesMarkup } from "./settings-view";
 import { mountLogs } from "./log-view";
@@ -131,6 +132,9 @@ const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("#app not found");
 const appIconUrl = new URL("../assets/brand/app-icon-128.png", import.meta.url).href;
 let subscriptionImporting = false;
+let subscriptionImportTaskId: string | null = null;
+const subscriptionTasks = new Map<string, SubscriptionTask>();
+const subscriptionCancellationPending = new Set<string>();
 let subscriptionFormInitialized = false;
 let subscriptionDraftDirty = false;
 let subscriptionActivationTouched = false;
@@ -312,6 +316,7 @@ app.innerHTML = `
             </div>
           </div>
           <div class="subscription-workspace">
+            ${subscriptionNetworkMarkup}
             ${subscriptionImportMarkup}
             <p id="subscriptions-feedback" class="subscription-feedback" role="status" aria-live="polite" hidden></p>
             <div class="subscription-summary-grid">
@@ -1610,6 +1615,89 @@ async function switchRoutingMode(mode: "global" | "rule" | "direct") {
   await refreshBase();
 }
 
+function currentSubscriptionDownload(): DownloadOptions {
+  return downloadOptions(
+    ($("#subscription-download-path") as HTMLSelectElement).value,
+    ($("#subscription-proxy-port") as HTMLInputElement).value.trim(),
+  );
+}
+
+function renderSubscriptionTasks() {
+  const list = $("#subscription-task-list")!;
+  const active = [...subscriptionTasks.values()].filter(t => t.operation !== "import");
+  list.hidden = active.length === 0;
+  const ids = new Set(active.map(t => t.id));
+  for (const child of Array.from(list.children)) {
+    if (!ids.has((child as HTMLElement).dataset.taskId ?? "")) child.remove();
+  }
+  for (const task of active) {
+    let row = Array.from(list.children).find(child => (child as HTMLElement).dataset.taskId === task.id) as HTMLElement | undefined;
+    if (!row) {
+      row = document.createElement("div"); row.dataset.taskId = task.id;
+      const text = document.createElement("span");
+      const cancel = document.createElement("button");
+      cancel.className = "button button-quiet"; cancel.type = "button";
+      cancel.addEventListener("click", () => void cancelSubscriptionTask(task.id, cancel));
+      row.append(text, cancel); list.append(row);
+    }
+    const text = row.querySelector("span")!;
+    const name = store.subscriptions.find(s => s.profile.id === task.profileId)?.profile.displayName ?? "订阅";
+    text.textContent = name + "：" + taskDescription(task);
+    const cancel = row.querySelector("button")!;
+    cancel.textContent = subscriptionCancellationPending.has(task.id) ? "正在结束…" : "取消更新";
+    cancel.disabled = !task.canCancel || subscriptionCancellationPending.has(task.id);
+  }
+}
+
+async function cancelSubscriptionTask(id: string, button: HTMLButtonElement) {
+  subscriptionCancellationPending.add(id);
+  button.disabled = true;
+  try {
+    const accepted = await api.cancelSubscriptionTask(id);
+    button.textContent = accepted ? "正在取消…" : "正在完成保存…";
+  } catch {
+    subscriptionCancellationPending.delete(id);
+    button.disabled = false;
+    toast("取消请求未送达，请重试；任务仍在后台处理", "info");
+  }
+}
+
+async function runSubscriptionTask<T>(
+  operation: "import" | "refresh",
+  invoke: (id: string, download: DownloadOptions) => Promise<T>,
+): Promise<T> {
+  const download = currentSubscriptionDownload();
+  const id = crypto.randomUUID();
+  if (operation === "import") subscriptionImportTaskId = id;
+  const stop = observeSubscriptionTask(id, api.subscriptionTask, task => {
+    subscriptionTasks.set(id, task);
+    if (operation === "import" && subscriptionImportTaskId === id) {
+      $("#managed-subscription-import-status")!.textContent = taskDescription(task);
+      const abort = $("#managed-subscription-abort") as HTMLButtonElement;
+      abort.hidden = false;
+      abort.disabled = !task.canCancel || subscriptionCancellationPending.has(id);
+      if (!abort.textContent?.includes("正在取消")) abort.textContent = task.canCancel ? "取消添加" : "正在完成…";
+    }
+    renderSubscriptionTasks();
+  });
+  try { return await invoke(id, download); }
+  finally {
+    stop();
+    subscriptionTasks.delete(id);
+    subscriptionCancellationPending.delete(id);
+    if (subscriptionImportTaskId === id) {
+      subscriptionImportTaskId = null;
+      const abort = $("#managed-subscription-abort") as HTMLButtonElement;
+      abort.hidden = true; abort.disabled = true; abort.textContent = "取消添加";
+    }
+    renderSubscriptionTasks();
+  }
+}
+
+function refreshSubscriptionTracked(profileId: string) {
+  return runSubscriptionTask("refresh", (id, download) => api.refreshProfile(profileId, id, download));
+}
+
 async function createSubscription(
   name: string,
   url: string,
@@ -1637,18 +1725,14 @@ async function createSubscription(
   fields.disabled = true;
   add.disabled = true;
   form.setAttribute("aria-busy", "true");
-  button.textContent = "正在校验…";
+  button.textContent = "正在处理…";
   feedback.hidden = true;
   status.className = "import-status is-loading";
-  status.textContent = "正在获取订阅并执行 Mihomo 原生校验。首次导入可能需要 1～2 分钟，请保持窗口打开。";
+  status.textContent = "正在准备订阅下载；连接、校验和保存进度会在这里显示。";
   try {
-    const result = await api.createSubscriptionProfile(
-      name,
-      url,
-      userAgent,
-      generateOpenAi,
-      activateAfterImport,
-    );
+    const result = await runSubscriptionTask("import", (id, download) => api.createSubscriptionProfile(
+      name, url, userAgent, generateOpenAi, activateAfterImport, id, download,
+    ));
     // The write has succeeded. A later list/status read must never report it as
     // an import failure or encourage another submission of the same URL.
     const description = describeSubscriptionImport(result);
@@ -1725,7 +1809,7 @@ async function handleProfileAction(target: HTMLElement) {
   if (actionName === "activate") {
     await action("配置已激活", () => api.activateProfile(profileId));
   } else if (actionName === "refresh") {
-    await action("订阅已更新", () => api.refreshProfile(profileId));
+    await action("订阅已更新", () => refreshSubscriptionTracked(profileId));
   } else if (actionName === "rollback") {
     await action("已回滚到上一稳定版本", () => api.rollbackProfile(profileId));
   } else if (actionName === "delete") {
@@ -1780,7 +1864,7 @@ async function refreshAllSubscriptions() {
   try {
     for (const id of subscriptionIds) {
       try {
-        const result = await api.refreshProfile(id);
+        const result = await refreshSubscriptionTracked(id);
         if (result.updated) updated += 1;
       } catch {
         failed += 1;
@@ -1820,7 +1904,7 @@ async function handleSubscriptionAction(target: HTMLElement) {
     subscriptionRefreshing.add(profileId);
     renderSubscriptions();
     try {
-      await action("订阅检查完成，用量以服务商返回信息为准", () => api.refreshProfile(profileId));
+      await action("订阅检查完成，用量以服务商返回信息为准", () => refreshSubscriptionTracked(profileId));
     } finally {
       subscriptionRefreshing.delete(profileId);
     }
@@ -2467,6 +2551,12 @@ $("#run-diagnostics")!.addEventListener("click", () => void runDiagnostics());
 $("#overview-go-subscriptions")!.addEventListener("click", () => navigate("subscriptions"));
 $("#subscriptions-add")!.addEventListener("click", () => openSubscriptionForm());
 $("#managed-subscription-cancel")!.addEventListener("click", () => closeSubscriptionForm());
+$("#subscription-download-path")!.addEventListener("change", () => {
+  $("#subscription-proxy-port-label")!.hidden = ($("#subscription-download-path") as HTMLSelectElement).value !== "local_proxy";
+});
+$("#managed-subscription-abort")!.addEventListener("click", event => {
+  if (subscriptionImportTaskId) void cancelSubscriptionTask(subscriptionImportTaskId, event.currentTarget as HTMLButtonElement);
+});
 $("#managed-subscription-form")!.addEventListener("input", () => { subscriptionDraftDirty = true; });
 $("#managed-subscription-activate")!.addEventListener("change", () => {
   subscriptionActivationTouched = true;

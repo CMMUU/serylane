@@ -1,3 +1,4 @@
+import type { SubscriptionTask } from "../../src/subscription-task";
 /**
  * Vite-only visual fixture. Uses the real frontend with Tauri's installed IPC
  * mocks, not a running desktop app. All profile/runtime data below is synthetic.
@@ -648,7 +649,21 @@ function makeProfile(id: string, displayName: string, enabled: boolean): Profile
 let profiles: ProfileRecord[] = [];
 let activeProfileId: string | null = null;
 const subscriptionCalls = { reads: 0, refresh: 0, activate: 0, delete: 0, create: 0 };
-const subscriptionImportScenarios = new Set(["import", "import-empty", "import-403", "import-duplicate", "import-openai-failed"]);
+const subscriptionImportScenarios = new Set(["import", "import-empty", "import-403", "import-duplicate", "import-openai-failed", "import-slow"]);
+const syntheticSubscriptionTasks = new Map<string, SubscriptionTask>();
+function beginSyntheticTask(args: Record<string, unknown>, operation: string): SubscriptionTask | null {
+  if (typeof args.taskId !== "string") return null;
+  const path = (args.download as {path?: string} | undefined)?.path;
+  const task: SubscriptionTask = { id: args.taskId, operation, profileId: typeof args.profileId === "string" ? args.profileId : null,
+    phase: "connecting", path: path === "local_proxy" ? "local_proxy" : "direct", sequence: 1, elapsedMs: 0,
+    attempt: 1, httpStatus: null, retryAfterSeconds: null, bytes: 0, canCancel: true, message: "正在连接订阅服务（隔离合成）", errorCode: null };
+  syntheticSubscriptionTasks.set(task.id,task); return task;
+}
+async function syntheticTaskStep(task: SubscriptionTask | null, phase: SubscriptionTask["phase"], message: string, delay: number) {
+  if (task) { task.phase=phase; task.message=message; task.sequence++; }
+  await new Promise(resolve=>window.setTimeout(resolve,delay));
+  if (task?.errorCode === "CANCELLED") throw ruleError("SUBSCRIPTION_ERROR","已取消订阅任务，原有配置未改变。");
+}
 const subscriptionScenarios = new Set(["default", "cards", "empty", ...subscriptionImportScenarios]);
 let subscriptionImportScenario: string | null = null;
 let subscriptionScenarioRevision = 0;
@@ -925,6 +940,14 @@ mockIPC(async (command, payload) => {
     else node.fixed = "";
     return;
   }
+  if (command === "subscription_task_status") return structuredClone(syntheticSubscriptionTasks.get(String(args.taskId)) ?? null);
+  if (command === "cancel_subscription_task") {
+    const task=syntheticSubscriptionTasks.get(String(args.taskId));
+    if (!task?.canCancel) return false;
+    task.canCancel=false; task.errorCode="CANCELLED"; task.phase="cancelled"; task.sequence++;
+    task.message="已取消订阅任务，原有配置未改变";
+    return true;
+  }
   if (command === "create_subscription_profile" && subscriptionImportScenario !== null) {
     if (subscriptionImportBusy) throw ruleError("STATE_CONFLICT", "合成订阅正在导入，请等待当前操作完成。");
     if (typeof args.displayName !== "string" || !args.displayName.trim() || args.displayName.trim().length > 128
@@ -939,12 +962,18 @@ mockIPC(async (command, payload) => {
     } catch { throw ruleError("INVALID_INPUT", "隔离导入仅接受 http(s)://*.invalid 合成地址，不接受真实订阅或账号密码。"); }
     const requestedRevision = subscriptionScenarioRevision;
     const scenario = subscriptionImportScenario;
+    const pipelineTask = beginSyntheticTask(args, "import");
     subscriptionImportBusy = true;
     subscriptionCalls.create++;
     subscriptionImportCalls.push({ host: url.hostname, activateAfterImport: args.activateAfterImport, generateOpenAi: args.generateOpenAi });
     reportSubscriptions();
     try {
-      await new Promise(resolve => window.setTimeout(resolve, 120));
+      await syntheticTaskStep(pipelineTask,"connecting","正在连接订阅服务",scenario === "import-slow" ? 800 : 120);
+      if (scenario === "import-slow") {
+        await syntheticTaskStep(pipelineTask,"downloading","正在下载订阅",1000);
+        await syntheticTaskStep(pipelineTask,"validating","订阅已下载，正在检查配置",1000);
+      }
+      if (pipelineTask) { pipelineTask.phase="committing"; pipelineTask.canCancel=false; pipelineTask.sequence++; }
       if (requestedRevision !== subscriptionScenarioRevision) throw ruleError("STATE_CONFLICT", "合成场景已切换，旧导入没有写入新场景。");
       if (scenario === "import-403") throw { code: "SUBSCRIPTION_ERROR", stage: "fixture_subscription", message: fixtureSubscriptionError, retryable: false, userMessage: {title: "订阅服务拒绝了请求", description: "HTTP 403；请核对服务商指定的客户端标识或重新复制订阅链接。", action: "subscriptions", details: "HTTP 403"} };
       const existingId = subscriptionImportUrls.get(url.href);
@@ -970,8 +999,10 @@ mockIPC(async (command, payload) => {
       }
       const details = profileDetails(profile.id);
       subscriptionImportResult = { profile: structuredClone(profile), revision: structuredClone(details.revisions[0]), summary: structuredClone(summary), updated: created, created, activated, openAiGeneration, openAiError, observationError: null };
+      if (pipelineTask) { pipelineTask.phase="completed"; pipelineTask.message="订阅任务已完成"; pipelineTask.sequence++; }
       return structuredClone(subscriptionImportResult);
     } finally {
+      if (pipelineTask) { pipelineTask.canCancel=false; if (pipelineTask.phase !== "completed" && pipelineTask.phase !== "cancelled") pipelineTask.phase="failed"; }
       subscriptionImportBusy = false;
       reportSubscriptions();
     }

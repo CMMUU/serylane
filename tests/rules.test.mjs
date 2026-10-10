@@ -121,7 +121,10 @@ test("configuration activation/import/refresh never stops the core before backen
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const configActions = main.slice(main.indexOf("async function createSubscription("), main.indexOf("function openAiTaskPhaseLabel("));
   assert.ok(configActions.includes("api.createSubscriptionProfile("));
-  assert.ok(configActions.includes("api.refreshProfile("));
+  assert.ok(configActions.includes("refreshSubscriptionTracked("));
+  const refreshWrapper = main.slice(main.indexOf("function refreshSubscriptionTracked("), main.indexOf("async function createSubscription("));
+  assert.match(refreshWrapper, /api\.refreshProfile\(profileId, id, download\)/);
+  assert.doesNotMatch(refreshWrapper, /api\.stop\(|api\.startActive\(/);
   assert.ok(configActions.includes("api.activateProfile("));
   assert.doesNotMatch(configActions, /api\.(?:stop|startActive)\(/);
   assert.match(main.slice(main.indexOf("async function stopRuntime("), main.indexOf("function toggleGlobalNetworkMode(")), /api\.stop\(/);

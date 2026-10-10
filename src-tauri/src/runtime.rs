@@ -587,6 +587,15 @@ fn runtime_directory(app: &AppHandle) -> AppResult<PathBuf> {
 }
 
 pub(crate) fn validate_file(binary: &Path, data_dir: &Path, config_path: &Path) -> AppResult<()> {
+    validate_file_cancellable(binary, data_dir, config_path, None)
+}
+
+pub(crate) fn validate_file_cancellable(
+    binary: &Path,
+    data_dir: &Path,
+    config_path: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> AppResult<()> {
     let mut command = Command::new(binary);
     command
         .arg("-t")
@@ -594,7 +603,15 @@ pub(crate) fn validate_file(binary: &Path, data_dir: &Path, config_path: &Path) 
         .arg(data_dir)
         .arg("-f")
         .arg(config_path);
-    run_validation_command(&mut command, data_dir, VALIDATION_TIMEOUT)
+    match cancel {
+        Some(cancel) => run_validation_command_cancellable(
+            &mut command,
+            data_dir,
+            VALIDATION_TIMEOUT,
+            Some(cancel),
+        ),
+        None => run_validation_command(&mut command, data_dir, VALIDATION_TIMEOUT),
+    }
 }
 
 struct ValidationLogCleanup(PathBuf);
@@ -609,6 +626,15 @@ pub(crate) fn run_validation_command(
     command: &mut Command,
     data_dir: &Path,
     timeout: Duration,
+) -> AppResult<()> {
+    run_validation_command_cancellable(command, data_dir, timeout, None)
+}
+
+fn run_validation_command_cancellable(
+    command: &mut Command,
+    data_dir: &Path,
+    timeout: Duration,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> AppResult<()> {
     let log_path = data_dir.join(format!("validation-output-{}.log", uuid::Uuid::new_v4()));
     let _cleanup = ValidationLogCleanup(log_path.clone());
@@ -629,7 +655,7 @@ pub(crate) fn run_validation_command(
     // cleanup guard removes its private file, including on Windows.
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = spawned.map_err(|error| AppError::Runtime(error.to_string()))?;
-    let status = wait_for_validation(&mut child, &log, timeout)?;
+    let status = wait_for_validation(&mut child, &log, timeout, cancel)?;
     if status.success() {
         return Ok(());
     }
@@ -640,6 +666,15 @@ pub(crate) fn run_validation_command(
     let mut bytes = Vec::new();
     log.take(VALIDATION_DIAGNOSTIC_BYTES)
         .read_to_end(&mut bytes)?;
+    let lower = validation_diagnostic(&bytes).to_ascii_lowercase();
+    if cancel.is_some()
+        && (lower.contains("geoip") || lower.contains("geosite") || lower.contains("mmdb"))
+        && (lower.contains("download")
+            || lower.contains("no such file")
+            || lower.contains("not found"))
+    {
+        return Err(AppError::Subscription("校验所需地理规则资源未就绪".into()));
+    }
     Err(AppError::Config(validation_diagnostic(&bytes)))
 }
 
@@ -647,9 +682,15 @@ fn wait_for_validation(
     child: &mut Child,
     log: &fs::File,
     timeout: Duration,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> AppResult<ExitStatus> {
     let started = Instant::now();
     loop {
+        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(crate::subscription_task::cancel_error());
+        }
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {}
@@ -930,8 +971,8 @@ fn lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> AppResult<std::sync::MutexGu
 #[cfg(test)]
 mod tests {
     use super::{
-        preflight_ports, redact, run_validation_command, spawn_core_command, validation_diagnostic,
-        MihomoRuntime,
+        preflight_ports, redact, run_validation_command, run_validation_command_cancellable,
+        spawn_core_command, validation_diagnostic, MihomoRuntime,
     };
     use crate::error::{AppError, AppResult};
     use crate::models::RuntimePhase;
@@ -1071,5 +1112,35 @@ mod tests {
         assert!(!result.contains("fixture-secret"));
         assert!(validation_diagnostic("x".repeat(4096).as_bytes()).len() <= 2048);
         assert!(validation_diagnostic("错".repeat(4096).as_bytes()).len() <= 2048);
+    }
+    #[test]
+    fn cancellation_kills_and_reaps_native_validation_before_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(80));
+                cancel.store(true, std::sync::atomic::Ordering::Release);
+            });
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "runtime::tests::validation_timeout_child_fixture",
+                    "--nocapture",
+                ])
+                .env("MIHOMO_VALIDATION_TIMEOUT_FIXTURE", "1");
+            let now = Instant::now();
+            let error = run_validation_command_cancellable(
+                &mut command,
+                root.path(),
+                Duration::from_secs(10),
+                Some(&cancel),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("已取消"));
+            assert!(now.elapsed() < Duration::from_secs(2));
+        });
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 }
