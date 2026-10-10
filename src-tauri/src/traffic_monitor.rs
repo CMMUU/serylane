@@ -9,6 +9,8 @@ use sysinfo::Networks;
 use tauri::{AppHandle, Emitter};
 
 #[cfg(target_os = "macos")]
+mod macos_layout;
+#[cfg(target_os = "macos")]
 mod macos_title;
 
 #[cfg(target_os = "macos")]
@@ -262,8 +264,11 @@ fn update_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
         return;
     }
 
+    #[cfg(not(target_os = "macos"))]
     let upload = format_tray_rate(snapshot.upload_bytes_per_second);
+    #[cfg(not(target_os = "macos"))]
     let download = format_tray_rate(snapshot.download_bytes_per_second);
+    #[cfg(not(target_os = "macos"))]
     let tooltip = format!("Serylane\n↑ {upload}\n↓ {download}");
 
     #[cfg(target_os = "macos")]
@@ -286,9 +291,18 @@ fn update_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
         }
         let _ = tray.set_title(Some(""));
         let _ = macos_title::clear(&tray);
-        let (icon, is_template) = render_macos_tray_icon(&upload, &download);
+        let (icon, is_template) = render_macos_tray_icon(
+            snapshot.upload_bytes_per_second,
+            snapshot.download_bytes_per_second,
+        );
         if let Err(error) = tray.set_icon_with_as_template(Some(icon), is_template) {
             eprintln!("global traffic tray icon update failed: {error}");
+        } else if let Err(error) = macos_title::update_bitmap(
+            &tray,
+            snapshot.upload_bytes_per_second,
+            snapshot.download_bytes_per_second,
+        ) {
+            eprintln!("global traffic bitmap tray layout failed: {error}");
         }
     }
 
@@ -296,21 +310,16 @@ fn update_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
     {
         let _ = tray.set_title(Some(format!("↑ {upload}\n↓ {download}")));
     }
+    #[cfg(not(target_os = "macos"))]
     let _ = tray.set_tooltip(Some(tooltip));
 }
 
 #[cfg(target_os = "macos")]
 fn native_macos_brand_icon() -> tauri::image::Image<'static> {
-    static ICON: OnceLock<tauri::image::Image<'static>> = OnceLock::new();
-    ICON.get_or_init(|| {
-        // 18pt image at 2x, with the original S occupying 16pt.
-        let mut rgba = vec![0_u8; 36 * 36 * 4];
-        draw_brand_mark(&mut rgba, 36, 36, 2, 2, 32);
-        tauri::image::Image::new_owned(rgba, 36, 36)
-    })
-    .clone()
+    macos_layout::brand_icon().clone()
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn format_tray_rate(bytes_per_second: u64) -> String {
     const KIB: f64 = 1024.0;
     const MIB: f64 = KIB * 1024.0;
@@ -333,7 +342,7 @@ fn format_tray_rate(bytes_per_second: u64) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn render_macos_tray_icon(upload: &str, download: &str) -> (tauri::image::Image<'static>, bool) {
+fn render_macos_tray_icon(upload: u64, download: u64) -> (tauri::image::Image<'static>, bool) {
     if let Some(font) = macos_status_font() {
         return (
             render_monochrome_macos_tray_icon(font, upload, download),
@@ -368,29 +377,50 @@ fn macos_status_font() -> Option<&'static fontdue::Font> {
 #[cfg(target_os = "macos")]
 fn render_monochrome_macos_tray_icon(
     font: &fontdue::Font,
-    upload: &str,
-    download: &str,
+    upload: u64,
+    download: u64,
 ) -> tauri::image::Image<'static> {
-    const HEIGHT: u32 = 64;
-    const FONT_SIZE: f32 = 27.0;
-    const TEXT_X: u32 = 94;
-    let text_width = smooth_text_width(font, upload, FONT_SIZE)
-        .max(smooth_text_width(font, download, FONT_SIZE));
-    let width = (TEXT_X as f32 + text_width + 8.0)
-        .ceil()
-        .clamp(184.0, 244.0) as u32;
-    let mut rgba = vec![0_u8; (width * HEIGHT * 4) as usize];
-    let monochrome = [255, 255, 255, 255];
-    draw_brand_mark(&mut rgba, width, HEIGHT, 0, 4, 56);
-    draw_smooth_arrow(&mut rgba, width, HEIGHT, 74.0, 8.0, true, monochrome);
-    draw_smooth_arrow(&mut rgba, width, HEIGHT, 74.0, 36.0, false, monochrome);
-    draw_smooth_text(
-        &mut rgba, width, HEIGHT, font, upload, TEXT_X, 27, FONT_SIZE, monochrome,
-    );
-    draw_smooth_text(
-        &mut rgba, width, HEIGHT, font, download, TEXT_X, 57, FONT_SIZE, monochrome,
-    );
-    tauri::image::Image::new_owned(rgba, width, HEIGHT)
+    let (mut rgba, width, height) = macos_layout::bitmap_canvas();
+    let text_x = (macos_layout::title_x() * 2.0) as u32;
+    let color = [255, 255, 255, 255];
+    let size = (macos_layout::FONT_SIZE * 2.0) as f32;
+    for (bytes, row, up) in [(upload, 0, true), (download, 21, false)] {
+        let rate = macos_title::format_rate(bytes);
+        draw_smooth_arrow(
+            &mut rgba,
+            width,
+            height,
+            text_x as f32 + 4.0,
+            row as f32 + 3.0,
+            up,
+            color,
+        );
+        let right = text_x as f32 + (macos_layout::NUMBER_RIGHT * 2.0) as f32;
+        let x = (right - smooth_text_width(font, &rate.number, size)).round() as u32;
+        draw_smooth_text(
+            &mut rgba,
+            width,
+            height,
+            font,
+            &rate.number,
+            x,
+            row + 18,
+            size,
+            color,
+        );
+        draw_smooth_text(
+            &mut rgba,
+            width,
+            height,
+            font,
+            rate.unit,
+            text_x + (macos_layout::UNIT_LEFT * 2.0) as u32,
+            row + 18,
+            (macos_layout::SMALL_FONT_SIZE * 2.0) as f32,
+            color,
+        );
+    }
+    tauri::image::Image::new_owned(rgba, width, height)
 }
 
 #[cfg(target_os = "macos")]
@@ -465,56 +495,6 @@ fn draw_smooth_text(
 }
 
 #[cfg(target_os = "macos")]
-static TRAY_BRAND_ICON: OnceLock<tauri::image::Image<'static>> = OnceLock::new();
-
-#[cfg(target_os = "macos")]
-fn tray_brand_icon() -> &'static tauri::image::Image<'static> {
-    // Compile the same PNG used by the app/sidebar; no runtime file lookup or
-    // independent handwritten brand glyph can drift from the application icon.
-    TRAY_BRAND_ICON.get_or_init(|| tauri::include_image!("icons/128x128.png"))
-}
-
-#[cfg(target_os = "macos")]
-fn draw_brand_mark(rgba: &mut [u8], width: u32, height: u32, x: u32, y: u32, size: u32) {
-    if size == 0 {
-        return;
-    }
-    let icon = tray_brand_icon();
-    let source = icon.rgba();
-    for dy in 0..size.min(height.saturating_sub(y)) {
-        let sy0 = dy * icon.height() / size;
-        let sy1 = ((dy + 1) * icon.height() / size)
-            .max(sy0 + 1)
-            .min(icon.height());
-        for dx in 0..size.min(width.saturating_sub(x)) {
-            let sx0 = dx * icon.width() / size;
-            let sx1 = ((dx + 1) * icon.width() / size)
-                .max(sx0 + 1)
-                .min(icon.width());
-            let mut alpha = 0_u32;
-            for sy in sy0..sy1 {
-                for sx in sx0..sx1 {
-                    alpha += u32::from(source[((sy * icon.width() + sx) * 4 + 3) as usize]);
-                }
-            }
-            let coverage = (alpha / ((sy1 - sy0) * (sx1 - sx0))) as u8;
-            // macOS applies the correct menu-bar color to this template mask.
-            if coverage > 0 {
-                blend_pixel(
-                    rgba,
-                    width,
-                    height,
-                    (x + dx) as i32,
-                    (y + dy) as i32,
-                    [255, 255, 255, 255],
-                    coverage,
-                );
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
 fn draw_smooth_arrow(
     rgba: &mut [u8],
     width: u32,
@@ -524,72 +504,29 @@ fn draw_smooth_arrow(
     up: bool,
     color: [u8; 4],
 ) {
-    if up {
+    let tip = if up { y } else { y + 12.0 };
+    let shoulder = if up { tip + 4.0 } else { tip - 4.0 };
+    draw_line_segment(
+        rgba,
+        width,
+        height,
+        center_x,
+        y,
+        center_x,
+        y + 12.0,
+        1.5,
+        color,
+    );
+    for dx in [-4.0, 4.0] {
         draw_line_segment(
             rgba,
             width,
             height,
             center_x,
-            y + 2.0,
-            center_x,
-            y + 21.0,
-            4.0,
-            color,
-        );
-        draw_line_segment(
-            rgba,
-            width,
-            height,
-            center_x,
-            y + 2.0,
-            center_x - 8.0,
-            y + 10.0,
-            4.0,
-            color,
-        );
-        draw_line_segment(
-            rgba,
-            width,
-            height,
-            center_x,
-            y + 2.0,
-            center_x + 8.0,
-            y + 10.0,
-            4.0,
-            color,
-        );
-    } else {
-        draw_line_segment(
-            rgba,
-            width,
-            height,
-            center_x,
-            y + 1.0,
-            center_x,
-            y + 20.0,
-            4.0,
-            color,
-        );
-        draw_line_segment(
-            rgba,
-            width,
-            height,
-            center_x,
-            y + 20.0,
-            center_x - 8.0,
-            y + 12.0,
-            4.0,
-            color,
-        );
-        draw_line_segment(
-            rgba,
-            width,
-            height,
-            center_x,
-            y + 20.0,
-            center_x + 8.0,
-            y + 12.0,
-            4.0,
+            tip,
+            center_x + dx,
+            shoulder,
+            1.5,
             color,
         );
     }
@@ -655,19 +592,35 @@ fn blend_pixel(
 }
 
 #[cfg(target_os = "macos")]
-fn render_pixel_macos_tray_icon(upload: &str, download: &str) -> tauri::image::Image<'static> {
-    const HEIGHT: u32 = 32;
-    const ARROW_X: u32 = 24;
-    const TEXT_X: u32 = 36;
-    let text_width = pixel_text_width(upload, 2).max(pixel_text_width(download, 2));
-    let width = (TEXT_X + text_width + 3).clamp(90, 119);
-    let mut rgba = vec![0_u8; (width * HEIGHT * 4) as usize];
-    draw_brand_mark(&mut rgba, width, HEIGHT, 0, 4, 24);
-    draw_arrow(&mut rgba, width, HEIGHT, ARROW_X, 1, true);
-    draw_arrow(&mut rgba, width, HEIGHT, ARROW_X, 17, false);
-    draw_text(&mut rgba, width, HEIGHT, TEXT_X, 0, upload, 2, 235);
-    draw_text(&mut rgba, width, HEIGHT, TEXT_X, 16, download, 2, 235);
-    tauri::image::Image::new_owned(rgba, width, HEIGHT)
+fn render_pixel_macos_tray_icon(upload: u64, download: u64) -> tauri::image::Image<'static> {
+    let (mut rgba, width, height) = macos_layout::bitmap_canvas();
+    let text_x = (macos_layout::title_x() * 2.0) as u32;
+    for (bytes, row, up) in [(upload, 0, true), (download, 21, false)] {
+        let rate = macos_title::format_rate(bytes);
+        draw_arrow(&mut rgba, width, height, text_x, row + 2, up);
+        let right = text_x + (macos_layout::NUMBER_RIGHT * 2.0) as u32;
+        draw_text(
+            &mut rgba,
+            width,
+            height,
+            right - pixel_text_width(&rate.number, 2),
+            row + 4,
+            &rate.number,
+            2,
+            255,
+        );
+        draw_text(
+            &mut rgba,
+            width,
+            height,
+            text_x + (macos_layout::UNIT_LEFT * 2.0) as u32,
+            row + 4,
+            rate.unit,
+            2,
+            255,
+        );
+    }
+    tauri::image::Image::new_owned(rgba, width, height)
 }
 
 #[cfg(target_os = "macos")]
@@ -809,6 +762,9 @@ fn glyph(character: char) -> Option<[u8; 7]> {
         'G' => [14, 17, 16, 23, 17, 17, 15],
         'K' => [17, 18, 20, 24, 20, 18, 17],
         'M' => [17, 27, 21, 21, 17, 17, 17],
+        'T' => [31, 4, 4, 4, 4, 4, 4],
+        'P' => [30, 17, 17, 30, 16, 16, 16],
+        'E' => [31, 16, 16, 30, 16, 16, 31],
         's' => [0, 0, 15, 16, 14, 1, 30],
         _ => return None,
     })
@@ -820,55 +776,21 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn tray_mark_is_the_application_icon_alpha_not_an_independent_glyph() {
-        let icon = super::tray_brand_icon();
-        assert_eq!((icon.width(), icon.height()), (128, 128));
-        let mut rgba = vec![0_u8; 128 * 128 * 4];
-        super::draw_brand_mark(&mut rgba, 128, 128, 0, 0, 128);
-        let mut visible = 0;
-        for (rendered, source) in rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .zip(icon.rgba().as_chunks::<4>().0)
-        {
-            assert_eq!(rendered[3], source[3]);
-            if source[3] > 0 {
-                visible += 1;
-                assert_eq!(&rendered[..3], &[255, 255, 255]);
-            }
-        }
-        assert!(visible > 1000 && visible < 128 * 128);
-        let before = rgba.clone();
-        super::draw_brand_mark(&mut rgba, 128, 128, 0, 0, 0);
-        assert_eq!(rgba, before);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
     fn native_and_fallback_trays_use_the_shared_s_mark() {
         let native = super::native_macos_brand_icon();
-        let fallback = super::render_pixel_macos_tray_icon("1.2M/s", "8.3K/s");
+        let fallback = super::render_pixel_macos_tray_icon(1_258_291, 8_500);
         let font = super::macos_status_font().expect("macOS system status font");
-        let normal = super::render_monochrome_macos_tray_icon(font, "1.2M/s", "8.3K/s");
-        for (image, size, left, top) in [
-            (&native, 32, 2, 2),
-            (&normal, 56, 0, 4),
-            (&fallback, 24, 0, 4),
-        ] {
-            let mut expected = vec![0_u8; (image.width() * image.height() * 4) as usize];
-            super::draw_brand_mark(
-                &mut expected,
-                image.width(),
-                image.height(),
-                left,
-                top,
-                size,
-            );
-            for y in top..top + size {
-                for x in left..left + size {
-                    let alpha = ((y * image.width() + x) * 4 + 3) as usize;
-                    assert_eq!(image.rgba()[alpha], expected[alpha]);
+        let normal = super::render_monochrome_macos_tray_icon(font, 1_258_291, 8_500);
+        for image in [&normal, &fallback] {
+            assert_eq!((image.width(), image.height()), (112, 44));
+            let top = (image.height() - native.height()) / 2;
+            for y in 0..native.height() {
+                for x in 0..native.width() {
+                    let alpha = (((y + top) * image.width() + x) * 4 + 3) as usize;
+                    assert_eq!(
+                        image.rgba()[alpha],
+                        native.rgba()[((y * native.width() + x) * 4 + 3) as usize]
+                    );
                 }
             }
         }
@@ -892,6 +814,57 @@ mod tests {
                     ),
                 )
                 .unwrap();
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_bitmap_rate_has_stable_width_two_rows_and_clear_edges() {
+        let font = super::macos_status_font().expect("macOS system status font");
+        for rate in [
+            0,
+            1,
+            1023,
+            1024,
+            10_188,
+            10_189,
+            999 * 1024,
+            1023 * 1024,
+            1024 * 1024 - 1,
+            1 << 40,
+            1 << 50,
+            u64::MAX,
+        ] {
+            let label = super::macos_title::format_rate(rate);
+            assert!(label.unit.chars().all(|c| super::glyph(c).is_some()));
+            assert!(super::smooth_text_width(font, &label.number, 19.0) <= 48.0);
+            assert!(super::smooth_text_width(font, label.unit, 16.0) <= 16.0);
+            for image in [
+                super::render_monochrome_macos_tray_icon(font, rate, rate),
+                super::render_pixel_macos_tray_icon(rate, rate),
+            ] {
+                assert_eq!((image.width(), image.height()), (112, 44));
+                let ink =
+                    |x: u32, y: u32| image.rgba()[((y * image.width() + x) * 4 + 3) as usize] > 0;
+                assert!(
+                    (0..image.width()).all(|x| !ink(x, 0) && !ink(x, image.height() - 1)),
+                    "vertical clipping at {rate}"
+                );
+                assert!(
+                    (0..image.height()).all(|y| !ink(0, y) && !ink(image.width() - 1, y)),
+                    "horizontal clipping at {rate}"
+                );
+                let text_x = (super::macos_layout::title_x() * 2.0) as u32;
+                let rows: Vec<_> = (0..image.height())
+                    .map(|y| (text_x..image.width()).any(|x| ink(x, y)))
+                    .collect();
+                let runs = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(y, v)| **v && (*y == 0 || !rows[y - 1]))
+                    .count();
+                assert_eq!(runs, 2, "both bitmap rows must remain separate at {rate}");
             }
         }
     }

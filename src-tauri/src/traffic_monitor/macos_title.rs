@@ -10,17 +10,13 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSDictionary, NSMutableAttributedString, NSNumber, NSRange,
-    NSString,
+    NSSize, NSString,
 };
 
-pub(super) const FONT_SIZE: f64 = 9.5;
-pub(super) const LINE_HEIGHT: f64 = 10.5;
-pub(super) const ITEM_WIDTH: f64 = 78.0;
+use super::macos_layout::{
+    self, FONT_SIZE, LINE_HEIGHT, NUMBER_RIGHT, SMALL_FONT_SIZE, TITLE_RIGHT, UNIT_LEFT,
+};
 const OPTICAL_BASELINE_INSET: f64 = 1.5;
-const SMALL_FONT_SIZE: f64 = 8.0;
-const NUMBER_RIGHT: f64 = 32.0;
-const UNIT_LEFT: f64 = 34.0;
-const TITLE_RIGHT: f64 = 42.0;
 const UNITS: [&str; 7] = ["B", "K", "M", "G", "T", "P", "E"];
 const FULL_UNITS: [&str; 7] = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s", "PiB/s", "EiB/s"];
 
@@ -156,7 +152,7 @@ pub(super) fn apply_to_item(
     button.setImagePosition(NSCellImagePosition::ImageLeft);
     let title = build_title(upload, download);
     button.setAttributedTitle(&title);
-    item.setLength(ITEM_WIDTH);
+    item.setLength(macos_layout::item_width());
     // NSStatusBarButton's cell can anchor a multiline title at the original
     // single-line baseline (unlike an ordinary NSButton). Center the actual
     // two-line title using the live button geometry, not an OS-specific offset.
@@ -183,6 +179,41 @@ pub(super) fn apply_to_item(
     }
     button.setAttributedTitle(&title);
     Ok(())
+}
+
+pub(super) fn apply_bitmap_to_item(
+    item: &NSStatusItem,
+    mtm: MainThreadMarker,
+) -> Result<(), String> {
+    let button = item.button(mtm).ok_or("native status button is missing")?;
+    let image = button.image().ok_or("bitmap status image is missing")?;
+    // tray-icon sizes all images to 18pt. Two rows need their real 22pt height,
+    // not a shrunken font; refresh its hit area after setting the same 64pt slot.
+    image.setSize(NSSize::new(
+        macos_layout::content_width(),
+        macos_layout::CONTENT_HEIGHT,
+    ));
+    button.setImagePosition(NSCellImagePosition::ImageOnly);
+    item.setLength(macos_layout::item_width());
+    Ok(())
+}
+
+pub(super) fn update_bitmap(
+    tray: &tauri::tray::TrayIcon,
+    upload: u64,
+    download: u64,
+) -> Result<(), String> {
+    tray.with_inner_tray_icon(move |inner| {
+        let mtm = MainThreadMarker::new().ok_or("bitmap tray update is not on the main thread")?;
+        let item = inner
+            .ns_status_item()
+            .ok_or("native status item is missing")?;
+        apply_bitmap_to_item(&item, mtm)?;
+        inner
+            .set_tooltip(Some(tooltip(upload, download)))
+            .map_err(|error| error.to_string())
+    })
+    .map_err(|error| error.to_string())?
 }
 
 pub(super) fn clear_item(item: &NSStatusItem, mtm: MainThreadMarker) -> Result<(), String> {
