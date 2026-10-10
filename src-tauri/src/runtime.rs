@@ -603,7 +603,15 @@ pub(crate) fn validate_file_cancellable(
         .arg(data_dir)
         .arg("-f")
         .arg(config_path);
-    run_validation_command_cancellable(&mut command, data_dir, VALIDATION_TIMEOUT, cancel)
+    match cancel {
+        Some(cancel) => run_validation_command_cancellable(
+            &mut command,
+            data_dir,
+            VALIDATION_TIMEOUT,
+            Some(cancel),
+        ),
+        None => run_validation_command(&mut command, data_dir, VALIDATION_TIMEOUT),
+    }
 }
 
 struct ValidationLogCleanup(PathBuf);
