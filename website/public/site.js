@@ -110,7 +110,6 @@
     selectedArchitecture = button.dataset.architecture;
     updateDownloadSelection();
   }));
-  document.querySelectorAll("[data-select-windows]").forEach(link => link.addEventListener("click", () => selectSystem("windows")));
   updateDownloadSelection();
   async function refreshRelease() {
     if (!loading) { loading = true; release = null; updateDownloadSelection(); }
