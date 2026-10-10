@@ -86,12 +86,14 @@ assert.ok(read("src-tauri/src/local_routing/codex.rs").includes(`const PROVIDER:
 assert.ok(read("src-tauri/src/local_routing/codex.rs").includes('"codex-lease.json"'));
 assert.ok(read("src-tauri/src/local_routing/codex.rs").includes(`provider["name"] = value("${displayName} 本地路由")`));
 const tray = read("src-tauri/src/traffic_monitor.rs");
-assert.ok(tray.includes('tauri::include_image!("icons/128x128.png")'));
+const trayLayout = read("src-tauri/src/traffic_monitor/macos_layout.rs");
+assert.ok(trayLayout.includes('tauri::include_image!("icons/128x128.png")'));
 assert.doesNotMatch(tray, /draw_m_mark|const M_X|const M_Y/);
-assert.equal((tray.match(/draw_brand_mark\(&mut rgba, width, HEIGHT,/g) ?? []).length, 2,
-  "Both macOS rate renderers must use the shared app mark");
-assert.match(tray, /draw_brand_mark\(&mut rgba, 36, 36, 2, 2, 32\)/,
-  "Native macOS title must retain the shared S mark as its separate template icon");
+assert.ok(tray.includes("macos_layout::brand_icon()"), "Native tray uses the compact shared S mark");
+assert.equal((tray.match(/macos_layout::bitmap_canvas\(\)/g) ?? []).length, 2,
+  "Both macOS bitmap paths must share the compact S mark and fixed layout");
+assert.ok(read("src-tauri/tests/macos_tray_native.rs").includes("macos_layout::brand_icon()"),
+  "Native geometry tests must render the production icon, not a square stand-in");
 assert.deepEqual(readFileSync(join(root, "src-tauri/icons/128x128.png")),
   readFileSync(join(root, "assets/brand/app-icon-128.png")), "Sidebar and tray must use identical app artwork");
 const updater = read("src-tauri/src/app_update.rs");

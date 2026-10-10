@@ -2,6 +2,10 @@
 // harness tests the production title builder against a disposable status item;
 // it never opens Serylane, reads user configuration or starts networking.
 #[cfg(target_os = "macos")]
+#[path = "../src/traffic_monitor/macos_layout.rs"]
+#[allow(dead_code)]
+mod macos_layout;
+#[cfg(target_os = "macos")]
 #[path = "../src/traffic_monitor/macos_title.rs"]
 #[allow(dead_code)]
 mod macos_title;
@@ -12,35 +16,62 @@ fn main() {
     use objc2_app_kit::{
         NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
         NSApplication, NSApplicationActivationPolicy, NSAttributedStringNSExtendedStringDrawing,
-        NSBitmapImageFileType, NSBitmapImageRep, NSDeviceRGBColorSpace, NSImage, NSStatusBar,
+        NSBitmapImageFileType, NSBitmapImageRep, NSDeviceRGBColorSpace, NSMenu, NSStatusBar,
         NSStringDrawingOptions,
     };
-    use objc2_foundation::{NSData, NSDictionary, NSSize};
+    use objc2_foundation::{NSDictionary, NSPoint, NSSize};
 
     let mtm = MainThreadMarker::new().expect("native test main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     let bar = NSStatusBar::systemStatusBar();
-    let item = bar.statusItemWithLength(macos_title::ITEM_WIDTH);
+    let item = bar.statusItemWithLength(macos_layout::item_width());
     let button = item.button(mtm).expect("disposable status button");
-    let icon = NSImage::initWithData(
-        NSImage::alloc(),
-        &NSData::with_bytes(include_bytes!("../icons/128x128.png")),
-    )
-    .unwrap();
-    icon.setSize(NSSize::new(18.0, 18.0));
+    let menu = NSMenu::new(mtm);
+    item.setMenu(Some(&menu));
+    let rgba = macos_layout::brand_icon();
+    let icon = image_from_rgba(rgba);
+    assert_eq!(icon.size(), NSSize::new(12.0, 18.0));
     icon.setTemplate(true);
     button.setImage(Some(&icon));
     let mut text_origin = None;
     for (upload, download) in [
         (0, 0),
         (5939, 6451),
+        (7_987, 137_216),
+        (10_188, 10_189),
+        (999 * 1024, 1023 * 1024),
         (1023, 1024),
         (1023 * 1024, 12 * 1024 * 1024),
         (1 << 40, u64::MAX),
     ] {
         macos_title::apply_to_item(&item, upload, download, mtm).unwrap();
-        assert_eq!(item.length(), macos_title::ITEM_WIDTH);
+        assert_eq!(button.image().unwrap().size(), NSSize::new(12.0, 18.0));
+        assert_eq!(button.font().unwrap().pointSize(), 9.5);
+        let image_rect = button.cell().unwrap().imageRectForBounds(button.bounds());
+        assert!(image_rect.origin.x >= 0.0);
+        assert!(image_rect.origin.x + image_rect.size.width <= button.bounds().size.width);
+        assert!(
+            image_rect.origin.x <= 6.0,
+            "excess horizontal image inset: {image_rect:?}"
+        );
+        assert_eq!(item.length(), macos_layout::item_width());
+        assert!(
+            std::ptr::eq(&*item.menu(mtm).unwrap(), &*menu),
+            "layout must retain menu ownership"
+        );
+        let frame = button.frame();
+        for x in [1.0, frame.size.width - 1.0] {
+            assert!(
+                button
+                    .hitTest(NSPoint::new(
+                        frame.origin.x + x,
+                        frame.origin.y + frame.size.height / 2.0
+                    ))
+                    .is_some(),
+                "compact button edge must stay clickable"
+            );
+        }
         let title = button.attributedTitle();
         assert_eq!(title.string().to_string().lines().count(), 2);
         assert_eq!(title.string().to_string().matches('\t').count(), 6);
@@ -53,7 +84,7 @@ fn main() {
                     | NSStringDrawingOptions::UsesFontLeading,
                 None,
             );
-        assert_eq!(bounds.size.height, macos_title::LINE_HEIGHT * 2.0);
+        assert_eq!(bounds.size.height, macos_layout::LINE_HEIGHT * 2.0);
         assert!(
             bounds.size.width <= 42.0,
             "native columns overflow: {bounds:?}"
@@ -82,7 +113,7 @@ fn main() {
     macos_title::clear_item(&item, mtm).unwrap();
     assert_eq!(button.attributedTitle().length(), 0);
     macos_title::apply_to_item(&item, 5939, 6451, mtm).unwrap();
-    assert_eq!(item.length(), macos_title::ITEM_WIDTH);
+    assert_eq!(item.length(), macos_layout::item_width());
     println!(
         "native button: titleRect={:?}, font={:?}",
         button.cell().unwrap().titleRectForBounds(button.bounds()),
@@ -205,8 +236,54 @@ fn main() {
             );
         }
     }
+    // The bitmap path restores the same slot, without tray-icon's 18pt shrink.
+    macos_title::clear_item(&item, mtm).unwrap();
+    let (pixels, width, height) = macos_layout::bitmap_canvas();
+    let bitmap_image = image_from_rgba(&tauri::image::Image::new_owned(pixels, width, height));
+    bitmap_image.setTemplate(true);
+    button.setImage(Some(&bitmap_image));
+    macos_title::apply_bitmap_to_item(&item, mtm).unwrap();
+    assert_eq!(item.length(), 64.0);
+    assert!(std::ptr::eq(&*item.menu(mtm).unwrap(), &*menu));
+    assert_eq!(button.image().unwrap().size(), NSSize::new(56.0, 22.0));
+    let image_rect = button.cell().unwrap().imageRectForBounds(button.bounds());
+    assert!(image_rect.origin.x >= 0.0 && image_rect.origin.x <= 5.0);
+    assert!(image_rect.origin.x + image_rect.size.width <= button.bounds().size.width);
+    macos_title::clear_item(&item, mtm).unwrap();
+    button.setImage(Some(&icon));
+    macos_title::apply_to_item(&item, 7_987, 137_216, mtm).unwrap();
+    assert_eq!(item.length(), 64.0);
+    assert_eq!(button.image().unwrap().size(), NSSize::new(12.0, 18.0));
+    assert_eq!(
+        button
+            .attributedTitle()
+            .string()
+            .to_string()
+            .lines()
+            .count(),
+        2
+    );
     bar.removeStatusItem(&item);
     println!("native tray: fixed-width two-row title, unit changes, clear and re-enable passed");
+}
+
+#[cfg(target_os = "macos")]
+fn image_from_rgba(rgba: &tauri::image::Image<'_>) -> objc2::rc::Retained<objc2_app_kit::NSImage> {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSImage};
+    use objc2_foundation::NSSize;
+    let rep = unsafe { NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+        NSBitmapImageRep::alloc(), std::ptr::null_mut(), rgba.width() as isize, rgba.height() as isize,
+        8, 4, true, false, NSDeviceRGBColorSpace, (rgba.width() * 4) as isize, 32,
+    ) }.unwrap();
+    unsafe {
+        std::ptr::copy_nonoverlapping(rgba.rgba().as_ptr(), rep.bitmapData(), rgba.rgba().len());
+    }
+    let size = NSSize::new(rgba.width() as f64 / 2.0, rgba.height() as f64 / 2.0);
+    rep.setSize(size);
+    let image = NSImage::initWithSize(NSImage::alloc(), size);
+    image.addRepresentation(&rep);
+    image
 }
 
 #[cfg(not(target_os = "macos"))]

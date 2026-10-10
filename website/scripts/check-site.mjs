@@ -67,6 +67,10 @@ assert.match(htmls.get('/'), /安装包下载优先下载中心，GitHub 备用�
 assert.doesNotMatch(htmls.get('/'), /自动更新：同版本香港优先/, 'Do not advertise candidate-only client update behavior as already released');
 assert.match(htmls.get('/docs/'), /v0\.7\.9：更清晰的 macOS 双行网速/);
 assert.match(htmls.get('/'), /macOS 原生双行网速/);
+assert.match(htmls.get('/'), /收紧左右留白，保留清晰字号/);
+assert.match(htmls.get('/docs/'), /id="compact-menu-bar"/);
+assert.match(htmls.get('/docs/'), /从 78pt 收紧到 64pt/);
+assert.match(htmls.get('/docs/'), /9\.5pt 数字和两行显示/);
 const sitemap = await readFile(join(root, 'sitemap.xml'), 'utf8');
 for (const route of htmls.keys()) if (route !== '/404') assert.ok(sitemap.includes(`<loc>${origin}${route}</loc>`), `Sitemap omits ${route}`);
 assert.ok(!(sitemap.includes('/404')));
