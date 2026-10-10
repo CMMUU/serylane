@@ -12,7 +12,7 @@ const { sessionResumeHelp, sessionResumePresentation, canStopSession, startupMod
 const subscriptionSource = ts.transpileModule(read("src/subscription-cards.ts"), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 }).outputText;
-const { newestSubscriptionStatus } = await import(`data:text/javascript;base64,${Buffer.from(subscriptionSource).toString("base64")}`);
+const { newestSubscriptionStatus, synchronizedProfiles } = await import(`data:text/javascript;base64,${Buffer.from(subscriptionSource).toString("base64")}`);
 
 test("startup modes preserve legacy intent and unrelated settings", () => {
   const legacy = { launchAtLogin: false, silentStartup: true, restoreLastSession: false, networkMode: "tun", controllerPort: 9090 };
@@ -113,10 +113,10 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
   const subscription = status => ({ profile: { id: "quota-fixture" }, status });
   const context = {
     baseReadSequence: 0, runtimeMutationRevision: 0, proxyReadSequence: 0, overviewNodeDetails: {}, refreshProxies: async () => {}, openAiCosts: { refresh: async () => {} },
-    runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false,
+    runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
     sessionResumeReadBusy: true,
     themeController: { mutationRevision: 0, sync: () => true },
-    store: { subscriptions: [] }, action: async (_message, run) => run(), newestSubscriptionStatus,
+    store: { subscriptions: [] }, action: async (_message, run) => run(), newestSubscriptionStatus, synchronizedProfiles,
     api: new Proxy({
       settings: () => ++calls === 1 ? first : Promise.resolve({ networkMode: "tun" }),
       subscriptions: async () => [subscription(oldQuota)],
@@ -124,7 +124,7 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
       get: (target, key) => target[key] ?? (async () => null),
     }),
     renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
-    renderSettings: noop, renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
+    renderSettings: noop, renderManualMode: noop, renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
   };
   const main = read("src/main.ts");
   const code = main.slice(main.indexOf("async function refreshBase()"), main.indexOf("function renderHeader()"));

@@ -139,10 +139,12 @@ pub fn build_effective_config_with_policy(
 
     normalize_proxy_groups(root, &mut summary)?;
 
-    if let Some(policy) = openai_policy {
-        apply_openai_policy(root, policy, &mut summary)?;
+    crate::manual_outbound::require_profile(settings, uuid::Uuid::nil())?;
+    if settings.proxy_mode == crate::manual_outbound::ProxyMode::Ai {
+        if let Some(policy) = openai_policy {
+            apply_openai_policy(root, policy, &mut summary)?;
+        }
     }
-
     crate::user_rules::merge_into_config(root, &settings.user_rules, &mut summary)?;
 
     let yaml =
@@ -622,7 +624,10 @@ rules:
             .replace("proxies: [sample]", "proxies: [JP sample]");
         let effective = build_effective_config_with_policy(
             &source,
-            &AppSettings::default(),
+            &AppSettings {
+                proxy_mode: crate::manual_outbound::ProxyMode::Ai,
+                ..Default::default()
+            },
             RoutingMode::Rule,
             Some(&policy),
         )
@@ -672,7 +677,10 @@ rules:
         policy.stability_enabled = true;
         let stable = build_effective_config_with_policy(
             &source,
-            &AppSettings::default(),
+            &AppSettings {
+                proxy_mode: crate::manual_outbound::ProxyMode::Ai,
+                ..Default::default()
+            },
             RoutingMode::Rule,
             Some(&policy),
         )
@@ -705,7 +713,10 @@ rules:
         };
         let effective = build_effective_config_with_policy(
             SOURCE,
-            &AppSettings::default(),
+            &AppSettings {
+                proxy_mode: crate::manual_outbound::ProxyMode::Ai,
+                ..Default::default()
+            },
             RoutingMode::Rule,
             Some(&policy),
         )

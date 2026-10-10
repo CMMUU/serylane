@@ -60,7 +60,10 @@ export function mountConnectionFeedback(root: HTMLElement, action: (name: string
     button.hidden = !presentation.action;
     button.disabled = actionBusy;
     button.textContent = actionNames[presentation.action] ?? "查看详情";
-    const lines = state?.checks.map(c => `${c.target === "openai" ? "OpenAI" : c.target === "google" ? "Google" : "Cloudflare"} · ${c.success ? "通过" : "未通过"} · ${c.latencyMs} ms\n${c.detail}`) ?? [];
+    // Local preflight/rollback issues are not the operation that produced the
+    // backend's last checks. Do not present old proxy probes as TUN evidence.
+    const checks = issue || state?.phase === "failed" ? [] : state?.checks ?? [];
+    const lines = checks.map(c => `${c.target === "openai" ? "OpenAI" : c.target === "google" ? "Google" : "Cloudflare"} · ${c.success ? "通过" : "未通过"} · ${c.latencyMs} ms\n${c.detail}`);
     find("detail-text").textContent = [presentation.details, ...lines].filter(Boolean).join("\n\n") || "当前没有更多诊断信息。";
     tick();
   }

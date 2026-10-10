@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.19 - 2026-10-10
+
+- Ship compact subscription cards, bounded import retries and actionable errors, synchronized subscription profiles and a Clash-style proxy-group selection page mutually exclusive with AI policy control. Preserve source/user rules, explicit rule/global/direct modes and independent Codex routing. Local YAML profiles remain separate.
+- Allow deleting active and final subscriptions with confirmed owned-network cleanup, serialized mutations, recoverable disk deletion, stale-task guards and a usable zero-profile state.
+- Add an explicit trusted-main compatibility release option for this feature update. Default publication still requires Developer ID and notarization; partial Apple credentials and signing failures never silently downgrade. Compatibility macOS packages retain updater signatures and integrity checks, but macOS TUN remains unavailable.
+- Verify the Developer ID requirement, exact team and hardened runtime on all four macOS executables, independently of notarization and physical TUN acceptance.
+- Leave build-time proc-macro symbols intact to avoid Xcode 27 LINKEDIT alignment failures without changing shipped application optimization.
+- Stop mixing previous system-proxy health checks into TUN preflight/recovery errors; direct invalid-installation issues to diagnostics rather than repeated downloads or authorization.
+- Preserve application/update identities and existing Helper re-association; notarization and real TUN acceptance remain pending.
+
 ## 0.7.18
 
 - Use native macOS login-item registration with explicit status, conservative legacy migration, and user-controlled repair; preserve disabled login and proxy preferences.

@@ -671,7 +671,7 @@ const staleSubscriptionStamp = "2026-09-01T08:00:00.000Z";
 const fixtureSubscriptionError = "订阅请求失败：HTTP 403。订阅服务拒绝访问；请检查订阅是否有效或联系服务商。";
 
 function subscriptions(): SubscriptionOverview[] {
-  return profiles.map(profile => {
+  return profiles.filter(profile => profile.source.type === "remote_subscription").map(profile => {
     const sample = subscriptionSamples.get(profile.id);
     return {
       profile: structuredClone(profile), summary: structuredClone(summary), revisionCount: 1,
@@ -740,6 +740,11 @@ function subscriptionScenario(scenario: string) {
       });
     });
   }
+  if (previewQuery.get("localYaml") === "1") {
+    const local = makeProfile("fixture-local", "保留的本地 YAML（合成）", false);
+    local.source = { type: "inline", label: "local-fixture.yaml" };
+    profiles.push(local);
+  }
   reportSubscriptions();
 }
 
@@ -805,6 +810,12 @@ function fixtureHealthProbe() {
     ] });
   }, 3000);
 }
+let fixtureProxyMode: 'manual' | 'ai' = 'manual';
+let fixtureModeRevision = 'fixture-mode-0';
+function fixtureManualState() {
+  return { mode: fixtureProxyMode, revision: fixtureModeRevision, activeProfileId, legacySelection: false };
+}
+
 const readonlyReplies: Record<string, () => unknown> = {
   connection_feedback: () => structuredClone({ ...fixtureFeedback, elapsedMs: fixtureFeedback.health === "checking" ? performance.now() - feedbackStartedAt : fixtureFeedback.elapsedMs }),
   app_info: () => ({ productName: "Serylane", version: `${packageInfo.version} · 合成预览`, targetOs: previewPlatform, targetArch: previewWindows ? "x86_64" : "aarch64" }),
@@ -833,13 +844,14 @@ const readonlyReplies: Record<string, () => unknown> = {
   system_proxy_status: () => ({ active: fixtureSystemProxyActive, snapshotPath: null, platform: previewPlatform }),
   tun_helper_status: () => ({ supported: previewPlatform !== "linux", state: previewPlatform === "linux" ? "unsupported" : fixtureRuntimeHelperState ?? (runtimeScenarioEnabled ? fixtureRuntimeHelperReady ? "ready" : "requires_approval" : "not_installed"), message: previewPlatform === "linux" ? "Linux 暂未提供 TUN 网络接管" : fixtureRuntimeHelperState === "invalid_installation" ? "合成状态：安装包缺少有效 Developer ID 签名，请更新完整正式版本；重复授权不会修复签名。" : fixtureRuntimeHelperState === "needs_repair" ? "合成状态：系统服务已登记，但辅助程序启动失败。请先停止代理，再重新关联辅助服务。" : "合成预览不安装或调用 Helper", protocolVersion: previewPlatform === "macos" ? 2 : 0, runtimeRunning: false, runtimePid: null, runtimeVersion: null, lastError: null }),
   global_traffic_snapshot: () => ({ enabled: true, uploadBytesPerSecond: 32000, downloadBytesPerSecond: 2400000, sampledAt: stamp, interfaces: ["fixture-only"] }),
+  get_manual_outbound: () => structuredClone(fixtureManualState()),
   list_profiles: () => structuredClone(profiles),
   list_subscriptions: () => { subscriptionCalls.reads++; reportSubscriptions(); return subscriptions(); },
   get_active_profile: () => activeProfileId ? profileDetails(activeProfileId) : null,
   get_openai_policy_task: () => structuredClone(subscriptionImportOpenAiTask),
   get_proxies: () => {
     if (failNodeRead) throw new Error("合成读取失败");
-    return { profileId: activeProfileId, revisionId: activeProfileId ? profileDetails(activeProfileId).profile.activeRevisionId : null, costMode: fixtureCosts?.mode ?? "quality", proxies: structuredClone(fixtureNodes) };
+    return { modeRevision: fixtureModeRevision, profileId: activeProfileId, revisionId: activeProfileId ? profileDetails(activeProfileId).profile.activeRevisionId : null, costMode: fixtureCosts?.mode ?? "quality", proxies: structuredClone(fixtureNodes) };
   },
   get_rules: () => ({ rules: [
     ...rulesPersisted.rules.filter((rule) => rule.enabled).map((rule) => {
@@ -896,7 +908,9 @@ mockIPC(async (command, payload) => {
     return structuredClone(fixtureCosts);
   }
   if (nodeScenario && ["select_proxy", "clear_proxy_selection"].includes(command)) {
+    if (args.modeRevision !== fixtureModeRevision) throw ruleError("STATE_CONFLICT", "选点方式已变化");
     const group = String(args.group), node = fixtureNodes[group];
+    if ((group === "🤖 OpenAI 自动灾备") !== (fixtureProxyMode === "ai")) throw ruleError("STATE_CONFLICT", "请先确认切换选点方式");
     if (!node || args.profileId !== activeProfileId || args.revisionId !== profileDetails(activeProfileId!).profile.activeRevisionId) throw new Error("合成配置状态冲突");
     nodeCalls.push({ command, group, ...(command === "select_proxy" ? { proxy: String(args.proxy) } : {}) });
     document.documentElement.dataset.fixtureNodeCalls = JSON.stringify(nodeCalls);
@@ -932,7 +946,7 @@ mockIPC(async (command, payload) => {
     try {
       await new Promise(resolve => window.setTimeout(resolve, 120));
       if (requestedRevision !== subscriptionScenarioRevision) throw ruleError("STATE_CONFLICT", "合成场景已切换，旧导入没有写入新场景。");
-      if (scenario === "import-403") throw { code: "SUBSCRIPTION_ERROR", stage: "fixture_subscription", message: fixtureSubscriptionError, retryable: false };
+      if (scenario === "import-403") throw { code: "SUBSCRIPTION_ERROR", stage: "fixture_subscription", message: fixtureSubscriptionError, retryable: false, userMessage: {title: "订阅服务拒绝了请求", description: "HTTP 403；请核对服务商指定的客户端标识或重新复制订阅链接。", action: "subscriptions", details: "HTTP 403"} };
       const existingId = subscriptionImportUrls.get(url.href);
       let profile = profiles.find(entry => entry.id === existingId);
       const created = !profile;
@@ -1048,7 +1062,9 @@ mockIPC(async (command, payload) => {
       reportSubscriptions();
       return profileDetails(profile.id); // In-memory selection only; never start a core.
     }
-    if (activeProfileId === profile.id) throw ruleError("STATE_CONFLICT", "当前合成订阅正在使用，请先激活其他订阅后再删除。");
+    if (args.confirmed !== true) throw ruleError("INVALID_INPUT", "请确认删除");
+    if (activeProfileId === profile.id) { activeProfileId = null; fixtureRuntimePhase = 'stopped'; fixtureSystemProxyActive = false; }
+
     profiles = profiles.filter(entry => entry.id !== profile.id);
     subscriptionSamples.delete(profile.id);
     reportSubscriptions();
@@ -1150,6 +1166,21 @@ mockIPC(async (command, payload) => {
     document.documentElement.dataset.fixtureSettingsSaves = String(++settingsSaveCount);
     report("运行偏好已保存到合成状态；未触及系统设置");
     return settings();
+  }
+  if (command === "set_manual_outbound") {
+    if (args.confirmed !== true || args.expectedRevision !== fixtureModeRevision) throw ruleError("STATE_CONFLICT", "选点方式已变化，请刷新");
+    if (!['manual','ai'].includes(args.mode)) throw ruleError("INVALID_INPUT", "未知模式");
+    fixtureProxyMode = args.mode;
+    fixtureModeRevision = `fixture-mode-${Date.now()}`;
+    subscriptionImportOpenAiTask.running = false;
+    return structuredClone(fixtureManualState());
+  }
+  if (command === "set_profile_routing_mode") {
+    if (fixtureProxyMode !== 'manual') throw ruleError("STATE_CONFLICT", "请先切换为自选节点");
+    const profile = profiles.find(p => p.id === args.profileId);
+    if (!profile || !['rule','global','direct'].includes(args.mode)) throw ruleError("INVALID_INPUT", "配置或路由模式无效");
+    profile.routingMode = args.mode;
+    return profileDetails(profile.id);
   }
   if (command === "save_update_preferences") {
     const source = args.source as UpdateSource;
@@ -1421,7 +1452,7 @@ report("隔离桥接已安装，正在加载真实 src/main.ts");
 void import("../../src/main").then(() => {
   // Navigation only, never a command or actual application launch.
   const view = previewQuery.get("view");
-  if (view === "routing" || view === "subscriptions" || view === "settings") document.querySelector<HTMLButtonElement>(`[data-view="${view}"]`)?.click();
+  if (view === "routing" || view === "subscriptions" || view === "settings" || view === "manual") document.querySelector<HTMLButtonElement>(`[data-view="${view}"]`)?.click();
   report("预览已就绪；可测试主题、规则、路由合成状态、独立确认、失败与版本冲突");
 }).catch((error: unknown) => {
   runtimeErrorCount += 1;

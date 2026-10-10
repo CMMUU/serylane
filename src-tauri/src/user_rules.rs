@@ -598,6 +598,9 @@ fn capture_context(app: &AppHandle, storage: &AppStorage) -> AppResult<ActiveCon
         "active": active, "profile": profile_marker,
         "networkMode": settings.network_mode, "mixedPort": settings.mixed_port,
         "controllerPort": settings.controller_port, "secret": settings.controller_secret,
+        "manualOutbound": settings.manual_outbound,
+        "proxyMode": settings.proxy_mode,
+        "proxyModeRevision": settings.proxy_mode_revision,
         "phase": runtime.phase, "pid": runtime.pid, "startedAt": runtime.started_at,
     })
     .to_string();
@@ -637,6 +640,9 @@ fn warnings(context: &ActiveContext, rules: &[UserRule]) -> Vec<String> {
         "用户规则只处理进入 Mihomo 的连接；DIRECT 仍经过本地核心，不修改系统代理例外或 PAC。"
             .to_string(),
     ];
+    if context.settings.manual_outbound.is_some() {
+        warnings.push("旧版固定出口设置待确认迁移；请先前往自选节点页确认选点方式。".into());
+    }
     if !context.active {
         warnings.push(
             "尚无活动订阅；仅校验 DIRECT/REJECT/REJECT-DROP 规则，选择订阅并启动后生效。"
@@ -796,7 +802,16 @@ pub(crate) async fn apply_profile_config(
     _permit: &ConfigurationMutationPermit,
 ) -> AppResult<()> {
     let context = capture_context(app, storage)?;
-    let previous = effective_for(&context, &context.settings.user_rules)?.yaml;
+    let previous = match effective_for(&context, &context.settings.user_rules) {
+        Ok(config) => config.yaml,
+        Err(error) if context.settings.manual_outbound.is_some() => {
+            // An interrupted selection or damaged source must not trap the user
+            // in manual mode. Only an explicit, validated switch can use the last
+            // saved runtime config as rollback; startup still fails closed.
+            storage.active_runtime_config()?.ok_or(error)?
+        }
+        Err(error) => return Err(error),
+    };
     validate_config(app, candidate).await?;
     let reloader = (context.active && context.running)
         .then(|| MihomoApiClient::new(&context.settings))
@@ -1175,6 +1190,7 @@ mod tests {
     #[test]
     fn rule_order_precedes_ai_and_subscription_without_mutating_source() {
         let mut context = context(true);
+        context.settings.proxy_mode = crate::manual_outbound::ProxyMode::Ai;
         context.policy = Some(OpenAiPolicy {
             enabled: true,
             selected_nodes: ["sample-a", "sample-b"]

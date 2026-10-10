@@ -10,8 +10,8 @@ export const subscriptionImportMarkup = `
           <label><span>订阅名称</span><input id="managed-subscription-name" required value="我的订阅" maxlength="128" autocomplete="off" /></label>
         </div>
         <label class="subscription-import-option"><input id="managed-subscription-activate" type="checkbox" /><span><strong>添加后选用</strong><small id="managed-subscription-activate-hint">未勾选时仅保存，不替换当前配置。</small></span></label>
-        <label class="subscription-import-option"><input id="managed-subscription-openai" type="checkbox" checked /><span><strong>OpenAI 灾备</strong><small>添加后在后台筛选节点；生成结果单独提示。</small></span></label>
-        <details class="subscription-import-advanced"><summary>高级选项</summary><label><span>User-Agent</span><input id="managed-subscription-ua" value="clash.meta" autocomplete="off" spellcheck="false" /></label><p>通常保持默认即可。订阅凭据仅在本机存储。</p></details>
+        <label class="subscription-import-option"><input id="managed-subscription-openai" type="checkbox" /><span><strong>OpenAI 灾备</strong><small>仅 AI 代理模式可用；生成结果单独提示，不自动切换模式。</small></span></label>
+        <details class="subscription-import-advanced"><summary>高级选项</summary><label><span>User-Agent</span><input id="managed-subscription-ua" value="clash.meta" autocomplete="off" spellcheck="false" /></label><p>通常保持默认即可。Serylane 核心运行时，下载复用其代理端口；未运行时不会为下载自动启动。订阅凭据仅在本机存储。</p></details>
         <div class="subscription-import-actions"><button class="button button-primary" id="managed-subscription-import-button" type="submit">验证并添加</button><button class="button button-quiet" id="managed-subscription-cancel" type="button">收起</button></div>
       </fieldset>
       <p class="import-status" id="managed-subscription-import-status" role="status" aria-live="polite"></p>

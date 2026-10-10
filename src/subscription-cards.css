@@ -56,7 +56,7 @@
 .subscription-summary-grid strong { font-size: 14px; line-height: 22px; font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
 .subscription-manager-list { grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; align-items: start; }
 .subscription-manager-list.empty-state { display: block; padding: 32px 20px; border: 1px dashed var(--line); border-radius: var(--radius-panel); }
-.subscription-tile { display: grid; gap: 12px; min-width: 0; padding: 20px; border-radius: var(--radius-panel); background: var(--panel); box-shadow: var(--panel-shadow); }
+.subscription-tile { display: grid; gap: 8px; min-width: 0; padding: 14px 16px; border-radius: var(--radius-panel); background: var(--panel); box-shadow: var(--panel-shadow); }
 .subscription-tile.is-active { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .subscription-tile .subscription-entry-head { align-items: start; gap: 12px; }
 .subscription-tile .subscription-identity { min-width: 0; align-items: center; }
@@ -68,8 +68,8 @@
 .subscription-tile.is-active .subscription-mark { color: var(--accent); }
 .subscription-tile .subscription-state { flex: 0 0 auto; font-size: 13px; line-height: 22px; min-height: 26px; padding-inline: 8px; }
 .subscription-usage-label { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); line-height: 20px; }
-.subscription-usage-value { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
-.subscription-usage-value strong { font-size: 24px; font-weight: 600; line-height: 32px; letter-spacing: -.4px; font-variant-numeric: tabular-nums; }
+.subscription-usage-value { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin: 0 0 4px; }
+.subscription-usage-value strong { font-size: 20px; font-weight: 600; line-height: 26px; letter-spacing: -.4px; font-variant-numeric: tabular-nums; }
 .subscription-usage-value > span { font-size: 13px; color: var(--muted); }
 .subscription-usage-track { height: 6px; width: 100%; overflow: hidden; background: var(--accent-soft); border-radius: 999px; }
 .subscription-usage-track > span { display: block; height: 100%; background: var(--accent-strong); border-radius: inherit; }
@@ -91,7 +91,7 @@
 .subscription-tile .subscription-validation { color: var(--muted); font-size: 13px; line-height: 20px; }
 .subscription-tile .subscription-entry-footer > .toolbar { display: flex; width: auto; margin-left: auto; gap: 8px; }
 .subscription-tile .button { min-height: 36px; padding: 6px 12px; font-size: 14px; line-height: 22px; }
-.subscription-more { border-top: 1px solid var(--line); padding-top: 12px; }
+.subscription-more { border-top: 1px solid var(--line); padding-top: 6px; }
 .subscription-more > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; color: var(--muted); font-size: 13px; line-height: 22px; list-style: none; border-radius: 6px; }
 .subscription-more > summary::-webkit-details-marker { display: none; }
 .subscription-more > summary:hover { color: var(--text); }
@@ -126,3 +126,21 @@
   .subscription-usage-track > span { background: Highlight; }
   .subscription-tile.is-active { border-color: Highlight; }
 }
+
+.subscription-compact-facts { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; color: var(--muted); font-size: 13px; line-height: 20px; }
+.subscription-compact-facts .is-expired { color: var(--warning); }
+.subscription-alert { margin: 0; color: var(--warning); font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
+.subscription-alert.is-error { color: var(--danger); }
+
+/* Common actions stay on one row; infrequent operations expand on demand. */
+.subscription-tile { gap: 8px; padding: 12px 14px; }
+.subscription-tile .subscription-entry-head { align-items: center; }
+.subscription-quick-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.subscription-tile .subscription-usage { padding: 0; }
+.subscription-tile .subscription-usage-label { flex-wrap: wrap; font-size: 13px; gap: 4px 8px; }
+.subscription-tile .subscription-usage-label strong { color: var(--text); font-weight: 600; }
+.subscription-tile .subscription-usage-track { margin-top: 6px; height: 4px; }
+.subscription-tile .subscription-more { padding-top: 0; border-top: 0; }
+.subscription-tile .subscription-more > summary { min-height: 24px; width: fit-content; margin-left: auto; }
+.subscription-tile .subscription-more-body { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; }
+@container subscriptions (max-width: 450px) { .subscription-tile .subscription-entry-head { flex-wrap: wrap; } }

@@ -5,9 +5,11 @@ import "./desktop-theme.css";
 import "./local-routing.css";
 import "./subscription-cards.css";
 import "./node-selection.css";
+import "./manual-outbound.css";
+import { manualOutboundMarkup, mountManualOutbound, nodeGridMarkup, type ManualOutboundState } from "./manual-outbound";
 import { generalGroups, currentNodeMarkup, nodeSelectionMarkup, type ProxyMap } from "./node-selection";
 import { mountOpenAiCosts, openAiCostsMarkup } from "./openai-costs";
-import { subscriptionCardMarkup, newestSubscriptionStatus } from "./subscription-cards";
+import { subscriptionCardMarkup, newestSubscriptionStatus, synchronizedProfiles } from "./subscription-cards";
 import { subscriptionImportMarkup, describeSubscriptionImport } from "./subscription-import";
 import { NAV_ITEMS, navigationMarkup, type ViewName } from "./ui";
 import { preferencesMarkup } from "./settings-view";
@@ -83,6 +85,7 @@ dns:
 
 const store: {
   view: ViewName;
+  manualOutbound: ManualOutboundState | null;
   appInfo: AppInfo | null;
   appUpdate: AppUpdateInfo | null;
   settings: AppSettings | null;
@@ -103,6 +106,7 @@ const store: {
   globalTraffic: GlobalTrafficSnapshot | null;
 } = {
   view: "overview",
+  manualOutbound: null,
   appInfo: null,
   appUpdate: null,
   settings: null,
@@ -136,6 +140,7 @@ const subscriptionRefreshing = new Set<string>();
 let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
 let runtimeActionInFlight = false;
+let manualModeSwitching = false;
 let stabilityActionInFlight = false;
 let nodeSelectionBusy = false;
 let proxyReadSequence = 0;
@@ -354,13 +359,16 @@ app.innerHTML = `
 
       <section class="view-stack is-hidden" id="proxies-view">
         <article class="panel proxy-groups-panel">
-          <div class="panel-heading"><div><div class="section-label">PROXY GROUPS</div><h2>代理组与节点</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
+          <div class="panel-heading"><div><div class="section-label">AI PROXY</div><h2>AI 代理</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
+          <div id="proxy-mode-notice" class="warning-box" hidden><p>自选节点正在生效，AI 策略已暂停。二者只能启用一个；Codex 路由接入保持独立。</p><button class="button button-quiet" id="proxy-mode-restore">使用 AI 代理</button></div>
+          <fieldset id="proxy-mode-controls"><legend class="sr-only">代理策略控制</legend>
           <div id="openai-policy-card" class="openai-policy-card"></div>
           ${openAiCostsMarkup}
-          <div id="proxy-groups" class="card-list empty-state">启动 Mihomo 后查看代理组。</div>
+          </fieldset>
         </article>
       </section>
 
+      <section class="view-stack is-hidden" id="manual-view">${manualOutboundMarkup}</section>
       <section class="view-stack is-hidden" id="routing-view">
         ${localRoutingMarkup}
       </section>
@@ -654,9 +662,10 @@ async function refreshConnectionFeedback() {
 
 async function refreshBase() {
   const requestedBaseRead = ++baseReadSequence;
+  const selectedProfileId = store.selectedProfile?.profile.id;
   const requestedThemeRevision = themeController.mutationRevision;
   const requestedRuntimeRevision = runtimeMutationRevision;
-  const requestedDuringRuntimeWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving;
+  const requestedDuringRuntimeWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching;
   const result = await action("", async () => {
     const [
       appInfo,
@@ -670,6 +679,8 @@ async function refreshBase() {
       activeProfile,
       openAiTask,
       globalTraffic,
+      manualOutbound,
+      selectedDetails,
     ] =
       await Promise.all([
         api.appInfo(),
@@ -683,10 +694,12 @@ async function refreshBase() {
         api.activeProfile(),
         api.openAiPolicyTask(),
         api.globalTraffic(),
+        api.manualOutbound().catch(() => store.manualOutbound),
+        selectedProfileId ? api.profileDetails(selectedProfileId).catch(() => null) : Promise.resolve(null),
       ]);
     // A read started before/during a runtime or settings write must not put
     // the old network mode and runtime status back into the toolbar.
-    if (requestedBaseRead !== baseReadSequence || requestedDuringRuntimeWrite || requestedRuntimeRevision !== runtimeMutationRevision || runtimeActionInFlight || networkModeSwitching || settingsSaving) return;
+    if (requestedBaseRead !== baseReadSequence || requestedDuringRuntimeWrite || requestedRuntimeRevision !== runtimeMutationRevision || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return;
     if (!themeController.sync(settings.theme, requestedThemeRevision)) {
       settings.theme = themeController.snapshot.preference;
     }
@@ -705,12 +718,17 @@ async function refreshBase() {
       runtime,
       systemProxy,
       tunHelper,
-      profiles,
+      profiles: synchronizedProfiles(profiles ?? [], subscriptions),
       subscriptions,
       activeProfile,
       openAiTask,
       globalTraffic,
+      manualOutbound,
     });
+    if (store.selectedProfile?.profile.id === selectedProfileId) {
+      const current = store.profiles.find(profile => profile.id === selectedProfileId);
+      store.selectedProfile = current && selectedDetails && selectedDetails.profile.id === current.id && selectedDetails.profile.activeRevisionId === current.activeRevisionId ? { ...selectedDetails, profile: current } : null;
+    }
     return true;
   });
   if (result !== true) return false;
@@ -718,6 +736,7 @@ async function refreshBase() {
   renderOverview();
   renderProfiles();
   renderSubscriptions();
+  renderManualMode();
   renderSettings();
   renderOpenAiPolicy();
   renderGlobalTraffic();
@@ -857,7 +876,7 @@ function renderOverview() {
   const routingMode = store.activeProfile?.profile.routingMode ?? "rule";
   $$("#home-routing-mode button").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.routingMode === routingMode);
-    (button as HTMLButtonElement).disabled = !store.activeProfile;
+    (button as HTMLButtonElement).disabled = !store.activeProfile || store.manualOutbound?.mode !== "manual" || Boolean(store.manualOutbound?.legacySelection);
   });
   $("#control-hint")!.textContent = store.activeProfile
     ? `${store.activeProfile.profile.displayName} · ${modeLabel(store.settings?.networkMode)} · ${routingMode === "global" ? "全局" : routingMode === "direct" ? "直连" : "规则"}`
@@ -972,8 +991,7 @@ function renderProfiles() {
     list.textContent = "还没有配置档案";
   } else {
     list.className = "profile-list";
-    list.innerHTML = store.profiles
-      .map((profile) => {
+    const rows = (profiles: ProfileRecord[]) => profiles.map((profile) => {
         const active = store.activeProfile?.profile.id === profile.id;
         const selected = store.selectedProfile?.profile.id === profile.id;
         return `
@@ -985,6 +1003,9 @@ function renderProfiles() {
         `;
       })
       .join("");
+    const remote = store.profiles.filter(profile => profile.source.type === "remote_subscription");
+    const local = store.profiles.filter(profile => profile.source.type !== "remote_subscription");
+    list.innerHTML = `<h3 class="profile-source-heading">订阅配置 · 与订阅同步</h3>${rows(remote) || '<p class="hint">尚未添加订阅</p>'}<h3 class="profile-source-heading">本地 YAML</h3>${rows(local) || '<p class="hint">尚无本地配置</p>'}`;
   }
   renderProfileDetails();
 }
@@ -1016,7 +1037,7 @@ function renderProfileDetails() {
       <button class="button button-primary" data-profile-action="activate" data-profile-id="${profile.id}">激活</button>
       <button class="button button-quiet" data-profile-action="refresh" data-profile-id="${profile.id}" ${profile.source.type !== "remote_subscription" ? "disabled" : ""}>更新</button>
       <button class="button button-quiet" data-profile-action="rollback" data-profile-id="${profile.id}" ${!profile.lastKnownGoodRevisionId ? "disabled" : ""}>回滚</button>
-      <button class="button button-danger" data-profile-action="delete" data-profile-id="${profile.id}" ${store.activeProfile?.profile.id === profile.id ? "disabled" : ""}>删除</button>
+      <button class="button button-danger" data-profile-action="delete" data-profile-id="${profile.id}" >删除</button>
     </div>
     <h3>版本记录</h3>
     <div class="revision-list">
@@ -1203,7 +1224,7 @@ function tunHelperStateLabel(state: TunHelperStatus["state"] | undefined): strin
     outdated: "需要更新",
     unreachable: "连接异常",
     needs_repair: "需要重新关联",
-    invalid_installation: "需要更新安装包",
+    invalid_installation: "安装包未满足 TUN 要求",
   };
   return state ? labels[state] : "正在检查";
 }
@@ -1344,7 +1365,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((but
 themeController.refresh();
 
 async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
-  const requestedDuringWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving;
+  const requestedDuringWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching;
   if (requestedDuringWrite && !allowDuringRuntimeAction) return;
   const requestedRevision = runtimeMutationRevision;
   const requestedSequence = ++runtimeReadSequence;
@@ -1352,7 +1373,7 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
   // Helper readback is unrelated to System Proxy completion. Refresh it later.
   void api.tunHelperStatus().then(helper => { if (requestedRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); } }).catch(() => {});
   if (requestedRevision !== runtimeMutationRevision || requestedSequence !== runtimeReadSequence
-    || (!allowDuringRuntimeAction && (runtimeActionInFlight || networkModeSwitching || settingsSaving))) return;
+    || (!allowDuringRuntimeAction && (runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching))) return;
   store.runtime = runtime;
   store.systemProxy = systemProxy;
   if (runtime.phase !== "running") {
@@ -1372,7 +1393,7 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
 async function startRuntime(mode: RuntimeStartMode) {
   connectionFeedback.clearIssue();
   const result = await startRuntimeInMode(mode, {
-    state: () => ({ settings: store.settings, runtime: store.runtime, systemProxyActive: Boolean(store.systemProxy?.active), hasProfile: Boolean(store.activeProfile), busy: runtimeActionInFlight || networkModeSwitching || settingsSaving }),
+    state: () => ({ settings: store.settings, runtime: store.runtime, systemProxyActive: Boolean(store.systemProxy?.active), hasProfile: Boolean(store.activeProfile), busy: runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching }),
     setBusy: (busy) => { runtimeMutationRevision++; runtimeActionInFlight = busy; renderHeader(); renderOverview(); renderAppearance(themeController.snapshot); },
     setSettings: (settings) => { store.settings = settings; },
     setRuntime: (runtime) => { store.runtime = runtime; },
@@ -1556,9 +1577,9 @@ async function ensureTunHelperReady(): Promise<boolean> {
   } else {
     const helper = result.status;
     connectionFeedback.showError({ userMessage: {
-      title: helper.state === "invalid_installation" ? "请更新完整安装包" : helper.state === "needs_repair" ? "辅助服务需要重新关联" : helper.state === "requires_approval" ? "TUN 还需要系统授权" : !helper.supported ? "当前平台尚未支持 TUN" : "TUN 服务尚未就绪",
+      title: helper.state === "invalid_installation" ? "此安装包暂未满足 TUN 要求" : helper.state === "needs_repair" ? "辅助服务需要重新关联" : helper.state === "requires_approval" ? "TUN 还需要系统授权" : !helper.supported ? "当前平台尚未支持 TUN" : "TUN 服务尚未就绪",
       description: `${helper.message} 本次未切换网络模式。`,
-      action: ["unreachable", "checking"].includes(helper.state) ? "refresh" : "settings",
+      action: helper.state === "invalid_installation" ? "diagnostics" : ["unreachable", "checking"].includes(helper.state) ? "refresh" : "settings",
       details: helper.lastError ?? "",
     } });
     if (["requires_approval", "invalid_installation", "needs_repair", "outdated"].includes(helper.state)) navigate("settings");
@@ -1584,6 +1605,9 @@ async function switchRoutingMode(mode: "global" | "rule" | "direct") {
   }
   renderOverview();
   renderProfiles();
+  renderManualMode();
+  renderProxies();
+  await refreshBase();
 }
 
 async function createSubscription(
@@ -1681,6 +1705,19 @@ async function createInline() {
   renderProfiles();
 }
 
+async function deleteProfileConfirmed(profileId: string, returnFocus: HTMLElement): Promise<boolean> {
+  const profile = store.profiles.find(p => p.id === profileId);
+  const active = store.activeProfile?.profile.id === profileId;
+  if (!await confirmAction({ title: active ? "停止并删除当前配置？" : "删除配置？", message: `删除“${profile?.displayName ?? '此配置'}”及其本地版本记录。${active ? '会停止当前代理并恢复由 Serylane 接管的系统代理设置；不会自动选用其他订阅。' : '不影响当前正在使用的其他配置。'}本地原始 YAML 文件及 Codex 路由接入设置保持不变。`, confirmLabel: active ? "停止并删除" : "确认删除", returnFocus })) return false;
+  runtimeMutationRevision++; manualModeSwitching = true; proxyReadSequence++;
+  try {
+    const deleted = await action("", async () => { await api.deleteProfile(profileId); return true; });
+    return deleted === true;
+  } finally {
+    manualModeSwitching = false; runtimeMutationRevision++; await refreshBase();
+  }
+}
+
 async function handleProfileAction(target: HTMLElement) {
   const actionName = target.dataset.profileAction;
   const profileId = target.dataset.profileId;
@@ -1692,7 +1729,7 @@ async function handleProfileAction(target: HTMLElement) {
   } else if (actionName === "rollback") {
     await action("已回滚到上一稳定版本", () => api.rollbackProfile(profileId));
   } else if (actionName === "delete") {
-    await action("配置已删除", () => api.deleteProfile(profileId));
+    if (!await deleteProfileConfirmed(profileId, target)) return;
     store.selectedProfile = null;
   } else if (actionName === "revision") {
     await action("指定版本已激活", () =>
@@ -1791,28 +1828,7 @@ async function handleSubscriptionAction(target: HTMLElement) {
     const activated = await action("", () => api.activateProfile(profileId));
     if (activated) toast("订阅已激活", "success");
   } else if (actionName === "delete") {
-    const subscription = store.subscriptions.find(
-      (subscription) => subscription.profile.id === profileId,
-    );
-    const profile = subscription?.profile;
-    if (subscription?.active) {
-      toast("当前订阅正在使用，请先激活其他订阅后再删除", "info", "top-right");
-      return;
-    }
-    const confirmed = await confirmAction({
-      title: "删除订阅",
-      message: `确定删除“${profile?.displayName ?? "未命名订阅"}”及其本地版本记录？此操作不可撤销。`,
-      confirmLabel: "确认删除",
-      returnFocus: target,
-    });
-    if (!confirmed) {
-      return;
-    }
-    const deleted = await action("", async () => {
-      await api.deleteProfile(profileId);
-      return true;
-    });
-    if (!deleted) return;
+    if (!await deleteProfileConfirmed(profileId, target)) return;
     toast("订阅删除成功", "success", "top-right");
   }
   await refreshBase();
@@ -1895,8 +1911,9 @@ function renderOpenAiPolicy() {
       </div>
       <p class="openai-progress-copy">${escapeHtml(task!.message)}</p>
     ` : ""}
+    ${active.profile.routingMode !== "rule" ? '<p class="warning-box">当前为全局或直连模式，AI 专用分流规则暂不参与。需要 AI 分流时，请先在「自选节点」选择规则模式，再切回 AI 代理。</p>' : ""}
     ${taskForActive && task?.phase === "failed" && task.error ? `<div class="openai-error">${escapeHtml(task.error)}</div>` : ""}
-    ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, nodeSelectionBusy || Boolean(task?.running), policy.selectedNodes.map(node => node.name).filter(name => runtimeGroup.all?.includes(name)), proxyMap) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，直接使用下方普通代理组。</p>'}
+    ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, nodeSelectionBusy || Boolean(task?.running), policy.selectedNodes.map(node => node.name).filter(name => runtimeGroup.all?.includes(name)), proxyMap) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，请在「自选节点」页切换为普通策略组选点。</p>'}
     <div class="openai-policy-stats">
       <div><span>${runtimeGroup?.now ? "当前节点" : "候选首选（非运行状态）"}</span><strong>${escapeHtml(currentNode)}</strong></div>
       <div><span>自动维护</span><strong>${policy.autoMaintain ? "订阅更新后执行" : "仅手动执行"}</strong></div>
@@ -1908,6 +1925,9 @@ function renderOpenAiPolicy() {
 }
 
 async function startOpenAiGeneration(profileId?: string) {
+  if (store.manualOutbound?.mode !== "ai") {
+    navigate("proxies"); toast("请先点击「使用 AI 代理」确认切换，再生成灾备策略。", "info"); return;
+  }
   const targetProfileId = profileId ?? store.activeProfile?.profile.id;
   if (!targetProfileId) {
     toast("请选择需要生成 OpenAI 容灾的订阅", "error");
@@ -1988,6 +2008,7 @@ async function refreshProxies(quiet = false) {
   try {
     const result = await api.proxies();
     if (!contextCurrent() || store.runtime?.phase !== "running") return;
+    if (result.modeRevision !== store.manualOutbound?.revision) throw new Error("选点方式已变化，请刷新页面状态后重试");
     if (result.profileId !== profile.id || result.revisionId !== profile.activeRevisionId) throw new Error("节点信息与当前配置不一致，请刷新重试");
     store.proxies = result;
     proxyReadError = "";
@@ -1997,7 +2018,7 @@ async function refreshProxies(quiet = false) {
     const map = (result.proxies ?? {}) as ProxyMap;
     const groups = generalGroups(map, profile.routingMode);
     const general = groups.includes(overviewGroup) ? overviewGroup : groups[0];
-    const targets = [general, profile.routingMode === "rule" && profile.openaiPolicy.enabled && map[OPENAI_GROUP_NAME] ? OPENAI_GROUP_NAME : null].filter((value): value is string => Boolean(value));
+    const targets = [general, profile.routingMode === "rule" && store.manualOutbound?.mode === "ai" && profile.openaiPolicy.enabled && map[OPENAI_GROUP_NAME] ? OPENAI_GROUP_NAME : null].filter((value): value is string => Boolean(value));
     const details = await Promise.all(targets.map(async group => {
       try { return [group, await api.currentNodeDetails(group)] as const; }
       catch { return [group, undefined] as const; }
@@ -2031,14 +2052,15 @@ function renderOverviewNodes() {
   if (!groups.includes(overviewGroup)) overviewGroup = groups[0] ?? "";
   const html = `${groups.length > 1 ? `<label class="overview-node-selector">查看普通策略组（仅切换展示）<select id="overview-node-group">${groups.map(name => `<option value="${escapeHtml(name)}" ${overviewGroup === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>` : ""}
     <div class="overview-node-grid">${overviewGroup ? currentNodeMarkup(profile.routingMode === "global" ? "全局代理" : "普通代理", overviewGroup, map, overviewNodeDetails[overviewGroup]) : '<p class="node-choice-help">当前配置没有可展示的普通代理组，请在「配置」检查节点与分流规则。</p>'}
-    ${profile.routingMode === "rule" && profile.openaiPolicy.enabled && map[OPENAI_GROUP_NAME] ? currentNodeMarkup("OpenAI 专用出口", OPENAI_GROUP_NAME, map, overviewNodeDetails[OPENAI_GROUP_NAME]) : ""}</div>
-    <p class="node-choice-help">${profile.routingMode === "global" ? "全局模式按 GLOBAL 组路由，不使用 OpenAI 专用分流规则。" : profile.openaiPolicy.enabled ? "OpenAI 专用出口仅用于命中对应规则的请求；用户自定义规则可能优先。" : "OpenAI 灾备未启用，普通代理选点可独立使用。"} 切换只影响后续新连接，不主动断开已有连接。</p>`;
+    ${profile.routingMode === "rule" && store.manualOutbound?.mode === "ai" && profile.openaiPolicy.enabled && map[OPENAI_GROUP_NAME] ? currentNodeMarkup("OpenAI 专用出口", OPENAI_GROUP_NAME, map, overviewNodeDetails[OPENAI_GROUP_NAME]) : ""}</div>
+    <p class="node-choice-help">${profile.routingMode === "global" ? "全局模式按 GLOBAL 组路由，不使用 OpenAI 专用分流规则。" : store.manualOutbound?.mode === "ai" && profile.openaiPolicy.enabled ? "OpenAI 专用出口仅用于命中对应规则的请求；用户自定义规则可能优先。" : "OpenAI 灾备未启用，普通代理选点可独立使用。"} 切换只影响后续新连接，不主动断开已有连接。</p>`;
   if (!container.contains(document.activeElement) && container.innerHTML !== html) container.innerHTML = html;
 }
 
 async function changeNode(group: string, node: string | null, returnFocus?: HTMLElement) {
   const profile = store.activeProfile?.profile;
-  if (nodeSelectionBusy || !profile?.activeRevisionId || store.runtime?.phase !== "running" || !store.proxies || store.openAiTask?.running) return;
+  if (nodeSelectionBusy || !profile?.activeRevisionId || store.runtime?.phase !== "running" || !store.proxies || manualModeSwitching || (store.manualOutbound?.mode === "ai" && store.openAiTask?.running)) return;
+  const modeRevision = store.proxies.modeRevision as string;
   nodeSelectionBusy = true;
   proxyReadSequence++;
   try {
@@ -2048,12 +2070,12 @@ async function changeNode(group: string, node: string | null, returnFocus?: HTML
     }
     const confirmed = await confirmAction({ title: node === null ? "恢复自动选择？" : "应用所选节点？", message: `${group}${node === null ? "：恢复该组的自动策略。" : ` → ${node}。`}只影响命中此组的后续新连接，不主动断开已有连接。${group === OPENAI_GROUP_NAME && profile.openaiPolicy.stabilityEnabled && node !== null ? "手动固定期间暂停稳定策略的自动切换，节点故障时需手动更换或恢复自动。" : "Fallback / URLTest 的手动选择为优先使用，失效时核心仍可能回退。"}`, confirmLabel: node === null ? "恢复自动" : "应用节点", returnFocus });
     if (!confirmed) return;
-    if (profile.id !== store.activeProfile?.profile.id || profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || store.runtime?.phase !== "running") {
+    if (profile.id !== store.activeProfile?.profile.id || profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || modeRevision !== store.manualOutbound?.revision || store.runtime?.phase !== "running") {
       toast("配置或运行状态已变化，请重新选择", "error"); return;
     }
     await action(node === null ? "已恢复自动选择" : "已提交节点选择，正在读取实际出口", async () => {
-      if (node === null) await api.clearProxySelection(group, profile.id, profile.activeRevisionId!);
-      else await api.selectProxy(group, node, profile.id, profile.activeRevisionId!);
+      if (node === null) await api.clearProxySelection(group, profile.id, profile.activeRevisionId!, modeRevision);
+      else await api.selectProxy(group, node, profile.id, profile.activeRevisionId!, modeRevision);
       return true;
     });
   } finally {
@@ -2063,39 +2085,30 @@ async function changeNode(group: string, node: string | null, returnFocus?: HTML
 }
 
 function renderProxies() {
-  // Do not replace a focused native dropdown or an unapplied selection draft
-  // during background polling. Explicit refresh/confirmation updates it later.
-  if ($("#proxies-view")?.contains(document.activeElement) && !store.proxies) (document.activeElement as HTMLElement)?.blur();
-  if (store.proxies && (nodeSelectionBusy || $("#proxies-view")?.contains(document.activeElement) && document.activeElement?.tagName === "SELECT")) return;
   renderOpenAiPolicy();
-  const container = $("#proxy-groups");
-  if (!container) return;
-  const proxyMap = (store.runtime?.phase === "running" ? store.proxies?.proxies ?? {} : {}) as Record<string, any>;
-  const groups = Object.entries(proxyMap).filter(
-    ([name, value]) => name !== OPENAI_GROUP_NAME && Array.isArray(value?.all),
-  );
+  const container = $("#proxy-groups")!;
+  if (nodeSelectionBusy) return;
+  const map = (store.runtime?.phase === "running" ? store.proxies?.proxies ?? {} : {}) as ProxyMap;
+  const mode = store.activeProfile?.profile.routingMode ?? "rule";
+  const groups = generalGroups(map, mode);
   if (!groups.length) {
     container.className = "card-list empty-state";
-    container.textContent = proxyReadError || "启动核心后可查看普通代理组，无需启用 OpenAI 灾备。";
+    container.textContent = !store.activeProfile ? "还没有选用配置。请添加订阅或导入本地 YAML 后选用。" : mode === "direct" ? "直连模式不使用代理节点，切回规则或全局模式后选择。" : proxyReadError || "启动核心后查看订阅策略组及提供器节点。";
     return;
   }
-  container.className = "card-list";
-  container.innerHTML = groups
-    .map(([name, value]) => {
-      return `
-        <article class="proxy-card" data-group="${escapeHtml(name)}" tabindex="-1">
-          <div><h3>${escapeHtml(name)}</h3><p>${escapeHtml(value.type)} · UDP ${value.udp ? "支持" : "未知"}</p></div>
-          ${nodeSelectionMarkup(name, value, nodeSelectionBusy || Boolean(store.openAiTask?.running))}
-          <div class="proxy-card-footer">
-            <span>当前：${escapeHtml(value.now ?? "—")}</span>
-            <div class="toolbar">
-              <button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">详情</button>
-              <button class="button button-quiet proxy-delay" data-proxy="${escapeHtml(value.now ?? name)}">测速</button>
-            </div>
-          </div>
-        </article>`;
-    })
-    .join("");
+  const open = new Set(Array.from(container.querySelectorAll<HTMLDetailsElement>('details[open]')).map(el => el.dataset.group));
+  const firstRender = !Array.from(container.querySelectorAll<HTMLDetailsElement>('details')).some(el => groups.includes(el.dataset.group ?? ""));
+  const query = ($("#manual-search") as HTMLInputElement).value;
+  const sort = ($("#manual-sort") as HTMLSelectElement).value;
+  const busy = store.manualOutbound?.mode !== "manual" || manualModeSwitching;
+  container.className = "card-list manual-groups";
+  container.innerHTML = groups.map((name, index) => {
+    const value = map[name];
+    return `<details class="proxy-card manual-group" data-group="${escapeHtml(name)}" ${open.has(name) || firstRender && index === 0 || query ? 'open' : ''}>
+      <summary><strong>${escapeHtml(name)}</strong><span>${escapeHtml(value.now ?? '按组策略')} · ${value.all?.length ?? 0} 节点</span><small>${escapeHtml(value.type ?? '')}</small></summary>
+      <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">当前出口详情</button>${value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-node-auto="${escapeHtml(name)}" ${busy ? 'disabled' : ''}>恢复自动</button>` : ''}</div>
+      ${nodeGridMarkup(name, map, query, sort, busy)}</details>`;
+  }).join('');
 }
 
 function preferredCurrentGroup(): string | null {
@@ -2193,9 +2206,10 @@ function closeNodeDetails() {
 
 function focusNodeGroup(group: string) {
   closeNodeDetails();
-  navigate("proxies");
+  navigate(group === OPENAI_GROUP_NAME ? "proxies" : "manual");
   renderProxies();
   const card = group === OPENAI_GROUP_NAME ? $("#openai-policy-card") : $$(".proxy-card").find((element) => element.dataset.group === group);
+  if (card?.tagName === "DETAILS") (card as HTMLDetailsElement).open = true;
   card?.scrollIntoView({ behavior: "smooth", block: "center" });
   (card?.querySelector("select, button") as HTMLElement | null)?.focus();
 }
@@ -2330,6 +2344,33 @@ const ruleManager = mountRuleManager($("#rules-view")!, {
   },
 });
 
+const manualOutbound = mountManualOutbound($("#manual-view")!, {
+  read: api.manualOutbound,
+  write: async (mode, revision) => { runtimeMutationRevision++; manualModeSwitching = true; try { return await api.setManualOutbound(mode, revision); } catch (error) { toast(errorMessage(error), "error"); throw error; } finally { manualModeSwitching = false; runtimeMutationRevision++; } },
+  confirm: confirmAction,
+  error: errorMessage,
+  changed: async state => { store.manualOutbound = state; store.proxies = null; overviewNodeDetails = {}; renderManualMode(); renderProxies(); await refreshBase(); },
+});
+$("#proxy-mode-restore")!.addEventListener("click", () => void manualOutbound.enableAi());
+function renderManualMode() {
+  const ai = store.manualOutbound?.mode === "ai" && !store.manualOutbound?.legacySelection;
+  ($("#proxy-mode-controls") as HTMLFieldSetElement).disabled = !ai;
+  $("#proxy-mode-notice")!.hidden = ai;
+  const importAi = $("#managed-subscription-openai") as HTMLInputElement;
+  importAi.disabled = !ai; if (!ai) importAi.checked = false;
+  if (store.manualOutbound) manualOutbound.accept(store.manualOutbound);
+  const select = $("#manual-profile") as HTMLSelectElement;
+  if (document.activeElement !== select) {
+    select.innerHTML = '<option value="">请选择配置</option>' + store.profiles.map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.displayName)}${profile.source.type === 'remote_subscription' ? '' : ' · 本地 YAML'}</option>`).join('');
+    select.value = store.activeProfile?.profile.id ?? '';
+  }
+  for (const id of ["home-routing-mode", "manual-routing-mode"]) document.querySelectorAll<HTMLButtonElement>(`#${id} button`).forEach(button => {
+    button.disabled = !store.activeProfile || ai || Boolean(store.manualOutbound?.legacySelection);
+    button.classList.toggle('is-active', button.dataset.routingMode === store.activeProfile?.profile.routingMode);
+    button.setAttribute('aria-pressed', String(button.dataset.routingMode === store.activeProfile?.profile.routingMode));
+  });
+}
+
 function navigate(view: ViewName) {
   const previousView = store.view;
   if (previousView !== view) viewNavigationRevision++;
@@ -2356,6 +2397,7 @@ function navigate(view: ViewName) {
   }
   if (view === "overview") void refreshProxies(true);
   if (view === "subscriptions") renderSubscriptions();
+  if (view === "manual") { void manualOutbound.refresh(); void refreshProxies(true); }
   if (view === "settings") void refreshSessionResume(true);
   if (view === "programs") void programManager.refresh();
   if (view === "routing") void localRouting.refresh();
@@ -2397,6 +2439,19 @@ $("#home-routing-mode")!.addEventListener("click", (event) => {
     );
   }
 });
+$("#manual-routing-mode")!.addEventListener('click', event => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-routing-mode]');
+  if (button && !button.disabled) void switchRoutingMode(button.dataset.routingMode as 'rule' | 'global' | 'direct').then(renderManualMode);
+});
+$("#manual-profile")!.addEventListener('change', async event => {
+  const id = (event.target as HTMLSelectElement).value;
+  if (!id || id === store.activeProfile?.profile.id) return;
+  if (await confirmAction({title:'选用配置？', message:'将加载此配置的订阅策略组和分流规则，不自动开启系统代理或 TUN。',confirmLabel:'选用配置'})) await action('配置已选用', () => api.activateProfile(id));
+  (event.target as HTMLElement).blur(); await refreshBase();
+});
+$("#manual-search")!.addEventListener('input', renderProxies);
+$("#manual-sort")!.addEventListener('change', renderProxies);
+$("#manual-refresh")!.addEventListener('click', () => { void refreshBase(); });
 $("#profiles-refresh")!.addEventListener("click", () => void refreshBase());
 $("#subscriptions-refresh-list")!.addEventListener("click", () => void refreshBase());
 $("#subscriptions-refresh-all")!.addEventListener("click", () => void refreshAllSubscriptions());
@@ -2482,14 +2537,14 @@ $("#confirmation-modal")!.addEventListener("click", (event) => {
   if (button?.dataset.confirmationAction === "confirm") closeConfirmation(true);
 });
 
-$("#proxies-view")!.addEventListener("submit", (event) => {
+document.addEventListener("submit", (event) => {
   const form = (event.target as HTMLElement).closest<HTMLFormElement>("form[data-node-group]");
   if (!form) return;
   event.preventDefault();
   const selected = form.querySelector("select")?.value;
   if (selected) void changeNode(form.dataset.nodeGroup!, selected, form.querySelector("button") ?? undefined);
 });
-$("#proxies-view")!.addEventListener("click", (event) => {
+document.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLElement>("[data-node-auto]");
   if (button) void changeNode(button.dataset.nodeAuto!, null, button);
 });
@@ -2507,6 +2562,8 @@ $("#overview-nodes-content")!.addEventListener("click", event => {
   else if (target?.dataset.overviewNodeDetails) void openNodeDetails(target.dataset.overviewNodeDetails);
 });
 $("#proxy-groups")!.addEventListener("click", async (event) => {
+  const choice = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-node-choice]");
+  if (choice) { await changeNode(choice.dataset.nodeGroup!, choice.dataset.nodeChoice!, choice); return; }
   const detailsButton = (event.target as HTMLElement).closest<HTMLButtonElement>(
     ".proxy-details",
   );
@@ -2517,7 +2574,7 @@ $("#proxy-groups")!.addEventListener("click", async (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>(".proxy-delay");
   if (!button?.dataset.proxy) return;
   const result = await action("", () => api.testProxyDelay(button.dataset.proxy!));
-  if (result) toast(`延迟：${escapeHtml(result.delay ?? "—")} ms`, "success");
+  if (result) { button.textContent = `${result.delay ?? "—"} ms`; toast(`延迟：${escapeHtml(result.delay ?? "—")} ms`, "success"); }
 });
 
 $("#openai-policy-card")!.addEventListener("click", async (event) => {
@@ -2803,7 +2860,7 @@ window.setInterval(() => {
 }, 1_000);
 
 window.setInterval(() => {
-  if (proxyPolling || nodeSelectionBusy || document.hidden || !["overview", "proxies"].includes(store.view) || store.runtime?.phase !== "running") return;
+  if (proxyPolling || nodeSelectionBusy || document.hidden || !["overview", "proxies", "manual"].includes(store.view) || store.runtime?.phase !== "running") return;
   proxyPolling = true;
   void refreshProxies(true).finally(() => { proxyPolling = false; });
 }, 10_000);

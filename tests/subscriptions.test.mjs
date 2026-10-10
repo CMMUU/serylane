@@ -5,7 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const read = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
-const { newestSubscriptionStatus, subscriptionBytes, subscriptionDate, describeSubscriptionUsage, subscriptionCardMarkup } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-cards.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
+const { synchronizedProfiles, newestSubscriptionStatus, subscriptionBytes, subscriptionDate, describeSubscriptionUsage, subscriptionCardMarkup } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-cards.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
 const { subscriptionImportMarkup, describeSubscriptionImport } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-import.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
 const now = Date.parse("2026-09-07T00:00:00Z");
 const GiB = 1024 ** 3;
@@ -17,7 +17,7 @@ test("provider upload plus download produce quota and remaining, not response by
   assert.equal(result.used, 30 * GiB); assert.equal(result.remaining, 70 * GiB);
   assert.equal(result.progress, 30); assert.equal(result.expired, false);
   const card = subscriptionCardMarkup(subscription(), null, now);
-  assert.match(card, /30 GiB/); assert.match(card, /共 100 GiB/); assert.match(card, /4 KiB · 3 个版本/);
+  assert.match(card, /30 GiB/); assert.match(card, /100 GiB/); assert.match(card, /4 KiB · 3 个版本/);
 });
 test("zero is a real usage value while missing, negative and unsafe numbers stay unknown", () => {
   assert.equal(subscriptionBytes(0), "0 B"); assert.equal(subscriptionBytes(undefined), "—");
@@ -25,10 +25,10 @@ test("zero is a real usage value while missing, negative and unsafe numbers stay
   assert.equal(describeSubscriptionUsage(sample({ uploadBytes: 0, downloadBytes: 0 }), now).progress, 0);
   assert.equal(describeSubscriptionUsage(sample({ downloadBytes: null }), now).used, null);
 });
-test("remaining quota is primary and periodic observations cannot apply or switch configuration", () => {
+test("used / total quota is compact and periodic observations cannot apply or switch configuration", () => {
   const card = subscriptionCardMarkup(subscription(), null, now);
-  assert.match(card, /剩余流量/);
-  assert.match(card, /subscription-usage-value"><strong>70 GiB/);
+  assert.match(card, /剩余 70 GiB/);
+  assert.match(card, /已用 <strong>30 GiB<\/strong> \/ 100 GiB/);
   assert.match(card, /每 5 分钟直接检查订阅用量/);
   const poller = readFileSync(new URL('../src-tauri/src/subscription_quota.rs', import.meta.url), 'utf8');
   assert.match(poller, /POLL_SECONDS: i64 = 300/);
@@ -82,7 +82,7 @@ test("all real subscription actions remain available and selecting an active pro
   for (const action of ["refresh", "activate", "versions", "delete", "openai-generate"]) assert.match(card, new RegExp(`data-subscription-action="${action}"`));
   assert.match(card, /data-subscription-action="activate"[^>]*disabled/);
   assert.match(card, /<details class="subscription-more"/);
-  const main = read("main.ts"); assert.match(main, /title: "删除订阅"/); assert.match(main, /当前订阅正在使用，请先激活其他订阅后再删除/);
+  const main = read("main.ts"); assert.match(main, /停止并删除当前配置/); assert.doesNotMatch(main, /请先激活其他订阅后再删除/); assert.match(main, /deleteProfileConfirmed/);
 });
 test("running disaster recovery generation keeps cancel action and blocks competing generation", () => {
   const task = { profileId: "fixture-only", running: true, completed: 1, total: 3 };
@@ -128,6 +128,12 @@ test("import messages distinguish saving, explicit selection, duplicates and ind
   }
 });
 
+const apiSource = ts.createSourceFile("api.ts", read("api.ts"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const errorDeclaration = apiSource.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === "errorMessage");
+const errorContext = vm.createContext({});
+vm.runInContext(ts.transpileModule(errorDeclaration.getText(apiSource).replace("export ", ""), { compilerOptions: {target: ts.ScriptTarget.ES2020} }).outputText, errorContext);
+const realErrorMessage = errorContext.errorMessage;
+
 function importControllerFixture(options = {}) {
   const source = ts.createSourceFile("main.ts", read("main.ts"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "createSubscription");
@@ -147,8 +153,8 @@ function importControllerFixture(options = {}) {
     $, console, Array, Error, HTMLElement: FixtureElement, viewNavigationRevision: 0,
     subscriptionImporting: false, subscriptionDraftDirty: true, subscriptionActivationTouched: true,
     highlightedSubscriptionId: null, store: { view: options.view ?? "subscriptions" },
-    describeSubscriptionImport, errorMessage: error => error.message,
-    api: { createSubscriptionProfile: async (...args) => { calls.push(args); if (options.wait) await options.wait; if (options.failure) throw new Error(options.failure); return options.result ?? importResult(); } },
+    describeSubscriptionImport, errorMessage: realErrorMessage,
+    api: { createSubscriptionProfile: async (...args) => { calls.push(args); if (options.wait) await options.wait; if (options.failure) throw typeof options.failure === "string" ? new Error(options.failure) : options.failure; return options.result ?? importResult(); } },
     refreshBase: async () => { calls.push("refresh"); if (options.refreshFailure) throw new Error("refresh failed"); return options.refreshApplied !== false; },
     closeSubscriptionForm: () => { calls.push("close"); },
     toast: (text, tone) => notices.push({ text, tone }),
@@ -232,4 +238,29 @@ test("a late full list read never overwrites a newer quota observation", () => {
   assert.equal(newestSubscriptionStatus(old, fresh), fresh);
   assert.equal(newestSubscriptionStatus(fresh, null), fresh);
   assert.equal(newestSubscriptionStatus(null, fresh), fresh);
+});
+
+test("real subscription DTO preserves the friendly cause through the import controller", async () => {
+  for (const [title, description] of [["获取订阅超时", "服务商未在等待时间内完成响应。"], ["订阅服务拒绝了请求", "请核对客户端标识后重试。"]]) {
+    const f = importControllerFixture({failure: {code: "SUBSCRIPTION_ERROR", stage: "subscription", message: "private technical detail", retryable: true, userMessage: {title, description, action: "subscriptions", details: ""}}});
+    await f.submit();
+    assert.match(f.element("#managed-subscription-import-status").textContent, new RegExp(title));
+    assert.equal(f.element("#managed-subscription-url").value, "draft");
+    assert.doesNotMatch(f.element("#managed-subscription-import-status").textContent, /private technical detail/);
+  }
+});
+test("normal card folds secondary facts but retains visible failure and expiry", () => {
+  const card = subscriptionCardMarkup(subscription(), null, now);
+  const [compact, more] = card.split('<details class="subscription-more">');
+  assert.doesNotMatch(compact, /每 5 分钟|上传|下载|配置校验通过|最近检查/);
+  assert.match(more, /每 5 分钟|上传|配置校验通过/);
+  const record = subscription(); record.status.lastError = "连接失败";
+  assert.match(subscriptionCardMarkup(record, null, now).split('<details')[0], /刷新失败/);
+});
+
+test("configuration remote records follow subscriptions while local YAML remains separate", () => {
+  const remote = {id:"remote", displayName:"new", source:{type:"remote_subscription"}};
+  const local = {id:"local", source:{type:"inline"}};
+  assert.deepEqual(synchronizedProfiles([{...remote, displayName:"stale"}, {id:"deleted",source:{type:"remote_subscription"}}, local], [{profile:remote}]), [remote,local]);
+  assert.deepEqual(synchronizedProfiles([remote,local], []), [local]);
 });

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ProxyMode, ManualOutboundState } from "./manual-outbound";
 import type { CostSnapshot, CostInput } from "./openai-costs";
 import type { ThemePreference } from "./theme";
 import type {
@@ -42,6 +43,8 @@ import type {
 } from "./types";
 
 export const api = {
+  manualOutbound: () => invoke<ManualOutboundState>("get_manual_outbound"),
+  setManualOutbound: (mode: ProxyMode, expectedRevision: string) => invoke<ManualOutboundState>("set_manual_outbound", {mode, expectedRevision, confirmed: true}),
   connectionFeedback: () => invoke<ConnectionFeedback>("connection_feedback"),
   recheckConnection: () => invoke<ConnectionFeedback>("recheck_connection"),
   localRouteStatus: () => invoke<RouteSnapshot>("local_route_status"),
@@ -99,7 +102,7 @@ export const api = {
   rollbackProfile: (profileId: string) =>
     invoke<ProfileDetails>("rollback_profile", { profileId }),
   deleteProfile: (profileId: string) =>
-    invoke<void>("delete_profile", { profileId }),
+    invoke<void>("delete_profile", { profileId, confirmed: true }),
   binary: () => invoke<BinaryInfo>("probe_mihomo"),
   runtime: () => invoke<RuntimeStatus>("runtime_status"),
   sessionResume: () => invoke<SessionResumeStatus>("get_session_resume_status"),
@@ -148,12 +151,12 @@ export const api = {
   parseUserRulesText: (text: string) =>
     invoke<UserRule[]>("parse_user_rules_text", { text }),
   connections: () => invoke<Record<string, unknown>>("get_connections"),
-  selectProxy: (group: string, proxy: string, profileId: string, revisionId: string) =>
-    invoke<void>("select_proxy", { group, proxy, profileId, revisionId }),
+  selectProxy: (group: string, proxy: string, profileId: string, revisionId: string, modeRevision: string) =>
+    invoke<void>("select_proxy", { group, proxy, profileId, revisionId, modeRevision }),
   openAiCosts: (profileId: string) => invoke<CostSnapshot>("get_openai_costs", { profileId }),
   saveOpenAiCosts: (input: CostInput) => invoke<CostSnapshot>("save_openai_costs", { input, confirmed: true }),
-  clearProxySelection: (group: string, profileId: string, revisionId: string) =>
-    invoke<void>("clear_proxy_selection", { group, profileId, revisionId }),
+  clearProxySelection: (group: string, profileId: string, revisionId: string, modeRevision: string) =>
+    invoke<void>("clear_proxy_selection", { group, profileId, revisionId, modeRevision }),
   testProxyDelay: (proxy: string, url?: string, timeoutMs = 5_000) =>
     invoke<Record<string, unknown>>("test_proxy_delay", {
       proxy,

@@ -3,7 +3,7 @@ import type { CurrentNodeDetails, RoutingMode } from "./types";
 export const OPENAI_GROUP = "🤖 OpenAI 自动灾备";
 export type NodeMetadata = { regions: string[]; regionStatus: "supported" | "unsupported" | "restricted" | "unknown" | "ambiguous"; regionReason: string; eligible: boolean; ruleVersion: string; ruleSource: string; checkedAt: string; nameMultiplier: number | null; multiplierSource: "name" | "manual" | "unknown" | "conflict" | "invalid" };
 export const multiplierSourceLabel = (source: NodeMetadata["multiplierSource"] | undefined): string => ({ name: "名称识别", manual: "手动覆盖", unknown: "倍率未知", conflict: "倍率冲突", invalid: "倍率无效" })[source ?? "unknown"];
-export type ProxyNode = { type?: string; now?: string; all?: string[]; fixed?: string | boolean; manualNode?: string | null; alive?: boolean; udp?: boolean; trafficMultiplier?: number | null; withinCostBudget?: boolean; metadata?: NodeMetadata };
+export type ProxyNode = { history?: { delay: number; time?: string }[]; type?: string; now?: string; all?: string[]; fixed?: string | boolean; manualNode?: string | null; alive?: boolean; udp?: boolean; trafficMultiplier?: number | null; withinCostBudget?: boolean; metadata?: NodeMetadata };
 export type ProxyMap = Record<string, ProxyNode>;
 export const escapeNode = (value: unknown): string => String(value ?? "—").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 export const canSelectNode = (node: ProxyNode): boolean => ["Selector", "Fallback", "URLTest"].includes(node.type ?? "") && Array.isArray(node.all);
