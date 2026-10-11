@@ -1222,15 +1222,15 @@ mockIPC(async (command, payload) => {
   if (command === "check_app_update") {
     await new Promise((resolve) => window.setTimeout(resolve, 180));
     if (updateScenario === "failed") {
-      fixtureUpdate = { ...fixtureUpdate, info: null, phase: "failed", error: "合成状态：GitHub HTTP 403；Gitee HTTP 503" };
+      fixtureUpdate = { ...fixtureUpdate, info: null, phase: "failed", error: "合成状态：下载中心 HTTP 503；Gitee HTTP 503；GitHub HTTP 403" };
       throw new Error(fixtureUpdate.error!);
     }
     const latestVersion = updateScenario === "ahead" ? "v0.1.0" : updateScenario === "current" ? `v${packageInfo.version}` : "v9.0.0";
-    const source = updatePreferences.updateSource === "github" ? "github" : "gitee";
+    const source = updatePreferences.updateSource === "auto" ? "hk" : updatePreferences.updateSource;
     fixtureUpdate = { phase: updateScenario === "ahead" ? "ahead" : updateScenario === "current" ? "current" : "available", downloadedBytes: 0, totalBytes: 0, error: null,
-      info: { currentVersion: packageInfo.version, latestVersion, available: !["ahead", "current"].includes(updateScenario), ahead: updateScenario === "ahead", notes: "合成更新说明：演示双渠道回退与确认安装。未访问真实发布服务。", publishedAt: stamp, source,
-        releaseUrl: `https://${source}.com/${source === "github" ? "CMMUU" : "cmmuu"}/routedeck/releases/tag/${latestVersion}`,
-        channels: updatePreferences.updateSource === "auto" ? [{ source: "github", version: null, error: "合成 HTTP 403；已使用 Gitee" }, { source: "gitee", version: latestVersion, error: null }] : [{ source, version: latestVersion, error: null }],
+      info: { currentVersion: packageInfo.version, latestVersion, available: !["ahead", "current"].includes(updateScenario), ahead: updateScenario === "ahead", notes: "合成更新说明：演示下载中心优先与确认安装。未访问真实发布服务。", publishedAt: stamp, source,
+        releaseUrl: `https://github.com/CMMUU/serylane/releases/tag/${latestVersion}`,
+        channels: updatePreferences.updateSource === "auto" ? [{ source: "hk", version: latestVersion, error: null }, { source: "gitee", version: latestVersion, error: null }, { source: "github", version: null, error: "合成 HTTP 403；已使用下载中心" }] : [{ source, version: latestVersion, error: null }],
       } };
     return structuredClone(fixtureUpdate);
   }

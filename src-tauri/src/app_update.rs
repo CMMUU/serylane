@@ -43,7 +43,7 @@ impl UpdateSource {
             Self::Auto => "自动",
             Self::Github => "GitHub",
             Self::Gitee => "Gitee",
-            Self::Hk => "香港下载中心",
+            Self::Hk => "下载中心",
         }
     }
     fn release_base(self) -> AppResult<&'static str> {
@@ -862,6 +862,25 @@ pub fn open_official_release(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_display_names_preserve_persisted_channel_identities() {
+        for (source, key, label) in [
+            (UpdateSource::Auto, "auto", "自动"),
+            (UpdateSource::Hk, "hk", "下载中心"),
+            (UpdateSource::Gitee, "gitee", "Gitee"),
+            (UpdateSource::Github, "github", "GitHub"),
+        ] {
+            let stored = serde_json::to_string(key).unwrap();
+            assert_eq!(
+                serde_json::from_str::<UpdateSource>(&stored).unwrap(),
+                source
+            );
+            assert_eq!(serde_json::to_string(&source).unwrap(), stored);
+            assert_eq!(source.label(), label);
+        }
+        assert_eq!(UpdateSource::Hk.release_base().unwrap(), HK_RELEASES);
+    }
+
     #[test]
     fn install_transaction_requires_preparation_and_rolls_back_failed_phases() {
         use std::cell::RefCell;

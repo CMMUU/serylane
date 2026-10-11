@@ -31,14 +31,14 @@ test("download progress is bounded and never NaN", () => {
   assert.equal(describeAppUpdate({ ...status("downloading"), downloadedBytes: 500 }).progress, 100);
   assert.equal(describeAppUpdate({ ...status("downloading"), totalBytes: 0 }).progress, 0);
 });
-test("automatic update preferences clearly describe the domestic-first fallback policy", () => {
+test("automatic update preferences clearly describe the download-center-first fallback policy", () => {
   const settings = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
-  assert.match(settings, /value="auto">自动（香港优先）/);
-  assert.match(settings, /自动：香港 → Gitee → GitHub/);
-  assert.match(settings, /value="hk">香港下载中心/);
-  assert.match(describeAppUpdate({ ...status("available"), info: { ...status("available").info, source: "hk" } }).detail, /香港下载中心/);
-  assert.match(settings, /香港或 Gitee 尚未同步新版时使用已核验的最新渠道/);
-  assert.match(describeAppUpdate(status("idle")).detail, /优先香港下载中心，同版本 Gitee \/ GitHub 备用/);
+  assert.match(settings, /value="auto">自动（下载中心优先）/);
+  assert.match(settings, /自动：下载中心 → Gitee → GitHub/);
+  assert.match(settings, /value="hk">下载中心/);
+  assert.match(describeAppUpdate({ ...status("available"), info: { ...status("available").info, source: "hk" } }).detail, /下载中心/);
+  assert.match(settings, /下载中心或 Gitee 尚未同步新版时使用已核验的最新渠道/);
+  assert.match(describeAppUpdate(status("idle")).detail, /优先下载中心，同版本 Gitee \/ GitHub 备用/);
 });
 test("updater uses confirmed native installation and separately saved non-network preferences", () => {
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
@@ -113,8 +113,19 @@ test("release notes are present and checked before the bundle/tag pipeline", () 
 });
 
 test("all channel labels use one map, including HK and absent status", () => {
-  assert.equal(updateSourceLabel("hk"), "香港下载中心");
+  assert.equal(updateSourceLabel("hk"), "下载中心");
   assert.equal(updateSourceLabel("github"), "GitHub");
   assert.equal(updateSourceLabel("gitee"), "Gitee");
   assert.equal(updateSourceLabel(undefined), "—");
+});
+
+test("desktop update copy uses region-neutral source labels in every phase", () => {
+  const settings = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
+  const backend = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8");
+  assert.doesNotMatch(settings + source + backend, /香港|Hong[ -]?Kong|HK 下载/i);
+  assert.match(backend, /Self::Hk => "下载中心"/);
+  for (const phase of ["idle", "checking", "current", "ahead", "available", "downloading", "ready", "installing", "cancelled", "failed"]) {
+    const result = describeAppUpdate({ ...status(phase), info: { ...status(phase).info, source: "hk" }, error: "下载中心：连接暂不可用" });
+    assert.doesNotMatch([result.badge, result.label, result.detail].join(" "), /香港|Hong[ -]?Kong|HK 下载/i);
+  }
 });
