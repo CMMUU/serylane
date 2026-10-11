@@ -17,6 +17,7 @@ for (const path of files.filter(path => path.endsWith('.html'))) {
   const html = await readFile(path, 'utf8');
   const route = routeOf(path);
   htmls.set(route, html);
+  assert.doesNotMatch(html, /香港|\bHK\b|Hong Kong/i, `${route}: public download copy uses the location-neutral service name`);
   assert.match(html, /<html lang="zh-CN">/, `${route}: Chinese document language`);
   assert.equal([...html.matchAll(/<h1(?:\s|>)/g)].length, 1, `${route}: exactly one H1`);
   assert.match(html, /<title>[^<]+Serylane[^<]*<\/title>|<title>Serylane[^<]*<\/title>/, `${route}: title`);
@@ -64,7 +65,7 @@ assert.match(htmls.get('/docs/'), /NSWorkspace/);
 assert.match(htmls.get('/docs/'), /Flatpak\/Snap/);
 assert.match(htmls.get('/'), /缓存清单先显示、后台刷新不打断编辑/);
 assert.match(htmls.get('/'), /安装包下载优先下载中心，GitHub 备用。/);
-assert.doesNotMatch(htmls.get('/'), /自动更新：同版本香港优先/, 'Do not advertise candidate-only client update behavior as already released');
+assert.doesNotMatch(htmls.get('/'), /自动更新：同版本(?:香港|下载中心)优先/, 'Do not advertise candidate-only client update behavior as already released');
 assert.match(htmls.get('/docs/'), /v0\.7\.9：更清晰的 macOS 双行网速/);
 assert.match(htmls.get('/'), /macOS 原生双行网速/);
 assert.match(htmls.get('/'), /收紧左右留白，保留清晰字号/);
@@ -76,6 +77,7 @@ for (const route of htmls.keys()) if (route !== '/404') assert.ok(sitemap.includ
 assert.ok(!(sitemap.includes('/404')));
 assert.match(await readFile(join(root, 'robots.txt'), 'utf8'), /Sitemap: https:\/\/serylane\.cmmuu\.com\/sitemap\.xml/);
 const script = await readFile(join(root, 'site.js'), 'utf8');
+assert.doesNotMatch(script, /香港|\bHK\b|Hong Kong/i, 'Dynamic download labels use the same location-neutral service name');
 assert.doesNotMatch(script, /\b(?:XMLHttpRequest|WebSocket|invoke|EventSource)\s*\(|127\.0\.0\.1|localhost|__TAURI__|localStorage|sessionStorage/, 'Website must not contact proxy, storage or desktop services');
 assert.equal([...script.matchAll(/\bfetch\s*\(/g)].length, 1);
 assert.match(script, /fetch\("\/api\/releases\/latest",/);
