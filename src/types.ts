@@ -29,7 +29,7 @@ export type OpenAiNodeScore = {
   checkedAt: string;
 };
 
-export type RouteSettings = { listenPort: number; mode: "native" | "compatible"; upstream: "chatgpt" | "openai_api"; outboundProxy: string };
+export type RouteSettings = { listenPort: number; mode: "native" | "compatible"; upstream: "chatgpt" | "openai_api"; outboundProxy: string; allowedUrls?: { url: string; enabled: boolean }[] };
 export type RouteProbe = { state: "unknown" | "passed" | "http_unverified" | "failed"; checkedAt: number; latencyMs: number | null };
 export type RouteDiagnostic = { timestamp: number; category: string; code: string; message: string; target: RouteSettings["upstream"]; stage: string; elapsedMs: number; httpStatus: number | null; attribution: "verified" | "unconfirmed" };
 export type RouteSnapshot = {
@@ -404,6 +404,10 @@ export type AppUpdateInfo = {
 };
 
 export type AppUpdateStatus = {
+  stage?: string;
+  networkPath?: string;
+  attempts?: Array<{source: Exclude<UpdateSource, "auto">; result: string}>;
+  lastInstall?: string | null;
   phase: "idle" | "checking" | "current" | "ahead" | "available" | "downloading" | "ready" | "installing" | "cancelled" | "failed";
   info: AppUpdateInfo | null;
   downloadedBytes: number;

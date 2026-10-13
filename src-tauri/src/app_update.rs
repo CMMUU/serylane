@@ -120,8 +120,19 @@ pub struct AppUpdateInfo {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateAttempt {
+    source: UpdateSource,
+    result: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppUpdateStatus {
     pub phase: String,
+    pub stage: String,
+    pub network_path: String,
+    pub attempts: Vec<UpdateAttempt>,
+    pub last_install: Option<String>,
     pub info: Option<AppUpdateInfo>,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
@@ -132,6 +143,10 @@ impl Default for AppUpdateStatus {
     fn default() -> Self {
         Self {
             phase: "idle".into(),
+            stage: String::new(),
+            network_path: "待确定".into(),
+            attempts: Vec::new(),
+            last_install: None,
             info: None,
             downloaded_bytes: 0,
             total_bytes: 0,
@@ -163,6 +178,7 @@ pub struct AppUpdateManager {
     session: Arc<Mutex<Session>>,
     busy: Arc<AtomicBool>,
     cancelled: AtomicBool,
+    receipt_checked: AtomicBool,
 }
 
 struct Operation {
@@ -206,7 +222,7 @@ impl AppUpdateManager {
                 "failed"
             }
             .into();
-            session.status.error = Some(error.to_string());
+            session.status.error = Some(crate::app_log::sanitize(&error.to_string()));
         }
         error.dto()
     }
@@ -507,8 +523,13 @@ pub fn save_update_preferences(
 
 #[tauri::command]
 pub fn app_update_status(
+    app: AppHandle,
     state: State<'_, AppUpdateManager>,
 ) -> Result<AppUpdateStatus, AppErrorDto> {
+    if !state.receipt_checked.swap(true, Ordering::AcqRel) {
+        let summary = crate::update_receipt::summary(&app).unwrap_or_else(|e| Some(e.to_string()));
+        state.lock().map_err(|e| e.dto())?.status.last_install = summary;
+    }
     state
         .lock()
         .map(|session| session.status.clone())
@@ -523,7 +544,9 @@ pub async fn check_app_update(
     let _operation = state.begin().map_err(|e| e.dto())?;
     {
         let mut session = state.lock().map_err(|e| e.dto())?;
+        let last_install = session.status.last_install.clone();
         *session = Session::default();
+        session.status.last_install = last_install;
         session.status.phase = "checking".into();
     }
     let result = async {
@@ -656,6 +679,7 @@ async fn download_candidate(candidate: &Candidate, state: &AppUpdateManager) -> 
     if state.cancelled.load(Ordering::Acquire) {
         return Err(failure("下载已取消"));
     }
+    state.lock()?.status.stage = "verify".into();
     if oversized.load(Ordering::Acquire)
         || bytes.len() as u64 != candidate.size
         || format!("{:x}", Sha256::digest(&bytes)) != candidate.sha256
@@ -667,6 +691,7 @@ async fn download_candidate(candidate: &Candidate, state: &AppUpdateManager) -> 
 
 #[tauri::command]
 pub async fn download_app_update(
+    app: AppHandle,
     state: State<'_, AppUpdateManager>,
     version_tag: String,
 ) -> Result<AppUpdateStatus, AppErrorDto> {
@@ -683,13 +708,25 @@ pub async fn download_app_update(
         }
         session.ready = None;
         session.status.phase = "downloading".into();
+        session.status.stage = "download".into();
+        session.status.attempts.clear();
         session.status.error = None;
         session.candidates.clone()
     };
     let mut errors = Vec::new();
-    for candidate in candidates {
+    // Resolve the network path at download time, not at the earlier check.
+    let proxy = proxy_for_update(&app).map_err(|e| state.finish_error(&e))?;
+    for mut candidate in candidates {
+        candidate.update.proxy = proxy.clone();
         {
             let mut session = state.lock().map_err(|e| e.dto())?;
+            session.status.stage = "download".into();
+            session.status.network_path = if proxy.is_some() {
+                "经 Serylane 当前代理"
+            } else {
+                "当前系统网络（可能受环境代理、VPN 或 TUN 影响）"
+            }
+            .into();
             session.status.downloaded_bytes = 0;
             session.status.total_bytes = candidate.size;
             if let Some(info) = &mut session.status.info {
@@ -701,11 +738,25 @@ pub async fn download_app_update(
         match download_candidate(&candidate, &state).await {
             Ok(bytes) => {
                 let mut session = state.lock().map_err(|e| e.dto())?;
+                session.status.stage = "verified".into();
+                session.status.attempts.push(UpdateAttempt {
+                    source: candidate.source,
+                    result: "更新签名与 SHA-256 验证通过".into(),
+                });
                 session.status.phase = "ready".into();
                 session.ready = Some((candidate, bytes));
                 return Ok(session.status.clone());
             }
             Err(error) => {
+                state
+                    .lock()
+                    .map_err(|e| e.dto())?
+                    .status
+                    .attempts
+                    .push(UpdateAttempt {
+                        source: candidate.source,
+                        result: crate::app_log::sanitize(&error.to_string()),
+                    });
                 errors.push(format!("{}：{error}", candidate.source.label()));
                 if state.cancelled.load(Ordering::Acquire) {
                     break;
@@ -720,6 +771,38 @@ pub async fn download_app_update(
 pub fn cancel_app_update(state: State<'_, AppUpdateManager>) -> Result<(), AppErrorDto> {
     if state.lock().map_err(|e| e.dto())?.status.phase == "downloading" {
         state.cancelled.store(true, Ordering::Release);
+    }
+    Ok(())
+}
+
+fn installation_preflight(app: &AppHandle, size: u64) -> AppResult<()> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Io(e.to_string()))?;
+    let _probe = tempfile::NamedTempFile::new_in(&directory)
+        .map_err(|_| failure("更新目录不可写；尚未停止代理，请检查磁盘权限"))?;
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let executable = std::env::current_exe()?;
+    #[cfg(target_os = "macos")]
+    if executable.starts_with("/Volumes")
+        || executable.to_string_lossy().contains("/AppTranslocation/")
+    {
+        return Err(failure(
+            "请先把 Serylane 完整应用移到应用程序目录，再启动并更新；尚未停止代理",
+        ));
+    }
+    let reserve = size.saturating_mul(4).saturating_add(64 * 1024 * 1024);
+    for path in [&directory, &executable, &std::env::temp_dir()] {
+        if let Some(disk) = disks
+            .iter()
+            .filter(|d| path.starts_with(d.mount_point()))
+            .max_by_key(|d| d.mount_point().as_os_str().len())
+        {
+            if disk.available_space() < reserve {
+                return Err(failure("安装预留空间不足；请清理磁盘后重试，尚未停止代理"));
+            }
+        }
     }
     Ok(())
 }
@@ -796,6 +879,7 @@ pub async fn install_app_update(
         // No session MutexGuard is held across await. Blocking lifecycle waits
         // and archive extraction must not block the async runtime/UI executor.
         let install_app = app.clone();
+        let worker_status = state.session.clone();
         let worker_operation = _operation.clone();
         let worker_configuration = _configuration.clone();
         tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
@@ -803,6 +887,27 @@ pub async fn install_app_update(
             // both gates owned by the worker until rollback/install really ends.
             let _operation = worker_operation;
             let _configuration = worker_configuration;
+            let target_version = candidate.update.version.clone();
+            let stage = |value: &str| -> AppResult<()> {
+                if let Ok(mut session) = worker_status.lock() {
+                    session.status.stage = value.into();
+                }
+                if value != "preflight" {
+                    crate::update_receipt::write(&install_app, &target_version, value)?;
+                }
+                crate::app_log::record(
+                    0,
+                    crate::app_log::Area::App,
+                    &format!("软件更新：{}", crate::update_receipt::stage_label(value)),
+                );
+                Ok(())
+            };
+            stage("preflight")?;
+            crate::tun_service::preflight_app_upgrade(&install_app)?;
+            installation_preflight(&install_app, candidate.size)?;
+            #[cfg(target_os = "macos")]
+            let backup = crate::macos_update_install::Backup::prepare()?;
+            stage("stopping")?;
             // No disruptive work before explicit confirmation and verified bytes.
             install_app
                 .state::<crate::local_routing::LocalRoutingManager>()
@@ -819,17 +924,32 @@ pub async fn install_app_update(
                 .cancel()?;
             install_app.state::<crate::GlobalTrafficMonitor>().stop();
             AppStorage::from_app(&install_app)?.mark_clean_shutdown(true)?;
-            let target_version = candidate.update.version.clone();
-            install_with_service_transaction(
+            stage("services")?;
+            let result = install_with_service_transaction(
                 || crate::tun_service::prepare_app_upgrade(&install_app, &target_version),
                 || {
-                    candidate
-                        .update
-                        .install(bytes)
-                        .map_err(|error| failure(format!("安装启动失败：{error}")))
+                    stage("replacing")?;
+                    let replace = || {
+                        candidate
+                            .update
+                            .install(bytes)
+                            .map_err(|error| failure(format!("安装启动失败：{error}")))
+                    };
+                    #[cfg(target_os = "macos")]
+                    {
+                        backup.install(replace)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        replace()
+                    }
                 },
                 || crate::tun_service::rollback_app_upgrade(&install_app),
-            )
+            );
+            if result.is_ok() {
+                stage("restarting")?;
+            }
+            result
         })
         .await
         .map_err(|_| failure("安装任务意外结束；请重新打开应用核对辅助服务状态"))??;

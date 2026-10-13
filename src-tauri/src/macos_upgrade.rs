@@ -42,7 +42,9 @@ impl Marker {
             || self.bundle_path != bundle
             || !valid_version(&self.source_version)
             || !valid_version(&self.target_version)
-            || (version != self.source_version && version != self.target_version)
+            // A complete installer can replace a blocked old updater. Preserve
+            // service intent across later releases at the same identity/path.
+            || !transaction_version_allowed(&self.source_version, &self.target_version, version)
         {
             return Err(AppError::Platform(
                 "待恢复的服务关联与当前应用位置、身份或版本不一致；请安装原位置的正确版本后重试"
@@ -59,6 +61,26 @@ fn valid_version(version: &str) -> bool {
         && parts.iter().all(|part| {
             !part.is_empty() && part.len() <= 10 && part.bytes().all(|byte| byte.is_ascii_digit())
         })
+}
+
+fn transaction_version_allowed(source: &str, target: &str, current: &str) -> bool {
+    fn tuple(value: &str) -> Option<Vec<u64>> {
+        valid_version(value)
+            .then(|| {
+                value
+                    .split('.')
+                    .map(str::parse)
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()
+            })
+            .flatten()
+    }
+    match (tuple(source), tuple(target), tuple(current)) {
+        (Some(source), Some(target), Some(current)) => {
+            target > source && (current == source || current >= target)
+        }
+        _ => false,
+    }
 }
 
 fn marker_path(app: &AppHandle) -> AppResult<PathBuf> {
@@ -105,14 +127,27 @@ fn persist_marker(path: &Path, marker: &Marker) -> AppResult<()> {
     Ok(())
 }
 
-pub fn prepare(app: &AppHandle, target_version: &str) -> AppResult<()> {
+/// Read-only and called before the running proxy is disturbed. An outstanding
+/// optional-service intent is valid input, not an update lock.
+pub fn preflight(app: &AppHandle) -> AppResult<()> {
     let path = marker_path(app)?;
-    if load(&path)?.is_some() {
-        return Err(AppError::Conflict(
-            "上次服务关联尚未完成，请先修复服务后再安装更新".into(),
-        ));
+    let bundle = tun_service::codesign::bundle_root()
+        .map_err(AppError::Platform)?
+        .canonicalize()?;
+    if let Some(marker) = load(&path)? {
+        marker.validate(&app.config().identifier, &bundle, env!("CARGO_PKG_VERSION"))?;
     }
+    tun_service::admin::registration_enabled().map_err(AppError::Platform)?;
+    Ok(())
+}
+
+pub fn prepare(app: &AppHandle, target_version: &str) -> AppResult<()> {
+    preflight(app)?;
+    let path = marker_path(app)?;
+    let previous = load(&path)?;
     let settings = AppStorage::from_app(app)?.settings()?;
+    let tun_registered = tun_service::admin::registration_enabled().map_err(AppError::Platform)?;
+    let login_registered = settings.launch_at_login && crate::startup_macos::native_enabled()?;
     let marker = Marker {
         schema: 1,
         identifier: IDENTIFIER.into(),
@@ -121,8 +156,9 @@ pub fn prepare(app: &AppHandle, target_version: &str) -> AppResult<()> {
             .canonicalize()?,
         source_version: env!("CARGO_PKG_VERSION").into(),
         target_version: target_version.into(),
-        tun_was_enabled: tun_service::admin::registration_enabled().map_err(AppError::Platform)?,
-        login_was_enabled: settings.launch_at_login && crate::startup_macos::native_enabled()?,
+        tun_was_enabled: tun_registered || previous.as_ref().is_some_and(|m| m.tun_was_enabled),
+        login_was_enabled: settings.launch_at_login
+            && (login_registered || previous.as_ref().is_some_and(|m| m.login_was_enabled)),
     };
     marker.validate(
         &app.config().identifier,
@@ -142,8 +178,20 @@ pub fn prepare(app: &AppHandle, target_version: &str) -> AppResult<()> {
             set_pending(None);
             Ok(())
         },
-        || tun_service::admin::unregister().map_err(AppError::Platform),
-        crate::startup_macos::detach_for_upgrade,
+        || {
+            if tun_registered {
+                tun_service::admin::unregister().map_err(AppError::Platform)
+            } else {
+                Ok(())
+            }
+        },
+        || {
+            if login_registered {
+                crate::startup_macos::detach_for_upgrade()
+            } else {
+                Ok(())
+            }
+        },
     )
 }
 
@@ -168,7 +216,7 @@ fn detach_services(
 
 pub fn recover(app: &AppHandle) -> AppResult<()> {
     let path = marker_path(app)?;
-    let Some(marker) = load(&path)? else {
+    let Some(mut marker) = load(&path)? else {
         clear_pending();
         return Ok(());
     };
@@ -181,15 +229,18 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
         // Validate the app at the exact same installation location; signatures
         // and build-version handshake remain mandatory after replacement.
         tun_service::codesign::validate(&std::env::current_exe()?).map_err(AppError::Platform)?;
+        let settings = AppStorage::from_app(app)?.settings()?;
+        // Login restoration is independent of privileged TUN association.
+        if marker.login_was_enabled && settings.launch_at_login {
+            crate::startup_macos::restore_after_upgrade()?;
+        }
+        marker.login_was_enabled = false;
+        persist_marker(&path, &marker)?;
         if marker.tun_was_enabled {
             let status = tun_service::admin::register().map_err(AppError::Platform)?;
             if !status.ready() {
                 return Err(AppError::Platform(status.message));
             }
-        }
-        let settings = AppStorage::from_app(app)?.settings()?;
-        if marker.login_was_enabled && settings.launch_at_login {
-            crate::startup_macos::restore_after_upgrade()?;
         }
         fs::remove_file(&path)?;
         // sync deletion as well: an old marker resurfacing after a power failure
@@ -202,7 +253,7 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
     match &result {
         Ok(()) => clear_pending(),
         Err(error) => set_pending(Some(format!(
-            "新版服务关联尚未完成：{error}。请在设置中处理后重试关联；网络模式已保留。"
+            "软件可继续更新；可选服务关联待处理：{error}。网络模式与服务意图已保留。"
         ))),
     }
     result
@@ -372,7 +423,7 @@ mod tests {
     #[test]
     fn only_same_identity_location_and_transaction_versions_can_restore() {
         let marker = marker();
-        for version in ["0.7.17", "0.7.18"] {
+        for version in ["0.7.17", "0.7.18", "0.7.24", "0.8.0"] {
             assert!(marker
                 .validate(IDENTIFIER, &marker.bundle_path, version)
                 .is_ok());
@@ -384,7 +435,7 @@ mod tests {
             .validate(IDENTIFIER, Path::new("/other/Serylane.app"), "0.7.18")
             .is_err());
         assert!(marker
-            .validate(IDENTIFIER, &marker.bundle_path, "0.7.19")
+            .validate(IDENTIFIER, &marker.bundle_path, "0.7.16")
             .is_err());
     }
     #[test]

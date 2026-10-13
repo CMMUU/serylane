@@ -438,7 +438,7 @@ export function mountProgramManager(root: HTMLElement, services: ProgramServices
 }
 
 export const proxyCompatibilityMarkup = `
-  <article class="panel proxy-compatibility-panel" id="proxy-compatibility-panel">
+  <article class="panel proxy-compatibility-panel" id="proxy-compatibility-panel" hidden>
     <div class="panel-heading"><div><div class="section-label">PROXY COMPATIBILITY</div><h2>系统代理兼容性</h2></div><button class="button button-quiet" id="proxy-compatibility-check" type="button">只读检查</button></div>
     <p class="hint">Windows 系统代理使用单一地址，兼容 HTTP 与 HTTPS CONNECT。只读检查会将当前系统代理地址交给 HTTP 解析器校验，不切换代理、不重启程序，也不发出外部网络请求。</p>
     <p class="program-feedback" id="proxy-compatibility-status" role="status" aria-live="polite">尚未检查。格式通过不代表所有应用实际使用此代理；环境变量、应用自身设置及长连接仍需单独验证。</p>
@@ -466,4 +466,13 @@ export function mountProxyCompatibility(root: HTMLElement, check: () => Promise<
     } catch (error) { status.textContent = errorMessage(error); status.dataset.error = "true"; }
     finally { button.disabled = false; button.textContent = "只读检查"; root.removeAttribute("aria-busy"); }
   });
+}
+
+export function syncProxyCompatibilityPlatform(root: HTMLElement, platform: string | undefined, check: () => Promise<ProxyCompatibility>, errorMessage: (error: unknown) => string) {
+  root.hidden = platform !== "windows";
+  root.classList.toggle("is-hidden", root.hidden);
+  if (platform === "windows" && root.dataset.mounted !== "true") {
+    root.dataset.mounted = "true";
+    mountProxyCompatibility(root, check, errorMessage);
+  }
 }

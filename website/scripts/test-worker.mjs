@@ -280,3 +280,19 @@ test('explicit GitHub fallback never depends on download center availability', a
   assert.equal(r.status,302); assert.equal(r.headers.get('x-serylane-channel'),'github');
   assert.ok(calls.every(c=>!c.url.startsWith(CENTER)));
 });
+
+test('fresh download resolution reports the same immutable source as the redirect', async () => {
+  const data = fixture();
+  for (const target of TARGETS) for (const query of ['', '?channel=github']) {
+    const { fetcher } = upstream(data);
+    const resolved = await handle(request(`/api/download/${target}${query}`), env, fetcher);
+    assert.equal(resolved.status, 200); noCache(resolved);
+    const body = await resolved.json();
+    const redirect = await handle(request(`/download/${target}${query}`), env, fetcher);
+    assert.equal(body.url, redirect.headers.get('location'));
+    assert.equal(body.channel, redirect.headers.get('x-serylane-channel'));
+    assert.equal(body.version, data.version);
+  }
+  assert.equal((await handle(request('/api/download/not-a-target'),env)).status,404);
+  assert.equal((await handle(request('/api/download/macos-arm64?url=https://example.com'),env)).status,400);
+});

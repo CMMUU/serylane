@@ -25,7 +25,7 @@ import { describeAppUpdate, updateSourceLabel } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { mountRuleManager, ruleManagerMarkup } from "./rule-manager";
 import { mountLocalRouting, localRoutingMarkup } from "./local-routing";
-import { mountProgramManager, programManagerMarkup, mountProxyCompatibility, proxyCompatibilityMarkup } from "./program-proxy";
+import { mountProgramManager, programManagerMarkup, syncProxyCompatibilityPlatform, proxyCompatibilityMarkup } from "./program-proxy";
 import {
   THEME_OPTIONS,
   ThemeController,
@@ -1057,6 +1057,7 @@ function renderProfileDetails() {
 }
 
 function renderSettings() {
+  syncProxyCompatibilityPlatform($("#proxy-compatibility-panel")!, store.appInfo?.targetOs, api.systemProxyCompatibility, errorMessage);
   if (!store.settings) return;
   themeController.sync(store.settings.theme);
   ($("#settings-mode") as HTMLSelectElement).value = store.settings.networkMode;
@@ -1087,6 +1088,15 @@ function renderSettings() {
 
 function renderAppUpdate() {
   const presentation = describeAppUpdate(appUpdateStatus);
+  $("#app-update-network-path")!.textContent = appUpdateStatus.networkPath && appUpdateStatus.networkPath !== "待确定" ? `网络路径：${appUpdateStatus.networkPath}` : "";
+  const lastInstall = $("#app-update-last-install")!;
+  lastInstall.textContent = appUpdateStatus.lastInstall ?? "";
+  lastInstall.hidden = !lastInstall.textContent;
+  const attempts = $("#app-update-attempts")!;
+  attempts.replaceChildren(...(appUpdateStatus.attempts ?? []).map(attempt => {
+    const item = document.createElement("li"); item.textContent = `${updateSourceLabel(attempt.source)}：${attempt.result}`; return item;
+  }));
+  attempts.hidden = !attempts.childElementCount;
   const state = $("#app-update-state")!;
   state.textContent = presentation.badge;
   state.classList.toggle("is-hidden", appUpdateStatus.phase === "idle");
@@ -2417,7 +2427,7 @@ const openAiCosts = mountOpenAiCosts({
 });
 const programManager = mountProgramManager($("#programs-view")!, { api, confirm: confirmAction, error: errorMessage });
 const localRouting = mountLocalRouting($("#routing-view")!, { api, confirm: confirmAction, error: errorMessage });
-mountProxyCompatibility($("#proxy-compatibility-panel")!, api.systemProxyCompatibility, errorMessage);
+
 
 const ruleManager = mountRuleManager($("#rules-view")!, {
   api,
@@ -2876,7 +2886,11 @@ $("#app-update-install")!.addEventListener("click", async (event) => {
   });
   if (!confirmed) return;
   appUpdateActionBusy = true;
-  appUpdateStatus = { ...appUpdateStatus, phase: "installing" };
+  const operationId = ++appUpdateOperationId;
+  appUpdateStatus = { ...appUpdateStatus, phase: "installing", stage: "preflight" };
+  const poll = window.setInterval(async () => {
+    try { const status = await api.appUpdateStatus(); if (appUpdateActionBusy && operationId === appUpdateOperationId && status.phase === "installing") acceptAppUpdate(status); } catch { /* command reports errors */ }
+  }, 500);
   renderAppUpdate();
   try { await api.installAppUpdate(version, true); }
   catch (error) {
@@ -2884,7 +2898,7 @@ $("#app-update-install")!.addEventListener("click", async (event) => {
     catch { acceptAppUpdate({ ...appUpdateStatus, phase: "failed", error: errorMessage(error) }); }
     toast(errorMessage(error), "error");
     await refreshBase();
-  } finally { appUpdateActionBusy = false; renderAppUpdate(); }
+  } finally { window.clearInterval(poll); appUpdateOperationId++; appUpdateActionBusy = false; renderAppUpdate(); }
 });
 
 $("#settings-startup-open")!.addEventListener("click", () => { void action("", api.openStartupSettings); });

@@ -129,3 +129,13 @@ test("desktop update copy uses region-neutral source labels in every phase", () 
     assert.doesNotMatch([result.badge, result.label, result.detail].join(" "), /香港|Hong[ -]?Kong|HK 下载/i);
   }
 });
+
+test("download source, current network path and installation stages are not confused", () => {
+  for (const [source, label] of [["hk", "下载中心"], ["gitee", "Gitee"], ["github", "GitHub"]]) {
+    const view = describeAppUpdate({ ...status("downloading"), info: { ...status("downloading").info, source }, networkPath: "经 Serylane 当前代理" });
+    assert.match(view.label, new RegExp(label));
+    assert.match(view.detail, /经 Serylane 当前代理/);
+  }
+  assert.match(describeAppUpdate({...status("installing"), stage: "preflight"}).detail, /尚未停止代理/);
+  assert.match(describeAppUpdate({...status("installing"), stage: "replacing"}).label, /替换应用/);
+});
