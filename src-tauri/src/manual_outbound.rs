@@ -94,6 +94,7 @@ pub async fn set(
     if previous.proxy_mode == mode && previous.manual_outbound.is_none() {
         return snapshot(&storage);
     }
+    crate::node_test::invalidate(app);
     let mut next = previous.clone();
     next.proxy_mode = mode;
     next.proxy_mode_revision = Uuid::new_v4();

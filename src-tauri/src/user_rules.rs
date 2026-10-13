@@ -867,6 +867,7 @@ pub(crate) async fn apply_profile_config_with_task(
     _permit: &ConfigurationMutationPermit,
     task: Option<Arc<crate::subscription_task::Task>>,
 ) -> AppResult<()> {
+    crate::node_test::invalidate(app);
     let context = capture_context(app, storage)?;
     let previous = match effective_for(&context, &context.settings.user_rules) {
         Ok(config) => config.yaml,
@@ -1014,6 +1015,7 @@ async fn save_with_permit(
     if !validation.valid {
         return Err(AppError::InvalidInput(validation.errors.join("；")));
     }
+    crate::node_test::invalidate(app);
     let next = current.next(validation.normalized_rules, expected_revision)?;
     let candidate = effective_for(&context, &next.rules)?.yaml;
     let previous = effective_for(&context, &current.rules)?.yaml;

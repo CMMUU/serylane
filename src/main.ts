@@ -1,3 +1,4 @@
+import { mountNodeTest, sameNodeTestScope, type NodeTestScope } from "./node-test";
 import { observeSubscriptionTask, taskDescription, downloadOptions, type SubscriptionTask, type DownloadOptions } from "./subscription-task";
 import "./styles.css";
 import "./connection-feedback.css";
@@ -138,7 +139,6 @@ const subscriptionCancellationPending = new Set<string>();
 let subscriptionFormInitialized = false;
 let subscriptionDraftDirty = false;
 let subscriptionActivationTouched = false;
-let highlightedSubscriptionId: string | null = null;
 let viewNavigationRevision = 0;
 const subscriptionRefreshing = new Set<string>();
 let openAiTaskFinishedAt: string | null = null;
@@ -951,13 +951,12 @@ function renderSubscriptions() {
   list.className = "subscription-manager-list";
   const expanded = new Set(Array.from(list.querySelectorAll<HTMLDetailsElement>(".subscription-more[open]"))
     .map((details) => details.closest<HTMLElement>("[data-subscription-id]")?.dataset.subscriptionId));
-  list.innerHTML = subscriptions.map((subscription) => subscriptionCardMarkup(subscription, store.openAiTask, Date.now(), subscriptionRefreshing.has(subscription.profile.id))).join("");
+  list.innerHTML = subscriptions.map((subscription) => subscriptionCardMarkup({ ...subscription, active: subscription.profile.id === store.activeProfile?.profile.id }, store.openAiTask, Date.now(), subscriptionRefreshing.has(subscription.profile.id))).join("");
   for (const details of list.querySelectorAll<HTMLDetailsElement>(".subscription-more")) {
     details.open = expanded.has(details.closest<HTMLElement>("[data-subscription-id]")?.dataset.subscriptionId);
   }
   for (const card of list.querySelectorAll<HTMLElement>("[data-subscription-id]")) {
     card.tabIndex = -1;
-    card.classList.toggle("is-imported", card.dataset.subscriptionId === highlightedSubscriptionId);
   }
 }
 
@@ -1740,7 +1739,6 @@ async function createSubscription(
     subscriptionDraftDirty = false;
     subscriptionActivationTouched = false;
     status.textContent = "";
-    highlightedSubscriptionId = result.profile.id;
     closeSubscriptionForm(false);
     feedback.hidden = false;
     feedback.className = `subscription-feedback${description.warning ? " is-warning" : ""}`;
@@ -1968,7 +1966,7 @@ function renderOpenAiPolicy() {
     : anotherTaskRunning
       ? `${runningProfileName} 正在生成 OpenAI 容灾`
     : policy.enabled
-      ? `${policy.selectedNodes.length} 个节点 · ${policy.healthyCount}/${policy.candidateCount} 个候选通过`
+      ? `${policy.selectedNodes.length} 个可用节点${policy.selectedNodes.length === 2 ? " · 一主一备" : ""} · ${policy.healthyCount}/${policy.candidateCount} 个候选通过`
       : "尚未创建托管策略";
   container.innerHTML = `
     <div class="openai-policy-head">
@@ -1983,7 +1981,7 @@ function renderOpenAiPolicy() {
         <button class="button button-quiet" data-openai-action="stability" aria-pressed="${Boolean(policy.stabilityEnabled)}" ${!policy.enabled || policy.selectedNodes.length < 2 || task?.running || stabilityActionInFlight ? "disabled" : ""}>${policy.stabilityEnabled ? runtimeGroup?.manualNode ? "稳定优先：手动暂停" : "稳定优先：已开启" : "启用稳定优先"}</button>
         ${running
           ? '<button class="button button-danger" data-openai-action="cancel">停止检测</button>'
-          : `<button class="button button-primary" data-openai-action="generate" ${anotherTaskRunning ? "disabled" : ""}>${anotherTaskRunning ? "其他订阅生成中" : policy.enabled ? "重新筛选 10 个" : "生成 10 个节点"}</button>`}
+          : `<button class="button button-primary" data-openai-action="generate" ${anotherTaskRunning ? "disabled" : ""}>${anotherTaskRunning ? "其他订阅生成中" : policy.enabled ? "重新筛选节点" : "生成 AI 策略"}</button>`}
         <button class="button button-quiet" data-openai-action="health" ${!policy.enabled || Boolean(task?.running) || store.runtime?.phase !== "running" ? "disabled" : ""}>立即健康检查</button>
         <button class="button button-quiet" data-openai-action="details" ${!policy.enabled || store.runtime?.phase !== "running" ? "disabled" : ""}>节点详情</button>
         ${policy.enabled && !task?.running ? '<button class="button button-danger" data-openai-action="disable">停用</button>' : ""}
@@ -1995,6 +1993,8 @@ function renderOpenAiPolicy() {
       </div>
       <p class="openai-progress-copy">${escapeHtml(task!.message)}</p>
     ` : ""}
+    <p class="hint">支持 2–10 个合格节点；两个节点即可一主一备，不要求凑满 10 个。</p>
+    ${taskForActive && task?.diagnostics ? `<p class="hint openai-selection-report">可提取 ${task.diagnostics.extracted} · 地区排除 ${task.diagnostics.excludedRegion} · 成本排除 ${task.diagnostics.excludedCost} · 符合条件 ${task.diagnostics.eligible} · 本轮检测 ${task.diagnostics.tested} · 初检通过 ${task.diagnostics.reachable ?? '待检测'} · 质量通过 ${task.diagnostics.qualityPassed ?? '待检测'} · 入选 ${task.diagnostics.selected ?? '待确定'}</p>` : ''}
     ${active.profile.routingMode !== "rule" ? '<p class="warning-box">当前为全局或直连模式，AI 专用分流规则暂不参与。需要 AI 分流时，请先在「自选节点」选择规则模式，再切回 AI 代理。</p>' : ""}
     ${taskForActive && task?.phase === "failed" && task.error ? `<div class="openai-error">${escapeHtml(task.error)}</div>` : ""}
     ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, nodeSelectionBusy || Boolean(task?.running), policy.selectedNodes.map(node => node.name).filter(name => runtimeGroup.all?.includes(name)), proxyMap) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，请在「自选节点」页切换为普通策略组选点。</p>'}
@@ -2191,7 +2191,7 @@ function renderProxies() {
     return `<details class="proxy-card manual-group" data-group="${escapeHtml(name)}" ${open.has(name) || firstRender && index === 0 || query ? 'open' : ''}>
       <summary><strong>${escapeHtml(name)}</strong><span>${escapeHtml(value.now ?? '按组策略')} · ${value.all?.length ?? 0} 节点</span><small>${escapeHtml(value.type ?? '')}</small></summary>
       <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">当前出口详情</button>${value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-node-auto="${escapeHtml(name)}" ${busy ? 'disabled' : ''}>恢复自动</button>` : ''}</div>
-      ${nodeGridMarkup(name, map, query, sort, busy)}</details>`;
+      ${nodeGridMarkup(name, map, query, sort, busy, nodeTests.results(), nodeTests.busy())}</details>`;
   }).join('');
 }
 
@@ -2428,6 +2428,17 @@ const ruleManager = mountRuleManager($("#rules-view")!, {
   },
 });
 
+function nodeTestContext(): NodeTestScope | null {
+  const profile = store.activeProfile?.profile, runtime = store.runtime, mode = store.manualOutbound;
+  if (!profile?.activeRevisionId || runtime?.phase !== 'running' || mode?.mode !== 'manual' || mode.legacySelection || profile.routingMode === 'direct' || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return null;
+  return { profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision, runtimePid: runtime.pid, runtimeStartedAt: runtime.startedAt, routingMode: profile.routingMode };
+}
+const nodeTests = mountNodeTest($("#manual-view")!, {
+  context: nodeTestContext, start: api.startNodeTest, status: api.nodeTestStatus, cancel: api.cancelNodeTest,
+  changed: () => { if (store.view === 'manual') renderProxies(); }, error: errorMessage,
+});
+window.setInterval(() => { if (!document.hidden && store.view === 'manual') void nodeTests.refresh(); }, 800);
+
 const manualOutbound = mountManualOutbound($("#manual-view")!, {
   read: api.manualOutbound,
   write: async (mode, revision) => { runtimeMutationRevision++; manualModeSwitching = true; try { return await api.setManualOutbound(mode, revision); } catch (error) { toast(errorMessage(error), "error"); throw error; } finally { manualModeSwitching = false; runtimeMutationRevision++; } },
@@ -2437,6 +2448,7 @@ const manualOutbound = mountManualOutbound($("#manual-view")!, {
 });
 $("#proxy-mode-restore")!.addEventListener("click", () => void manualOutbound.enableAi());
 function renderManualMode() {
+  nodeTests.render();
   const ai = store.manualOutbound?.mode === "ai" && !store.manualOutbound?.legacySelection;
   ($("#proxy-mode-controls") as HTMLFieldSetElement).disabled = !ai;
   $("#proxy-mode-notice")!.hidden = ai;
@@ -2481,7 +2493,7 @@ function navigate(view: ViewName) {
   }
   if (view === "overview") void refreshProxies(true);
   if (view === "subscriptions") renderSubscriptions();
-  if (view === "manual") { void manualOutbound.refresh(); void refreshProxies(true); }
+  if (view === "manual") { void manualOutbound.refresh(); void refreshProxies(true); void nodeTests.refresh(); }
   if (view === "settings") void refreshSessionResume(true);
   if (view === "programs") void programManager.refresh();
   if (view === "routing") void localRouting.refresh();
@@ -2662,9 +2674,22 @@ $("#proxy-groups")!.addEventListener("click", async (event) => {
     return;
   }
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>(".proxy-delay");
-  if (!button?.dataset.proxy) return;
-  const result = await action("", () => api.testProxyDelay(button.dataset.proxy!));
-  if (result) { button.textContent = `${result.delay ?? "—"} ms`; toast(`延迟：${escapeHtml(result.delay ?? "—")} ms`, "success"); }
+  if (!button?.dataset.proxy || nodeTests.busy()) return;
+  const scope = nodeTestContext(), revision = nodeTests.revision(), name = button.dataset.proxy;
+  if (!scope || button.disabled) return;
+  button.disabled = true;
+  try {
+    const result = await api.testProxyDelay(name);
+    if (!sameNodeTestScope(scope, nodeTestContext()) || revision !== nodeTests.revision()) return;
+    const delay = Number(result.delay);
+    const delayMs = Number.isFinite(delay) && delay > 0 ? delay : null;
+    nodeTests.recordSingle(scope, revision, {name, state: delayMs === null ? 'unavailable' : 'passed', delayMs});
+    toast(delayMs === null ? '本次暂未测得有效延迟' : `延迟：${delayMs} ms`, 'success');
+  } catch (error) {
+    if (sameNodeTestScope(scope, nodeTestContext()) && revision === nodeTests.revision()) {
+      nodeTests.recordSingle(scope, revision, {name, state: 'unavailable', delayMs: null}); toast(errorMessage(error), 'error');
+    }
+  } finally { button.disabled = false; }
 });
 
 $("#openai-policy-card")!.addEventListener("click", async (event) => {

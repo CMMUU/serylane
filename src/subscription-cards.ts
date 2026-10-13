@@ -68,7 +68,7 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
     : `<div class="subscription-usage-track" role="progressbar" aria-label="${escape(profile.displayName)} 套餐流量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${usage.progress.toFixed(2)}" aria-valuetext="已用 ${subscriptionBytes(usage.used)}，总额度 ${subscriptionBytes(usage.quota)}${usage.exhausted ? "，额度已用尽" : ""}"><span style="width:${usage.progress.toFixed(2)}%"></span></div>`;
   const id = escape(profile.id);
   const button = (action: string, label: string, extra = "") => `<button type="button" class="button button-quiet${action === "delete" ? " button-danger" : ""}" data-subscription-action="${action}" data-profile-id="${id}" ${refreshing ? "disabled" : extra}>${escape(refreshing && action === "refresh" ? "刷新中…" : label)}</button>`;
-  return `<article class="subscription-entry subscription-tile${subscription.active ? " is-active" : ""}${warning ? " has-warning" : ""}" data-subscription-id="${id}">
+  return `<article class="subscription-entry subscription-tile${subscription.active ? " is-active" : ""}${warning ? " has-warning" : ""}" data-subscription-id="${id}"${subscription.active ? ' aria-current="true"' : ''}>
     <div class="subscription-entry-head">
       <div class="subscription-identity"><div><h3 title="${escape(profile.displayName)}">${escape(profile.displayName)}</h3><p>${subscription.active ? "已选用" : "未选用"} · ${mode}模式${summary ? ` · ${summary.nodeCount} 节点` : ""}</p></div></div>
       <div class="subscription-quick-actions">${button("refresh", "刷新")}${button("activate", subscription.active ? "已选用" : "选用", subscription.active ? "disabled" : "")}</div>

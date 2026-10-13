@@ -1,3 +1,4 @@
+import type {NodeTestSnapshot, NodeTestScope} from "../../src/node-test";
 import type { SubscriptionTask } from "../../src/subscription-task";
 /**
  * Vite-only visual fixture. Uses the real frontend with Tauri's installed IPC
@@ -831,6 +832,27 @@ function fixtureManualState() {
   return { mode: fixtureProxyMode, revision: fixtureModeRevision, activeProfileId, legacySelection: false };
 }
 
+// Synthetic controller job: no real nodes, requests, profiles or runtime writes.
+let fixtureNodeJob: NodeTestSnapshot | null = null;
+let fixtureNodeJobStarted = 0, fixtureNodeJobCounter = 0, fixtureNodeJobFails = false;
+function fixtureNodeScope(): NodeTestScope | null {
+  const profile = profiles.find(p => p.id === activeProfileId);
+  if (!profile || fixtureProxyMode !== 'manual' || fixtureRuntimePhase !== 'running' || profile.routingMode === 'direct') return null;
+  return {profileId: profile.id, revisionId: profile.activeRevisionId!, modeRevision: fixtureModeRevision, runtimePid: null, runtimeStartedAt: stamp, routingMode: profile.routingMode};
+}
+function fixtureNodeStatus() {
+  const job = fixtureNodeJob;
+  if (!job) return null;
+  if (JSON.stringify(job.scope) !== JSON.stringify(fixtureNodeScope())) {job.valid = false; job.phase = 'cancelled';}
+  if (job.phase === 'running') {
+    const done = Math.min(job.nodes.length, Math.floor((Date.now() - fixtureNodeJobStarted) / 1200));
+    job.nodes.forEach((node, i) => {node.state = i < done ? i === 0 ? 'passed' : 'timeout' : 'testing'; node.delayMs = node.state === 'passed' ? 48 : null;});
+    if (done === job.nodes.length) {job.phase = 'completed'; job.message = '合成测试完成；未发送真实请求';}
+  }
+  job.sequence++; return structuredClone(job);
+}
+window.addEventListener('serylane-fixture-batch', ((event: CustomEvent) => {fixtureNodeJobFails = Boolean(event.detail?.fail);}) as EventListener);
+
 const readonlyReplies: Record<string, () => unknown> = {
   connection_feedback: () => structuredClone({ ...fixtureFeedback, elapsedMs: fixtureFeedback.health === "checking" ? performance.now() - feedbackStartedAt : fixtureFeedback.elapsedMs }),
   app_info: () => ({ productName: "Serylane", version: `${packageInfo.version} · 合成预览`, targetOs: previewPlatform, targetArch: previewWindows ? "x86_64" : "aarch64" }),
@@ -903,6 +925,23 @@ function payloadRecord(payload: InvokeArgs | undefined): Record<string, unknown>
 
 mockIPC(async (command, payload) => {
   const args = payloadRecord(payload);
+  if (command === 'node_test_status') return fixtureNodeStatus();
+  if (command === 'start_node_test') {
+    if (fixtureNodeJobFails) throw ruleError('STATE_CONFLICT', '合成核心读取失败，请刷新后重试');
+    const scope = fixtureNodeScope();
+    if (!scope || scope.profileId !== args.profileId || scope.revisionId !== args.revisionId || scope.modeRevision !== args.modeRevision) throw ruleError('STATE_CONFLICT','配置已变化');
+    if (fixtureNodeStatus()?.phase === 'running') return fixtureNodeStatus();
+    fixtureNodeJobStarted = Date.now();
+    fixtureNodeJob = {id: `fixture-job-${++fixtureNodeJobCounter}`, scope, sequence: 0, valid: true, phase: 'running', message: '合成测试进行中', nodes: policy.selectedNodes.map(n => ({name: n.name, state: 'pending', delayMs: null}))};
+    return structuredClone(fixtureNodeJob);
+  }
+  if (command === 'cancel_node_test') {
+    if (!fixtureNodeJob || fixtureNodeJob.id !== args.taskId) throw ruleError('STATE_CONFLICT', '测试任务已变化');
+    fixtureNodeStatus(); fixtureNodeJob.phase = 'cancelled'; fixtureNodeJob.sequence++; fixtureNodeJob.message = '已取消合成测试';
+    fixtureNodeJob.nodes.forEach(n => {if(n.state === 'testing') n.state = 'pending';});
+    return structuredClone(fixtureNodeJob);
+  }
+
   if (command === "recheck_connection") { updateFeedback({ operation: fixtureFeedback.operation + 1 }); fixtureHealthProbe(); return structuredClone(fixtureFeedback); }
   if (command === "get_openai_costs") {
     const p = profileDetails(String(args.profileId)).profile;

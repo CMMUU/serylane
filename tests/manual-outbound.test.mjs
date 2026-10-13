@@ -55,3 +55,10 @@ test('backend guards cover policy paths, stale tasks, and startup deletion recov
   const main=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');assert.match(main,/requestedDuringRuntimeWrite = .*manualModeSwitching/);
   assert.ok(read('lib.rs').indexOf('storage.recover_profile_deletion()')<read('lib.rs').indexOf('let persistent = storage.state().map_err'));
 });
+test('batch result states override stale history and individual tests disable while batch runs',()=>{
+ const map={G:{type:'Selector',all:['A','B','C'],now:'A'},A:{type:'Trojan',history:[{delay:1}]},B:{type:'SS',history:[{delay:2}]},C:{type:'SS'}};
+ const results=[{name:'A',state:'timeout',delayMs:null},{name:'B',state:'pending',delayMs:null},{name:'C',state:'passed',delayMs:70}];
+ const markup=nodeGridMarkup('G',map,'','delay',false,results,true);
+ assert.match(markup,/超时/);assert.match(markup,/未测试/);assert.match(markup,/70 ms/);assert.doesNotMatch(markup,/>1 ms</);
+ assert.match(markup,/class="[^\"]*proxy-delay[^\"]*"[^>]*disabled/);
+});

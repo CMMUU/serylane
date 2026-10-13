@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.23 - 2026-10-13
+
+- Add bounded, cancellable backend latency jobs for deduplicated real nodes with progress and profile/mode/runtime identity isolation; never explicitly select an exit or start the proxy.
+- Keep two absolute-qualified AI candidates when a relative score preference would remove the only backup. Add stage counts and accurate 2–10-node UI copy without relaxing hard eligibility gates.
+- Highlight only the active subscription, separating import feedback and keyboard focus from selection; retain local YAML and existing platform/TUN boundaries.
+- Update website guidance and regression coverage for batch cancellation, small AI pools and selected-card identity.
+
 ## 0.7.19 - 2026-10-10
 
 - Ship compact subscription cards, bounded import retries and actionable errors, synchronized subscription profiles and a Clash-style proxy-group selection page mutually exclusive with AI policy control. Preserve source/user rules, explicit rule/global/direct modes and independent Codex routing. Local YAML profiles remain separate.

@@ -265,3 +265,16 @@ test("configuration remote records follow subscriptions while local YAML remains
   assert.deepEqual(synchronizedProfiles([{...remote, displayName:"stale"}, {id:"deleted",source:{type:"remote_subscription"}}, local], [{profile:remote}]), [remote,local]);
   assert.deepEqual(synchronizedProfiles([remote,local], []), [local]);
 });
+test('only actual selected card is current, independent of order or import focus',()=>{
+ const rows=[0,1,2].map(i=>({...subscription(),profile:{...subscription().profile,id:`p${i}`},active:i===1}));
+ for(const order of [rows,[...rows].reverse()]){
+  const cards=order.map(s=>subscriptionCardMarkup(s,null,now));
+  assert.equal(cards.filter(c=>c.includes('aria-current="true"')).length,1);
+  assert.match(cards[order.findIndex(s=>s.profile.id==='p1')],/is-active/);
+  for(const [index,card] of cards.entries())if(order[index].profile.id!=='p1')assert.doesNotMatch(card,/is-active|aria-current="true"/);
+ }
+ assert.doesNotMatch(subscriptionCardMarkup({...subscription(),active:false},null,now),/is-active/);
+ assert.doesNotMatch(read('main.ts'),/highlightedSubscriptionId|is-imported/);
+ assert.match(read('main.ts'),/active: subscription.profile.id === store.activeProfile\?\.profile.id/);
+ assert.match(read('subscription-cards.css'),/\.subscription-tile\.is-active/);
+});

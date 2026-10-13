@@ -1,3 +1,4 @@
+import type { NodeTestScope, NodeTestSnapshot } from "./node-test";
 import type { DownloadOptions, SubscriptionTask } from "./subscription-task";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProxyMode, ManualOutboundState } from "./manual-outbound";
@@ -44,6 +45,9 @@ import type {
 } from "./types";
 
 export const api = {
+  startNodeTest: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_node_test", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision }),
+  nodeTestStatus: () => invoke<NodeTestSnapshot | null>("node_test_status"),
+  cancelNodeTest: (taskId: string) => invoke<NodeTestSnapshot>("cancel_node_test", { taskId }),
   manualOutbound: () => invoke<ManualOutboundState>("get_manual_outbound"),
   setManualOutbound: (mode: ProxyMode, expectedRevision: string) => invoke<ManualOutboundState>("set_manual_outbound", {mode, expectedRevision, confirmed: true}),
   connectionFeedback: () => invoke<ConnectionFeedback>("connection_feedback"),

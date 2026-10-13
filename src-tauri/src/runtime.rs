@@ -228,6 +228,9 @@ impl MihomoRuntime {
 
     pub fn stop(&self, app: Option<&AppHandle>) -> AppResult<RuntimeStatus> {
         if let Some(app) = app {
+            crate::node_test::invalidate(app);
+        }
+        if let Some(app) = app {
             if let Some(feedback) =
                 app.try_state::<crate::connection_feedback::ConnectionFeedback>()
             {

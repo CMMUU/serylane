@@ -19,6 +19,7 @@ mod network_safety;
 mod node_details;
 mod node_metadata;
 mod node_selection;
+mod node_test;
 mod openai_cost;
 mod openai_policy;
 mod openai_stability;
@@ -1029,6 +1030,9 @@ async fn set_profile_routing_mode(
     let storage = AppStorage::from_app(&app).map_err(dto)?;
     manual_outbound::require_manual_mode(&storage.settings().map_err(dto)?).map_err(dto)?;
     let old_mode = storage.load_profile(profile_id).map_err(dto)?.routing_mode;
+    if storage.state().map_err(dto)?.active_profile_id == Some(profile_id) {
+        node_test::invalidate(&app);
+    }
     let details = profile_service::set_routing_mode(&app, profile_id, mode).map_err(dto)?;
     let active = storage.state().map_err(dto)?.active_profile_id == Some(profile_id);
     if active && state.status(Some(&app)).phase == models::RuntimePhase::Running {
@@ -1150,6 +1154,29 @@ async fn disable_openai_policy(
 }
 
 #[tauri::command]
+async fn start_node_test(
+    app: AppHandle,
+    profile_id: Uuid,
+    revision_id: Uuid,
+    mode_revision: Uuid,
+) -> Result<node_test::Snapshot, AppErrorDto> {
+    node_test::start(app, profile_id, revision_id, mode_revision)
+        .await
+        .map_err(dto)
+}
+#[tauri::command]
+fn node_test_status(app: AppHandle) -> Option<node_test::Snapshot> {
+    node_test::status(&app)
+}
+#[tauri::command]
+fn cancel_node_test(
+    manager: State<'_, node_test::NodeTestManager>,
+    task_id: Uuid,
+) -> Result<node_test::Snapshot, AppErrorDto> {
+    manager.cancel(task_id).map_err(dto)
+}
+
+#[tauri::command]
 async fn test_proxy_delay(
     app: AppHandle,
     proxy: String,
@@ -1237,6 +1264,7 @@ fn cleanup_app(app: &AppHandle) {
         app_log::Area::App,
         "应用退出：清理本次代理接管，保留最后的运行意图与网络模式",
     );
+    node_test::invalidate(app);
     app.state::<openai_stability::StabilityManager>().stop();
     let _ = app
         .state::<local_routing::LocalRoutingManager>()
@@ -1296,6 +1324,7 @@ pub fn run() {
         .manage(openai_stability::StabilityManager::default())
         .manage(SubscriptionImportGuard::default())
         .manage(subscription_task::TaskManager::default())
+        .manage(node_test::NodeTestManager::default())
         .manage(OpenAiPolicyTaskManager::default())
         .manage(GlobalTrafficMonitor::default())
         .manage(user_rules::ConfigurationMutationGuard::default())
@@ -1493,6 +1522,9 @@ pub fn run() {
             get_connections,
             select_proxy,
             clear_proxy_selection,
+            start_node_test,
+            node_test_status,
+            cancel_node_test,
             test_proxy_delay,
             test_proxy_group,
             start_openai_policy_generation,

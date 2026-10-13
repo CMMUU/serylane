@@ -35,3 +35,8 @@
 #manual-result:empty { display: none; }
 @media (max-width: 1050px) { .manual-filters { grid-template-columns: minmax(0,1fr); } }
 @media (forced-colors: active) { .manual-node.is-selected { border-color: Highlight; } }
+
+.manual-test-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.manual-test-toolbar [hidden] { display: none; }
+#manual-test-progress { max-width: 220px; accent-color: var(--accent); }
+#manual-test-status { overflow-wrap: anywhere; }
