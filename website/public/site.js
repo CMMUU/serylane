@@ -110,6 +110,30 @@
     selectedArchitecture = button.dataset.architecture;
     updateDownloadSelection();
   }));
+  let resolvingDownload = false;
+  for (const id of ["download-gitee", "download-github"]) {
+    document.querySelector(`#${id}`).addEventListener("click", async event => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      if (resolvingDownload) return;
+      resolvingDownload = true;
+      const target = `${selectedSystem}-${selectedArchitecture}`;
+      const status = document.querySelector("#channel-note");
+      status.textContent = `正在核对 ${target} 最新安装包与实际下载来源…`;
+      try {
+        const reply = await fetch(`/api/download/${target}${id === "download-github" ? "?channel=github" : ""}`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(20000) });
+        if (!reply.ok) throw new Error("Unavailable");
+        const data = await reply.json();
+        const source = { hk: "下载中心", gitee: "Gitee 备用", github: "GitHub 备用" }[data.channel];
+        const destination = new URL(data.url);
+        if (!source || !/^v\d+\.\d+\.\d+$/.test(data.version) || destination.protocol !== "https:" || !["files.cmmuu.com", "github.com", "gitee.com"].includes(destination.hostname) || destination.username || destination.password) throw new Error("Invalid download");
+        status.textContent = `本次下载：${source} · ${data.version} · ${target}。已交给浏览器下载；网络连接使用浏览器当前设置。`;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        window.location.assign(destination.href);
+      } catch { status.textContent = "本次安装包尚未核对完成，请重试或选择备用入口；未转向旧版本。"; }
+      finally { resolvingDownload = false; }
+    });
+  }
   updateDownloadSelection();
   async function refreshRelease() {
     if (!loading) { loading = true; release = null; updateDownloadSelection(); }

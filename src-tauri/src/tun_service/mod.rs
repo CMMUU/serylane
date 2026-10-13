@@ -227,6 +227,18 @@ fn service_unavailable() -> AppError {
 
 /// Called only after a verified package, explicit install confirmation and an
 /// idle/stopped runtime. Other platforms retain their existing lifecycle.
+pub fn preflight_app_upgrade(app: &tauri::AppHandle) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_upgrade::preflight(app)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
 pub fn prepare_app_upgrade(app: &tauri::AppHandle, target_version: &str) -> AppResult<()> {
     #[cfg(target_os = "macos")]
     {

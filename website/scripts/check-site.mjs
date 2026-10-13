@@ -77,10 +77,12 @@ for (const route of htmls.keys()) if (route !== '/404') assert.ok(sitemap.includ
 assert.ok(!(sitemap.includes('/404')));
 assert.match(await readFile(join(root, 'robots.txt'), 'utf8'), /Sitemap: https:\/\/serylane\.cmmuu\.com\/sitemap\.xml/);
 const script = await readFile(join(root, 'site.js'), 'utf8');
-assert.doesNotMatch(script, /香港|\bHK\b|Hong Kong/i, 'Dynamic download labels use the same location-neutral service name');
+// Persisted channel keys are API identity, not user-facing geography.
+assert.doesNotMatch(script.replace(/\bhk(?=\s*:)/g, 'internalChannel'), /香港|\bHK\b|Hong Kong/i, 'Dynamic download labels use the same location-neutral service name');
 assert.doesNotMatch(script, /\b(?:XMLHttpRequest|WebSocket|invoke|EventSource)\s*\(|127\.0\.0\.1|localhost|__TAURI__|localStorage|sessionStorage/, 'Website must not contact proxy, storage or desktop services');
-assert.equal([...script.matchAll(/\bfetch\s*\(/g)].length, 1);
+assert.equal([...script.matchAll(/\bfetch\s*\(/g)].length, 2);
 assert.match(script, /fetch\("\/api\/releases\/latest",/);
+assert.match(script, /fetch\(`\/api\/download\/\$\{target\}/);
 assert.doesNotMatch(script, /version:\s*["']v\d+\./, 'No pinned release snapshot');
 const config = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
 assert.deepEqual(config.routes, [{ pattern: 'serylane.cmmuu.com', custom_domain: true }]);

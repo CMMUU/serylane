@@ -21,9 +21,10 @@ export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher
   const url = new URL(request.url);
   if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/download/')) return env.ASSETS.fetch(request);
   const isAPI = url.pathname === '/api/releases/latest';
-  const target = url.pathname.slice('/download/'.length) as Target;
+  const isResolve = url.pathname.startsWith('/api/download/');
+  const target = url.pathname.slice(isResolve ? '/api/download/'.length : '/download/'.length) as Target;
   const isDownload = url.pathname.startsWith('/download/') && TARGETS.includes(target);
-  if (!isAPI && !isDownload) return response('{"error":"NOT_FOUND"}', 404);
+  if (!isAPI && !isDownload && !(isResolve && TARGETS.includes(target))) return response('{"error":"NOT_FOUND"}', 404);
   if (!['GET', 'HEAD'].includes(request.method)) return response('{"error":"METHOD_NOT_ALLOWED"}', 405, undefined, { Allow: 'GET, HEAD' });
   // Only a literal GitHub override is supported; no arbitrary upstream or version parameters.
   if (url.search && (isAPI || url.search !== '?channel=github')) return response('{"error":"INVALID_QUERY"}', 400);
@@ -39,6 +40,10 @@ export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher
           return request.method === 'HEAD' ? new Response(null, result) : result;
         }
         const asset = catalog.assets[target];
+        if (isResolve) {
+          const resolved = response(JSON.stringify({ version: catalog.version, channel: asset.channel, url: asset.fileUrl }), 200);
+          return request.method === "HEAD" ? new Response(null, resolved) : resolved;
+        }
         return new Response(null, { status: 302, headers: { ...HEADERS, Location: asset.fileUrl,
           'X-Serylane-Version': catalog.version, 'X-Serylane-Channel': asset.channel, 'X-Serylane-Resolver': 'download-center' } });
       } catch {
@@ -56,13 +61,13 @@ export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher
       }), 200, undefined, { 'X-Serylane-Mirror': mirror.diagnostic, 'X-Serylane-HK': hk.diagnostic });
     } else {
       const download = await resolveDownload(fetcher, target, url.search === '?channel=github');
-      result = new Response(null, { status: 302, headers: { ...HEADERS, Location: download.url,
+      result = isResolve ? response(JSON.stringify(download), 200) : new Response(null, { status: 302, headers: { ...HEADERS, Location: download.url,
         'X-Serylane-Version': download.version, 'X-Serylane-Channel': download.channel } });
     }
   } catch (error) {
     // Do not log request URLs, upstream signed URLs, visitor data or arbitrary exception text.
     console.warn({ event: 'release_resolution_failed', code: error instanceof ReleaseError ? error.code : 'UPSTREAM_UNAVAILABLE' });
-    result = unavailable(isAPI, error instanceof ReleaseError ? error.code : 'UPSTREAM_UNAVAILABLE');
+    result = unavailable(isAPI || isResolve, error instanceof ReleaseError ? error.code : 'UPSTREAM_UNAVAILABLE');
   }
   if (request.method === 'HEAD') { await result.body?.cancel(); return new Response(null, result); }
   return result;

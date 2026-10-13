@@ -49,6 +49,8 @@ impl Drop for RunningServer {
 struct Relay {
     client: reqwest::Client,
     upstream: String,
+    policy_upstream: String,
+    allowed_urls: Vec<super::allowlist::Rule>,
     prefix: String,
     port: u16,
     stats: Arc<RouteStats>,
@@ -123,6 +125,8 @@ fn start_with_app(
     let relay = Arc::new(Relay {
         client,
         upstream,
+        policy_upstream: document.settings.upstream.base_url().into(),
+        allowed_urls: super::allowlist::normalize(&document.settings.allowed_urls)?,
         prefix: format!("/rd/{}/v1", document.access_token),
         port,
         stats: stats.clone(),
@@ -336,6 +340,14 @@ async fn handle(
     let query = request.uri().query().unwrap_or("");
     if query.len() > 8192 {
         return Ok(json(StatusCode::URI_TOO_LONG, "query_too_large"));
+    }
+    let policy_target = url::Url::parse(&format!("{}{}", relay.policy_upstream, suffix));
+    if !policy_target.is_ok_and(|target| super::allowlist::permits(&relay.allowed_urls, &target)) {
+        relay.stats.last_status.store(403, Ordering::Relaxed);
+        relay
+            .stats
+            .error("请求未匹配当前路由 URL 名单，未转发；其他代理规则未改变");
+        return Ok(json(StatusCode::FORBIDDEN, "route_url_not_allowed"));
     }
     let target = format!(
         "{}{}{}{}",
@@ -1083,6 +1095,48 @@ mod tests {
         assert!(!safe_header("proxy-authorization", &[]));
         assert!(!safe_header("x-hidden", &["x-hidden".into()]));
         assert!(safe_header("chatgpt-account-id", &[]));
+    }
+
+    #[tokio::test]
+    async fn empty_and_unmatched_policy_never_connect_to_upstream() {
+        for rules in [
+            vec![],
+            vec![super::super::allowlist::Rule {
+                url: "https://example.com/v1".into(),
+                enabled: true,
+            }],
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut doc = document(free_port());
+            doc.settings.allowed_urls = rules;
+            let _server = start_inner(
+                &doc,
+                format!("http://{}", listener.local_addr().unwrap()),
+                None,
+            )
+            .unwrap();
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .post(endpoint(&doc, "/responses"))
+                .bearer_auth("fixture")
+                .body("{}")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 403);
+            assert!(response
+                .text()
+                .await
+                .unwrap()
+                .contains("route_url_not_allowed"));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(80), listener.accept())
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]

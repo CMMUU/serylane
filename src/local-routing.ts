@@ -4,7 +4,31 @@ import { preferenceSwitch } from "./ui";
 const escape = (value: string) => value.replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-export function routeSettingsError(s: RouteSettings): { field: "port" | "mode" | "upstream" | "proxy"; message: string } | null {
+export const defaultRouteUrls = () => ["https://chatgpt.com/backend-api/codex", "https://api.openai.com/v1"].map(url => ({ url, enabled: true }));
+export function parseRouteUrls(text: string): NonNullable<RouteSettings["allowedUrls"]> {
+  const rows = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (rows.length > 100) throw new Error("路由名单最多 100 条 URL。");
+  const seen = new Set<string>();
+  return rows.map(line => {
+    const enabled = !line.startsWith("#"), raw = (enabled ? line : line.slice(1)).trim();
+    if (raw.length > 2048 || /[\\%?#\s]/.test(raw) || raw.split("/").some(part => part === "." || part === "..")) throw new Error("请使用普通 HTTPS URL，不含账号、参数、片段、编码路径或相对路径。");
+    let u: URL;
+    try { u = new URL(raw); } catch { throw new Error("路由 URL 格式不正确。"); }
+    if (u.protocol !== "https:" || u.username || u.password || !u.hostname || u.hostname.startsWith("[") || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname)) throw new Error("路由名单请使用 HTTPS 域名，不含账号或 IP 地址。");
+    const url = u.href.replace(/\/+$/, "");
+    if (seen.has(url)) throw new Error("路由名单存在重复 URL，请合并后保存。");
+    seen.add(url); return {url, enabled};
+  });
+}
+export const formatRouteUrls = (rules: RouteSettings["allowedUrls"]) => (rules ?? defaultRouteUrls()).map(r => `${r.enabled ? "" : "# "}${r.url}`).join("\n");
+export function routeUrlSummary(rules: RouteSettings["allowedUrls"], upstream: RouteSettings["upstream"]): string {
+  const active = (rules ?? defaultRouteUrls()).filter(r => r.enabled);
+  const base = upstream === "chatgpt" ? "https://chatgpt.com/backend-api/codex" : "https://api.openai.com/v1";
+  const used = active.filter(r => { try { const u = new URL(r.url), b = new URL(base); return u.origin === b.origin && (b.pathname === u.pathname.replace(/\/+$/, "") || b.pathname.startsWith(u.pathname.replace(/\/+$/, "") + "/") || u.pathname.startsWith(b.pathname + "/")); } catch { return false; } }).length;
+  return active.length === 0 ? "当前名单不转发任何请求。其他代理功能保持不变。" : `已启用 ${active.length} 条；当前官方入口相关 ${used} 条。其他地址不会自动成为上游。`;
+}
+
+export function routeSettingsError(s: RouteSettings): { field: "port" | "mode" | "upstream" | "proxy" | "urls"; message: string } | null {
   if (!Number.isInteger(s.listenPort) || s.listenPort < 1024 || s.listenPort > 65535) return { field: "port", message: "路由端口必须为 1024–65535。" };
   if (!["native", "compatible"].includes(s.mode)) return { field: "mode", message: "请选择有效的传输模式。" };
   if (!["chatgpt", "openai_api"].includes(s.upstream)) return { field: "upstream", message: "请选择有效的官方入口。" };
@@ -16,6 +40,7 @@ export function routeSettingsError(s: RouteSettings): { field: "port" | "mode" |
         return { field: "proxy", message: "出站代理仅支持本机地址和明确端口，不能包含账号、路径或指向路由自身。" };
     } catch { return { field: "proxy", message: "出站代理地址格式不正确。" }; }
   }
+  try { parseRouteUrls(formatRouteUrls(s.allowedUrls)); } catch (error) { return { field: "urls", message: (error as Error).message }; }
   return null;
 }
 export function validateRouteSettings(s: RouteSettings): string | null {
@@ -72,6 +97,12 @@ export const localRoutingMarkup = `
         <div class="local-route-field"><label for="local-route-proxy">出站代理（可选）</label>
           <input id="local-route-proxy" type="text" placeholder="留空使用 Serylane 本地代理" autocomplete="off" spellcheck="false" aria-describedby="local-route-proxy-help local-route-proxy-error" />
           <p class="local-route-hint" id="local-route-proxy-help">仅本机 HTTP(S) / SOCKS5，无账号密码。</p><p class="local-route-field-error" id="local-route-proxy-error" hidden></p>
+        </div>
+        <div class="local-route-field"><label for="local-route-urls">允许路由的 URL</label>
+          <textarea id="local-route-urls" rows="5" spellcheck="false" aria-describedby="local-route-urls-help local-route-urls-error"></textarea>
+          <p class="local-route-hint" id="local-route-urls-help">每行一个 HTTPS 地址；行首加 # 暂停。按域名和路径范围匹配，删除全部后不转发。只约束本地路由，不改其他代理规则或 Codex 配置；新增地址不会自动改变官方入口。</p>
+          <p class="local-route-hint" id="local-route-urls-summary"></p><p class="local-route-field-error" id="local-route-urls-error" hidden></p>
+          <button class="button button-quiet" id="local-route-default-urls" type="button">填入默认名单</button>
         </div>
       </fieldset><div class="local-route-actions"><button class="button button-primary" id="local-route-save" type="submit">保存设置</button><button class="button button-quiet" id="local-route-reset" type="button">撤销编辑</button></div></form>
       <p class="local-route-hint">保存不启动、不接入。</p>
@@ -132,7 +163,7 @@ export function mountLocalRouting(root: HTMLElement, services: Services) {
   }
   function optionalText(id: string, text: string) { $(id).textContent = text; $(id).hidden = !text; }
   function clearValidation() {
-    for (const id of ["port", "mode", "upstream", "proxy"]) {
+    for (const id of ["port", "mode", "upstream", "proxy", "urls"]) {
       $(id).removeAttribute("aria-invalid"); optionalText(`${id}-error`, "");
     }
   }
@@ -143,10 +174,15 @@ export function mountLocalRouting(root: HTMLElement, services: Services) {
     $<HTMLSelectElement>("mode").value = state.settings.mode;
     $<HTMLSelectElement>("upstream").value = state.settings.upstream;
     $<HTMLInputElement>("proxy").value = state.settings.outboundProxy;
+    $<HTMLTextAreaElement>("urls").value = formatRouteUrls(state.settings.allowedUrls);
     draftRevision = state.revision;
   }
   function render() {
     root.setAttribute("aria-busy", String(busy));
+    try { $("urls-summary").textContent = routeUrlSummary(parseRouteUrls($<HTMLTextAreaElement>("urls").value), $<HTMLSelectElement>("upstream").value as RouteSettings["upstream"]); }
+    catch { $("urls-summary").textContent = "名单有格式错误，请检查后保存。"; }
+    $("urls-summary").textContent += state ? ` · 配置修订 ${state.revision}${state.running ? "，服务使用此修订" : "，服务未运行"}${dirty ? "；当前编辑尚未保存" : ""}` : "";
+    $<HTMLButtonElement>("default-urls").disabled = busy || !state || state.enabled || state.codex.hasBackup;
     $("pending").hidden = !busy;
     $<HTMLFieldSetElement>("fields").disabled = busy || !state || state.enabled || state.codex.hasBackup;
     $<HTMLButtonElement>("save").disabled = $<HTMLFieldSetElement>("fields").disabled;
@@ -209,9 +245,17 @@ export function mountLocalRouting(root: HTMLElement, services: Services) {
     if (busy || !state || !dirty) return;
     dirty = false; clearValidation(); fill(); render(); message("已恢复已保存设置。");
   });
+  $("default-urls").addEventListener("click", () => {
+    if ($<HTMLFieldSetElement>("fields").disabled) return;
+    $<HTMLTextAreaElement>("urls").value = formatRouteUrls(defaultRouteUrls());
+    dirty = true; clearValidation(); render(); message("默认名单已填入；尚未保存或生效。");
+  });
   $("form").addEventListener("submit", e => {
     e.preventDefault(); if (!state || busy || $<HTMLFieldSetElement>("fields").disabled) return;
-    const settings: RouteSettings = { listenPort: Number($<HTMLInputElement>("port").value), mode: $<HTMLSelectElement>("mode").value as RouteSettings["mode"],
+    let allowedUrls: NonNullable<RouteSettings["allowedUrls"]>;
+    try { allowedUrls = parseRouteUrls($<HTMLTextAreaElement>("urls").value); }
+    catch (error) { $("urls").setAttribute("aria-invalid", "true"); optionalText("urls-error", (error as Error).message); message((error as Error).message,true); $("urls").focus(); return; }
+    const settings: RouteSettings = { allowedUrls, listenPort: Number($<HTMLInputElement>("port").value), mode: $<HTMLSelectElement>("mode").value as RouteSettings["mode"],
       upstream: $<HTMLSelectElement>("upstream").value as RouteSettings["upstream"], outboundProxy: $<HTMLInputElement>("proxy").value.trim() };
     clearValidation();
     const error = routeSettingsError(settings);

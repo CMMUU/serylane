@@ -4,7 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 const read = name => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 const url = source => `data:text/javascript;base64,${Buffer.from(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`;
-const {validateRouteSettings,routeSettingsError,modelHealthLabel,probeLabel,routeDiagnosticLabel,localRoutingMarkup,routeMetricsMarkup,mountLocalRouting} = await import(url(read("local-routing.ts").replace('"./ui"',JSON.stringify(url(read("ui.ts"))))));
+const {parseRouteUrls, formatRouteUrls, defaultRouteUrls, validateRouteSettings,routeSettingsError,modelHealthLabel,probeLabel,routeDiagnosticLabel,localRoutingMarkup,routeMetricsMarkup,mountLocalRouting} = await import(url(read("local-routing.ts").replace('"./ui"',JSON.stringify(url(read("ui.ts"))))));
 const base = {listenPort:15731,mode:"compatible",upstream:"chatgpt",outboundProxy:""};
 test("dual probe labels distinguish reachability, unverified HTTP and stale observations",()=>{
   const report={state:"passed",checkedAt:100,latencyMs:80};
@@ -309,4 +309,13 @@ test("eligible stability changes require confirmation and preserve unverified pr
   assert.match(h.confirmations.at(-1).message,/不主动清空连接/);
   assert.deepEqual(h.calls.find(([name])=>name==="stability"),["stability",true,"profile-a","revision-a",true]);
   assert.equal(h.control("stability").checked,true);
+});
+
+
+test("URL drafts preserve deliberate empty and disabled rules; no implicit wildcard", () => {
+  assert.deepEqual(parseRouteUrls(""), []);
+  assert.deepEqual(parseRouteUrls(formatRouteUrls(defaultRouteUrls())), defaultRouteUrls());
+  assert.deepEqual(parseRouteUrls("# https://api.openai.com/v1/"), [{url:"https://api.openai.com/v1",enabled:false}]);
+  assert.deepEqual(parseRouteUrls("https://example.com/custom"), [{url:"https://example.com/custom",enabled:true}]);
+  for (const value of ["http://example.com", "https://example.com?key=x", "https://example.com/%2e%2e", "https://user:pass@example.com", "https://127.0.0.1/v1", "https://a.com/v1\nhttps://a.com:443/v1/"]) assert.throws(() => parseRouteUrls(value));
 });

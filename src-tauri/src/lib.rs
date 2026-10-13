@@ -11,6 +11,8 @@ mod local_routing;
 #[cfg(target_os = "macos")]
 mod macos_service;
 #[cfg(target_os = "macos")]
+mod macos_update_install;
+#[cfg(target_os = "macos")]
 mod macos_upgrade;
 mod manual_outbound;
 mod mihomo_api;
@@ -38,6 +40,7 @@ mod subscription_quota;
 mod subscription_task;
 mod traffic_monitor;
 pub mod tun_service;
+mod update_receipt;
 mod user_rules;
 #[cfg(all(test, windows, target_env = "msvc"))]
 mod windows_test_manifest;

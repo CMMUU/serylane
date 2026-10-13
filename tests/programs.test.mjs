@@ -5,7 +5,7 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../src/program-proxy.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { parseProgramArguments, suggestedProgramName, launchBlockReason, programRunStatus, programManagerMarkup, applicationIdentity, isMacApplication, allowsRelativeDirectory, requiresApplicationInspection } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const { syncProxyCompatibilityPlatform, parseProgramArguments, suggestedProgramName, launchBlockReason, programRunStatus, programManagerMarkup, applicationIdentity, isMacApplication, allowsRelativeDirectory, requiresApplicationInspection } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 
 test("arguments are one literal argument per line, not shell syntax", () => {
   assert.deepEqual(parseProgramArguments("--option\r\nC:\\folder with spaces\n\n& echo not-a-command"), ["--option", "C:\\folder with spaces", "& echo not-a-command"]);
@@ -170,4 +170,14 @@ test("native launch timeout is pending confirmation, never PID zero or a complet
   assert.match(source, /data-program-action="edit" \$\{busy \? "disabled" : ""\}/);
   assert.match(source, /data-program-action="delete" \$\{busy \? "disabled" : ""\}/);
   assert.match(source, /state\.programs\.find\(\(entry\) => entry\.id === program\.id\)\?\.launchPending/);
+});
+
+
+test("compatibility card only mounts on Windows and never duplicates listeners", () => {
+  let listeners = 0;
+  const root = { hidden:false, dataset:{}, classList:{toggle(){}}, querySelector:()=>({addEventListener(){listeners++;}}) };
+  for (const os of [undefined,"macos","linux"]) { syncProxyCompatibilityPlatform(root,os,()=>{},String); assert.equal(root.hidden,true); }
+  assert.equal(listeners,0);
+  for (let i=0;i<3;i++) syncProxyCompatibilityPlatform(root,"windows",()=>{},String);
+  assert.equal(root.hidden,false); assert.equal(listeners,1);
 });

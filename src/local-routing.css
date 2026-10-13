@@ -221,3 +221,5 @@
   .local-route-feedback,
   .local-route-endpoint-row > code { border-color: CanvasText; background: Canvas; }
 }
+
+.local-route-field textarea { width: 100%; box-sizing: border-box; min-height: 120px; resize: vertical; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-solid); color: inherit; font: inherit; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }

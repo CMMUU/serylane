@@ -1,4 +1,5 @@
 //! Opt-in local model routing. Saving preferences never launches or takes over an application.
+mod allowlist;
 pub(crate) mod codex;
 mod files;
 mod server;
@@ -55,6 +56,8 @@ pub struct RouteSettings {
     pub upstream: Upstream,
     /// Empty means the current RouteDeck mixed port. Never inherit ambient proxy settings.
     pub outbound_proxy: String,
+    #[serde(default = "allowlist::defaults")]
+    pub allowed_urls: Vec<allowlist::Rule>,
 }
 impl Default for RouteSettings {
     fn default() -> Self {
@@ -63,6 +66,7 @@ impl Default for RouteSettings {
             mode: RouteMode::Compatible,
             upstream: Upstream::Chatgpt,
             outbound_proxy: String::new(),
+            allowed_urls: allowlist::defaults(),
         }
     }
 }
@@ -78,7 +82,7 @@ pub struct RouteDocument {
 impl Default for RouteDocument {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             revision: 0,
             enabled: false,
             settings: RouteSettings::default(),
@@ -91,14 +95,16 @@ impl RouteDocument {
         let Some(text) = files::read_optional(&dir.join("settings.json"))? else {
             return Ok(Self::default());
         };
-        let doc: Self = serde_json::from_str(&text)
+        let mut doc: Self = serde_json::from_str(&text)
             .map_err(|_| AppError::Config("路由设置损坏，未自动重置".into()))?;
-        if doc.schema_version != 1
+        if !matches!(doc.schema_version, 1 | 2)
             || doc.access_token.len() != 32
             || !doc.access_token.bytes().all(|b| b.is_ascii_hexdigit())
         {
             return Err(AppError::Config("路由设置版本或访问令牌无效".into()));
         }
+        doc.settings.allowed_urls = allowlist::normalize(&doc.settings.allowed_urls)?;
+        doc.schema_version = 2;
         Ok(doc)
     }
     fn write(&self, dir: &Path) -> AppResult<()> {
@@ -352,6 +358,7 @@ pub fn save_local_route(
             ));
         }
         doc.settings = settings;
+        doc.settings.allowed_urls = allowlist::normalize(&doc.settings.allowed_urls)?;
         doc.proxy_url(storage.settings()?.mixed_port)?;
         if doc.settings.listen_port == storage.settings()?.controller_port {
             return Err(AppError::InvalidInput("路由端口不能占用控制端口".into()));
@@ -510,6 +517,35 @@ mod tests {
             d.settings.outbound_proxy = proxy.into();
             assert!(d.proxy_url(7890).is_ok());
         }
+    }
+    #[test]
+    fn legacy_missing_rules_migrate_but_explicit_empty_stays_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        let mut value = serde_json::to_value(RouteDocument::default()).unwrap();
+        value["schemaVersion"] = 1.into();
+        value["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("allowedUrls");
+        let old = serde_json::to_vec(&value).unwrap();
+        std::fs::write(dir.join("settings.json"), &old).unwrap();
+        assert_eq!(
+            RouteDocument::read(&dir).unwrap().settings.allowed_urls,
+            allowlist::defaults()
+        );
+        assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), old);
+        value["settings"]["allowedUrls"] = serde_json::json!([]);
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        assert!(RouteDocument::read(&dir)
+            .unwrap()
+            .settings
+            .allowed_urls
+            .is_empty());
     }
     #[test]
     fn settings_survive_round_trip_and_corruption_is_not_overwritten() {
