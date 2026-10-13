@@ -1,3 +1,5 @@
+import aiRoutePresets from "../../src-tauri/ai-route-presets.json";
+import { parseDomains, type DomainRouteState } from "../../src/domain-routing";
 import type {NodeTestSnapshot, NodeTestScope} from "../../src/node-test";
 import type { SubscriptionTask } from "../../src/subscription-task";
 /**
@@ -223,6 +225,15 @@ function initialRoute(): RouteSnapshot {
   };
 }
 let route = initialRoute();
+const domainPolicy = { domains: aiRoutePresets[0].domains, tools:['openai'], customDomains:[], target: '' };
+let domainDocument: DomainRouteState['document'] = { schemaVersion: 1, revision: 0, enabled: false, draft: structuredClone(domainPolicy), applied: null };
+const subscriptionEdits = new Map<string, {url:string;revision:number}>();
+function domainState(): DomainRouteState {
+  const profile=profiles.find(p=>p.id===activeProfileId);
+  return { document: structuredClone(domainDocument), presets: aiRoutePresets, targets: Object.entries(fixtureNodes).filter(([n,g])=>Array.isArray(g.all)&&n!=='GLOBAL').map(([n])=>n), profileId:profile?.id??null,profileRevision:profile?.activeRevisionId??null,
+    status:domainDocument.enabled ? '已应用 · 合成运行状态，真实网络未变化' : '已关闭', warning:'域名路由优先于本地规则、AI 规则及订阅规则；覆盖全部路径，不修改 Codex。',userRuleCount:0 };
+}
+
 let routeConfigRevision = 1;
 let routeFailRead = false, routeFailSave = false, routeFailStart = false, routeRestoreConflict = false;
 const routeCalls = { reads: 0, saves: 0, enables: 0, bindings: 0, stability: 0 };
@@ -1140,6 +1151,30 @@ mockIPC(async (command, payload) => {
     reportSubscriptions();
     return;
   }
+  if (command === 'domain_route_status') return domainState();
+  if (command === 'save_domain_route') {
+    if(args.expectedRevision!==domainDocument.revision)throw routeError('STATE_CONFLICT','路由修订已变化，草稿保留');
+    const p=args.policy as {tools:string[];customDomains:string[];target:string};
+    domainDocument={...domainDocument,revision:domainDocument.revision+1,draft:{...p,domains:[...new Set([...aiRoutePresets.filter(t=>p.tools.includes(t.id)).flatMap(t=>t.domains),...parseDomains(p.customDomains.join('\n'))])]}};return domainState();
+  }
+  if(command==='apply_domain_route') {
+    if(args.confirmed!==true||args.expectedRevision!==domainDocument.revision)throw routeError('STATE_CONFLICT','路由修订已变化');
+    if(args.enabled&&(!domainDocument.draft.domains.length||!domainState().targets.includes(domainDocument.draft.target)))throw routeError('INVALID_INPUT','请选择有效出口与域名');
+    domainDocument={...domainDocument,revision:domainDocument.revision+1,enabled:Boolean(args.enabled),applied:args.enabled?structuredClone(domainDocument.draft):domainDocument.applied};return domainState();
+  }
+  if(command==='read_subscription_edit'||command==='save_subscription_edit') {
+    const i=args.input as import('../../src/subscription-editor').SubscriptionEdit;
+    const id=String(command==='read_subscription_edit'?args.profileId:i.profileId),profile=profiles.find(p=>p.id===id);
+    if(!profile)throw ruleError('NOT_FOUND','合成订阅已删除');
+    const current=subscriptionEdits.get(id)??{url:`https://subscription.example.invalid/${id}`,revision:0};
+    if(command==='save_subscription_edit') {
+      if(args.confirmed!==true||String(current.revision)!==i.expectedRevision)throw ruleError('STATE_CONFLICT','订阅已变化');
+      profile.displayName=i.displayName;if(profile.source.type==='remote_subscription')profile.source.userAgent=i.userAgent;
+      current.url=i.url;current.revision++;subscriptionEdits.set(id,current);
+    }
+    return {profileId:id,expectedRevision:String(current.revision),displayName:profile.displayName,url:current.url,userAgent:profile.source.type==='remote_subscription'?profile.source.userAgent:''};
+  }
+  if (command === "legacy_route_status") return null;
   if (command === "local_route_status") {
     routeCalls.reads++; reportRoute();
     if (routeFailRead) throw routeError("IO_ERROR", "模拟读取路由状态失败；未访问本机服务。");
@@ -1357,7 +1392,14 @@ mockIPC(async (command, payload) => {
     return settings();
   }
   if (command === "get_profile_details") return profileDetails(String(args.profileId));
+  if (command === "test_proxy_delay" && previewQuery.get("interactionScenario") === "delayed") {
+    await new Promise(resolve => window.setTimeout(resolve, 2500)); return {delay:42};
+  }
   if (command === "get_current_node_details") {
+    if (previewQuery.get("interactionScenario") === "delayed") {
+      document.documentElement.dataset.fixtureNodeDetailReads = String(Number(document.documentElement.dataset.fixtureNodeDetailReads ?? 0) + 1);
+      await new Promise(resolve => window.setTimeout(resolve, 800));
+    }
     const chain = [String(args.group)];
     for (let count = 0; count < 16 && fixtureNodes[chain[chain.length - 1]]?.now; count++) chain.push(fixtureNodes[chain[chain.length - 1]].now!);
     const name = chain[chain.length - 1];

@@ -31,6 +31,10 @@ pub struct OpenAiNodeScore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAiPolicy {
+    #[serde(skip)]
+    pub runtime_costs: crate::openai_cost::CostPreferences,
+    #[serde(skip)]
+    pub runtime_manual_node: Option<String>,
     #[serde(default)]
     pub stability_enabled: bool,
     #[serde(default)]
@@ -54,6 +58,8 @@ pub struct OpenAiPolicy {
 impl Default for OpenAiPolicy {
     fn default() -> Self {
         Self {
+            runtime_costs: Default::default(),
+            runtime_manual_node: None,
             stability_enabled: false,
             enabled: false,
             auto_maintain: false,
@@ -134,6 +140,8 @@ pub struct AppSettings {
     /// into settings.json or included in the public settings API.
     #[serde(skip)]
     pub user_rules: Vec<crate::user_rules::UserRule>,
+    #[serde(skip)]
+    pub domain_routing: crate::domain_routing::Document,
 }
 
 impl Default for AppSettings {
@@ -165,6 +173,7 @@ impl Default for AppSettings {
             diagnostics_retention_days: 7,
             app_log_retention_days: default_app_log_retention_days(),
             user_rules: Vec::new(),
+            domain_routing: Default::default(),
         }
     }
 }
@@ -243,6 +252,7 @@ impl PublicAppSettings {
             diagnostics_retention_days: self.diagnostics_retention_days,
             app_log_retention_days: self.app_log_retention_days,
             user_rules: current.user_rules.clone(),
+            domain_routing: current.domain_routing.clone(),
         }
     }
 }
@@ -266,6 +276,8 @@ pub struct ProfileRecord {
     pub id: Uuid,
     pub display_name: String,
     pub source: ProfileSource,
+    #[serde(default)]
+    pub subscription_source_updated_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub routing_mode: RoutingMode,
     #[serde(default)]
@@ -342,6 +354,7 @@ impl ProfileRecord {
             id: Uuid::new_v4(),
             display_name,
             source,
+            subscription_source_updated_at: None,
             routing_mode: RoutingMode::Rule,
             openai_policy: OpenAiPolicy::default(),
             active_revision_id: None,

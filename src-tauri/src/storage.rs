@@ -47,7 +47,9 @@ impl AppStorage {
     pub fn from_root(root: PathBuf) -> AppResult<Self> {
         fs::create_dir_all(&root)?;
         set_private_directory_permissions(&root)?;
-        let storage = Self { root };
+        let storage = Self {
+            root: root.canonicalize()?,
+        };
         storage.ensure_layout()?;
         Ok(storage)
     }
@@ -58,6 +60,7 @@ impl AppStorage {
             let mut settings = AppSettings::default();
             self.save_settings(&settings)?;
             settings.user_rules = self.user_rules()?.rules;
+            settings.domain_routing = crate::domain_routing::Document::read(self)?;
             return Ok(settings);
         }
         let mut settings: AppSettings = read_json(&path)?;
@@ -66,6 +69,7 @@ impl AppStorage {
             self.save_settings(&settings)?;
         }
         settings.user_rules = self.user_rules()?.rules;
+        settings.domain_routing = crate::domain_routing::Document::read(self)?;
         Ok(settings)
     }
 
@@ -204,7 +208,10 @@ impl AppStorage {
         if !path.exists() {
             return Err(AppError::NotFound(format!("profile {profile_id}")));
         }
-        read_json(&path)
+        let mut profile: ProfileRecord = read_json(&path)?;
+        profile.openai_policy.runtime_costs = self.openai_costs(profile_id)?;
+        profile.openai_policy.runtime_manual_node = self.openai_manual_node(profile_id)?;
+        Ok(profile)
     }
 
     pub fn save_profile(&self, profile: &ProfileRecord) -> AppResult<()> {
@@ -293,7 +300,13 @@ impl AppStorage {
         let _permit = OBSERVATION_WRITE
             .lock()
             .map_err(|_| AppError::Io("订阅检查记录暂时无法保存".into()))?;
-        self.load_profile(profile_id)?;
+        let profile = self.load_profile(profile_id)?;
+        if profile
+            .subscription_source_updated_at
+            .is_some_and(|changed| request_started < changed)
+        {
+            return Ok(());
+        }
         let mut status = self.subscription_status(profile_id).unwrap_or_default();
         if status
             .request_started_at
@@ -508,7 +521,10 @@ impl AppStorage {
                 "revision {revision_id} for profile {profile_id}"
             )));
         }
-        read_json(&path)
+        let mut revision: ConfigRevision = read_json(&path)?;
+        revision.openai_policy.runtime_costs = self.openai_costs(profile_id)?;
+        revision.openai_policy.runtime_manual_node = self.openai_manual_node(profile_id)?;
+        Ok(revision)
     }
 
     pub fn load_revision_effective(

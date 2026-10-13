@@ -25,6 +25,7 @@ function fixture(scenario = "default") {
     return elements.get(id);
   };
   const context = {
+    aiRoutePresets: JSON.parse(readFileSync(new URL('../src-tauri/ai-route-presets.json', import.meta.url), 'utf8')),
     performance: globalThis.performance, emit: async () => {},
     mockIPC: handler => { invoke = handler; }, packageInfo: { version: "0.0.0-fixture" },
     location: { search: `?subscriptionScenario=${encodeURIComponent(scenario)}` },

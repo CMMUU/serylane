@@ -395,6 +395,9 @@ impl StabilityManager {
             .unwrap_or_default()
     }
     pub fn observe(&self, target: Target) -> Option<Observation> {
+        if !crate::capabilities::ENHANCED_STABILITY {
+            return None;
+        }
         let s = self.inner.lock().ok()?;
         if !s.snapshot.running || s.snapshot.selection_target != target {
             return None;
@@ -430,6 +433,10 @@ impl StabilityManager {
         self.stopped.store(true, Ordering::Release);
     }
     pub fn start(&self, app: AppHandle) {
+        if !crate::capabilities::ENHANCED_STABILITY {
+            self.stop();
+            return;
+        }
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             let mut timer = tokio::time::interval(Duration::from_secs(60));
@@ -461,6 +468,9 @@ impl StabilityManager {
         });
     }
     async fn tick(&self, app: &AppHandle) -> AppResult<()> {
+        if !crate::capabilities::ENHANCED_STABILITY {
+            return Ok(());
+        }
         let storage = AppStorage::from_app(app)?;
         if crate::manual_outbound::require_proxy_mode(&storage.settings()?).is_err() {
             self.update_policy_status(app);
@@ -691,8 +701,9 @@ impl StabilityManager {
             self.invalidate_observations();
             return Ok(());
         }
-        if latest.as_ref().and_then(|p| p.active_revision_id)
-            != profile.as_ref().and_then(|p| p.active_revision_id)
+        if !crate::capabilities::ENHANCED_STABILITY
+            || latest.as_ref().and_then(|p| p.active_revision_id)
+                != profile.as_ref().and_then(|p| p.active_revision_id)
             || !latest
                 .as_ref()
                 .is_some_and(|p| p.openai_policy.stability_enabled)
@@ -852,6 +863,11 @@ pub async fn set_openai_stability(
     confirmed: bool,
 ) -> Result<(), AppErrorDto> {
     let work = async {
+        if !crate::capabilities::ENHANCED_STABILITY {
+            return Err(AppError::Conflict(
+                "增强稳定灾备暂时停用；基础 Fallback 保持可用".into(),
+            ));
+        }
         if !confirmed {
             return Err(AppError::InvalidInput("更新稳定灾备需要确认".into()));
         }
@@ -1189,7 +1205,15 @@ mod tests {
             s.current = Some("a".into());
             s.snapshot.running = true;
         }
-        let valid = manager.observe(Target::Chatgpt).unwrap();
+        assert!(
+            manager.observe(Target::Chatgpt).is_none(),
+            "feature gate blocks new observations"
+        );
+        let valid = Observation {
+            manager: manager.clone(),
+            node: "a".into(),
+            epoch: manager.inner.lock().unwrap().epoch,
+        };
         assert!(manager.observe(Target::OpenaiApi).is_none());
         let connections = serde_json::json!({"connections":[{"metadata":{"sourceIP":"127.0.0.1","sourcePort":"45678","host":"chatgpt.com"},"chains":["a",GROUP]}]});
         assert!(valid.matches_connection(
@@ -1215,7 +1239,11 @@ mod tests {
         ));
         valid.finish(Evidence::ModelComplete);
         assert_eq!(manager.inner.lock().unwrap().nodes["a"].model_completed, 1);
-        let stale = manager.observe(Target::Chatgpt).unwrap();
+        let stale = Observation {
+            manager: manager.clone(),
+            node: "a".into(),
+            epoch: manager.inner.lock().unwrap().epoch,
+        };
         manager.invalidate_observations();
         stale.finish(Evidence::ModelInterrupted);
         assert_eq!(

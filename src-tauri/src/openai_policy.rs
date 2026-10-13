@@ -424,16 +424,10 @@ async fn apply_policy_revision_checked(
             ));
         }
     }
-    // Recheck under the configuration permit: a concurrent cost save must not
-    // leave value mode backed by a core-managed Fallback without budget checks.
-    if policy.enabled
-        && !policy.stability_enabled
-        && storage.openai_costs(profile_id)?.mode == crate::openai_cost::CostMode::Value
-    {
-        return Err(AppError::Conflict(
-            "性价比策略需要稳定优先；请先将成本策略改为质量优先".into(),
-        ));
-    }
+    let mut hydrated_policy = policy.clone();
+    hydrated_policy.runtime_costs = storage.openai_costs(profile_id)?;
+    hydrated_policy.runtime_manual_node = storage.openai_manual_node(profile_id)?;
+    let policy = &hydrated_policy;
     let previous_revision = storage.load_revision(profile_id, previous_revision_id)?;
     let source = storage.load_revision_source(profile_id, previous_revision_id)?;
     let settings = storage.settings()?;
@@ -692,7 +686,9 @@ async fn benchmark_nodes(
         return Err(AppError::Runtime(format!("初次检测通过 {healthy_count} 个，复测及基础质量筛选后剩余 {} 个；至少需要 2 个。原有策略未替换，请检查失败节点或补充合格节点。", selected_nodes.len())));
     }
     Ok(OpenAiPolicy {
-        stability_enabled: true,
+        runtime_costs: Default::default(),
+        runtime_manual_node: None,
+        stability_enabled: crate::capabilities::ENHANCED_STABILITY,
         enabled: true,
         auto_maintain,
         max_nodes: SELECTED_NODES as u8,

@@ -36,11 +36,12 @@ test('value benchmark filters before probing, skips bandwidth and checks policy 
   assert.match(policy,/None => None/); assert.match(policy,/costs.value_mode\(\) && second_delay.is_none\(\)/);
   assert.match(policy,/storage.openai_costs\(profile_id\)\?\.revision != costs/);
 });
-test('manual selection takes priority while cost updates reject stale versions and incompatible fallback', () => {
+test('manual selection and transactional budget filtering reject stale versions', () => {
   const stability = read('src-tauri/src/openai_stability.rs');
   assert.ok(stability.indexOf('openai_manual_node(id)') < stability.indexOf('let cost_preferences'));
   assert.match(stability,/storage.openai_costs\(active.unwrap\(\)\)\?\.revision != cost_preferences.revision/);
   const cost = read('src-tauri/src/openai_cost.rs');
-  assert.match(cost,/current.revision != input.revision/); assert.match(cost,/!policy.stability_enabled/);
+  assert.match(cost,/current.revision != input.revision/); assert.match(cost,/apply_profile_config/);
+  assert.match(read("src-tauri/src/effective.rs"),/costs.allowed/);
   assert.match(cost,/if !confirmed/); assert.doesNotMatch(cost,/\.start_runtime|\.stop_runtime|\.close_connection/);
 });

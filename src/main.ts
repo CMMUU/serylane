@@ -1,3 +1,5 @@
+import { mountSubscriptionEditor } from "./subscription-editor";
+import { InteractionSession } from "./interaction-session";
 import { mountNodeTest, sameNodeTestScope, type NodeTestScope } from "./node-test";
 import { observeSubscriptionTask, taskDescription, downloadOptions, type SubscriptionTask, type DownloadOptions } from "./subscription-task";
 import "./styles.css";
@@ -24,8 +26,8 @@ import { api, errorMessage, revisionLabel } from "./api";
 import { describeAppUpdate, updateSourceLabel } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { mountRuleManager, ruleManagerMarkup } from "./rule-manager";
-import { mountLocalRouting, localRoutingMarkup } from "./local-routing";
-import { mountProgramManager, programManagerMarkup, syncProxyCompatibilityPlatform, proxyCompatibilityMarkup } from "./program-proxy";
+import { mountDomainRouting, domainRoutingMarkup } from "./domain-routing";
+import { syncProxyCompatibilityPlatform, proxyCompatibilityMarkup } from "./program-proxy";
 import {
   THEME_OPTIONS,
   ThemeController,
@@ -145,7 +147,16 @@ let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
 let runtimeActionInFlight = false;
 let manualModeSwitching = false;
-let stabilityActionInFlight = false;
+const nodeDetailsSession = new InteractionSession();
+let nodeDetailsReturnFocus: HTMLElement | null = null;
+let nodeDetailsGroup: string | null = null;
+function nodeDetailsContext(group: string): string {
+  return JSON.stringify([store.view, group, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId,
+    store.manualOutbound?.revision, store.runtime?.phase, store.runtime?.pid, store.runtime?.startedAt, runtimeMutationRevision]);
+}
+function invalidateNodeDetailsContext() {
+  if (nodeDetailsGroup && !nodeDetailsSession.isCurrent(nodeDetailsContext(nodeDetailsGroup))) closeNodeDetails();
+}
 let nodeSelectionBusy = false;
 let proxyReadSequence = 0;
 let proxyPolling = false;
@@ -199,7 +210,7 @@ app.innerHTML = `
     </aside>
     <main class="main-content">
       <header class="topbar" aria-label="应用状态与全局控制">
-        <div class="page-heading"><h1 id="page-title">概览</h1><p class="page-subtitle">Codex 模型请求的独立入口</p><div class="application-status-meta"><span id="application-profile-state">未选择订阅</span><span id="application-mode-state">Manual</span></div></div>
+        <div class="page-heading"><h1 id="page-title">概览</h1><p class="page-subtitle">AI 工具与自定义域名的独立出口</p><div class="application-status-meta"><span id="application-profile-state">未选择订阅</span><span id="application-mode-state">Manual</span></div></div>
         <div class="topbar-actions">
           <span class="core-toolbar-label">代理核心</span>
           <div class="global-secondary-actions">
@@ -375,10 +386,10 @@ app.innerHTML = `
 
       <section class="view-stack is-hidden" id="manual-view">${manualOutboundMarkup}</section>
       <section class="view-stack is-hidden" id="routing-view">
-        ${localRoutingMarkup}
+        ${domainRoutingMarkup}
       </section>
       <section class="view-stack is-hidden" id="programs-view">
-        ${programManagerMarkup}
+        <p>程序代理暂时停用；已保存的条目保持不变。</p>
       </section>
 
       <section class="view-stack is-hidden" id="rules-view">
@@ -737,6 +748,7 @@ async function refreshBase() {
     return true;
   });
   if (result !== true) return false;
+  invalidateNodeDetailsContext();
   renderHeader();
   renderOverview();
   renderProfiles();
@@ -956,7 +968,7 @@ function renderSubscriptions() {
     details.open = expanded.has(details.closest<HTMLElement>("[data-subscription-id]")?.dataset.subscriptionId);
   }
   for (const card of list.querySelectorAll<HTMLElement>("[data-subscription-id]")) {
-    card.tabIndex = -1;
+    card.tabIndex = 0;
   }
 }
 
@@ -1389,6 +1401,7 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
   if (requestedRevision !== runtimeMutationRevision || requestedSequence !== runtimeReadSequence
     || (!allowDuringRuntimeAction && (runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching))) return;
   store.runtime = runtime;
+  invalidateNodeDetailsContext();
   store.systemProxy = systemProxy;
   if (runtime.phase !== "running") {
     store.networkSafety = null;
@@ -1988,7 +2001,6 @@ function renderOpenAiPolicy() {
         </div>
       </div>
       <div class="openai-policy-actions">
-        <button class="button button-quiet" data-openai-action="stability" aria-pressed="${Boolean(policy.stabilityEnabled)}" ${!policy.enabled || policy.selectedNodes.length < 2 || task?.running || stabilityActionInFlight ? "disabled" : ""}>${policy.stabilityEnabled ? runtimeGroup?.manualNode ? "稳定优先：手动暂停" : "稳定优先：已开启" : "启用稳定优先"}</button>
         ${running
           ? '<button class="button button-danger" data-openai-action="cancel">停止检测</button>'
           : `<button class="button button-primary" data-openai-action="generate" ${anotherTaskRunning ? "disabled" : ""}>${anotherTaskRunning ? "其他订阅生成中" : policy.enabled ? "重新筛选节点" : "生成 AI 策略"}</button>`}
@@ -2012,7 +2024,7 @@ function renderOpenAiPolicy() {
       <div><span>${runtimeGroup?.now ? "当前节点" : "候选首选（非运行状态）"}</span><strong>${escapeHtml(currentNode)}</strong></div>
       <div><span>自动维护</span><strong>${policy.autoMaintain ? "订阅更新后执行" : "仅手动执行"}</strong></div>
       <div><span>上次筛选</span><strong>${formatPolicyDate(policy.lastBenchmarkedAt)}</strong></div>
-      <div><span>故障策略</span><strong>${runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : policy.stabilityEnabled ? "稳定优先 · 保持节点与故障冷却" : "基础 Fallback · 可能自动回切"}</strong></div>
+      <div><span>故障策略</span><strong>${runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : "基础 Fallback · 可能自动回切"}</strong></div>
     </div>
     <p class="hint">稳定优先可独立用于系统代理或 TUN，无需开启本地路由或接入 Codex。基础探测不是模型请求验证；已断开的流无法无缝续接。</p>
   `;
@@ -2162,7 +2174,7 @@ async function changeNode(group: string, node: string | null, returnFocus?: HTML
     if (node && group === OPENAI_GROUP_NAME && (costNode?.trafficMultiplier == null || store.proxies?.costMode === "value" && costNode?.withinCostBudget === false)) {
       if (!await confirmAction({ title: "确认节点费用", message: costNode?.trafficMultiplier == null ? "此节点倍率未知，无法保证流量成本。手动选择会优先于自动成本策略，仍要继续吗？" : `此节点为 ${costNode.trafficMultiplier}×，不符合自动成本预算。手动选择会优先于预算，仍要继续吗？`, confirmLabel: "继续手动选择", returnFocus })) return;
     }
-    const confirmed = await confirmAction({ title: node === null ? "恢复自动选择？" : "应用所选节点？", message: `${group}${node === null ? "：恢复该组的自动策略。" : ` → ${node}。`}只影响命中此组的后续新连接，不主动断开已有连接。${group === OPENAI_GROUP_NAME && profile.openaiPolicy.stabilityEnabled && node !== null ? "手动固定期间暂停稳定策略的自动切换，节点故障时需手动更换或恢复自动。" : "Fallback / URLTest 的手动选择为优先使用，失效时核心仍可能回退。"}`, confirmLabel: node === null ? "恢复自动" : "应用节点", returnFocus });
+    const confirmed = await confirmAction({ title: node === null ? "恢复自动选择？" : "应用所选节点？", message: `${group}${node === null ? "：恢复该组的自动策略。" : ` → ${node}。`}只影响命中此组的后续新连接，不主动断开已有连接。Fallback / URLTest 的手动选择为优先使用，失效时核心仍可能回退。`, confirmLabel: node === null ? "恢复自动" : "应用节点", returnFocus });
     if (!confirmed) return;
     if (profile.id !== store.activeProfile?.profile.id || profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || modeRevision !== store.manualOutbound?.revision || store.runtime?.phase !== "running") {
       toast("配置或运行状态已变化，请重新选择", "error"); return;
@@ -2281,8 +2293,18 @@ async function openNodeDetails(group: string | null) {
     toast("请先启动 Mihomo，再读取当前节点信息", "info");
     return;
   }
-  const details = await action("", () => api.currentNodeDetails(group));
-  if (!details) return;
+  const context = nodeDetailsContext(group);
+  const ticket = nodeDetailsSession.begin(context);
+  if (ticket === null) return;
+  nodeDetailsGroup = group;
+  nodeDetailsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  let details: CurrentNodeDetails;
+  try { details = await api.currentNodeDetails(group); }
+  catch (error) {
+    if (nodeDetailsSession.accepts(ticket, nodeDetailsContext(group))) { closeNodeDetails(); toast(errorMessage(error), "error"); }
+    return;
+  } finally { nodeDetailsSession.settle(ticket); }
+  if (!nodeDetailsSession.accepts(ticket, nodeDetailsContext(group))) return;
   store.nodeDetails = details;
   renderNodeDetails();
   $("#node-details-modal")!.classList.remove("is-hidden");
@@ -2293,9 +2315,14 @@ async function openNodeDetails(group: string | null) {
 }
 
 function closeNodeDetails() {
+  nodeDetailsSession.close();
+  nodeDetailsGroup = null;
+  store.nodeDetails = null;
   $("#node-details-modal")?.classList.add("is-hidden");
   $("#node-details-modal")?.setAttribute("aria-hidden", "true");
   syncModalScrollLock();
+  if (nodeDetailsReturnFocus?.isConnected) nodeDetailsReturnFocus.focus({ preventScroll: true });
+  nodeDetailsReturnFocus = null;
 }
 
 function focusNodeGroup(group: string) {
@@ -2425,8 +2452,8 @@ const openAiCosts = mountOpenAiCosts({
   confirm: message => confirmAction({ title: "节点成本策略", message, confirmLabel: "确认", returnFocus: $("#openai-cost-settings summary") ?? undefined }),
   changed: () => { void refreshProxies(true); },
 });
-const programManager = mountProgramManager($("#programs-view")!, { api, confirm: confirmAction, error: errorMessage });
-const localRouting = mountLocalRouting($("#routing-view")!, { api, confirm: confirmAction, error: errorMessage });
+const subscriptionEditor = mountSubscriptionEditor($("#subscription-manager-list")!, {read: api.readSubscriptionEdit, save: api.saveSubscriptionEdit, changed: refreshBase, error: errorMessage});
+const localRouting = mountDomainRouting($("#routing-view")!, { api, confirm: confirmAction, error: errorMessage });
 
 
 const ruleManager = mountRuleManager($("#rules-view")!, {
@@ -2478,7 +2505,9 @@ function renderManualMode() {
 }
 
 function navigate(view: ViewName) {
+  if (view === "programs") view = "overview";
   const previousView = store.view;
+  if (previousView !== view) { closeNodeDetails(); subscriptionEditor.close(); }
   if (previousView !== view) viewNavigationRevision++;
   const scroller = $("#page-scroll");
   if (previousView !== view && scroller) {
@@ -2505,7 +2534,6 @@ function navigate(view: ViewName) {
   if (view === "subscriptions") renderSubscriptions();
   if (view === "manual") { void manualOutbound.refresh(); void refreshProxies(true); void nodeTests.refresh(); }
   if (view === "settings") void refreshSessionResume(true);
-  if (view === "programs") void programManager.refresh();
   if (view === "routing") void localRouting.refresh();
   if (view === "rules") {
     void ruleManager.refresh();
@@ -2708,19 +2736,7 @@ $("#openai-policy-card")!.addEventListener("click", async (event) => {
   );
   const actionName = button?.dataset.openaiAction;
   if (!actionName || !store.activeProfile) return;
-  if (actionName === "stability") {
-    if (stabilityActionInFlight || store.openAiTask?.running) return;
-    const profile = store.activeProfile.profile;
-    if (!profile.activeRevisionId || !profile.openaiPolicy.enabled || profile.openaiPolicy.selectedNodes.length < 2) return;
-    const enabled = !profile.openaiPolicy.stabilityEnabled;
-    stabilityActionInFlight = true;
-    try {
-      if (!await confirmAction({ title: enabled ? "启用稳定优先？" : "恢复基础灾备？", message: "将保存并应用新的核心配置，请避开重要请求。稳定优先保持正常节点，连续失败后才切换并冷却；不会主动清空连接，不会接入 Codex 本地路由。", confirmLabel: "确认应用", returnFocus: button })) return;
-      await action("灾备策略已更新", () => api.setOpenAiStability(enabled, profile.id, profile.activeRevisionId!, true));
-      await refreshBase();
-      if (store.runtime?.phase === "running") await refreshProxies();
-    } finally { stabilityActionInFlight = false; renderOpenAiPolicy(); }
-  } else if (actionName === "generate") {
+  if (actionName === "generate") {
     await startOpenAiGeneration();
   } else if (actionName === "cancel") {
     await cancelOpenAiGeneration();
@@ -2765,15 +2781,35 @@ $("#node-details-modal")!.addEventListener("click", async (event) => {
   if (actionName === "close") {
     closeNodeDetails();
   } else if (actionName === "retest" && details) {
-    const result = await action("", () => api.testProxyDelay(details.nodeName));
-    if (result) toast(`延迟：${result.delay ?? "—"} ms`, "success");
-    await openNodeDetails(details.group);
+    const context = nodeDetailsContext(details.group);
+    const ticket = nodeDetailsSession.refresh(context);
+    if (ticket === null) return;
+    button!.disabled = true;
+    try {
+      await api.testProxyDelay(details.nodeName);
+      if (!nodeDetailsSession.accepts(ticket, nodeDetailsContext(details.group))) return;
+      const updated = await api.currentNodeDetails(details.group);
+      if (!nodeDetailsSession.accepts(ticket, nodeDetailsContext(details.group))) return;
+      store.nodeDetails = updated;
+      renderNodeDetails();
+      $("#node-details-modal [data-node-modal-action='retest']")?.focus();
+    } catch (error) {
+      if (nodeDetailsSession.accepts(ticket, nodeDetailsContext(details.group))) toast(errorMessage(error), "error");
+    } finally { nodeDetailsSession.settle(ticket); if (button?.isConnected) button.disabled = false; }
   } else if (actionName === "switch" && details) {
     focusNodeGroup(details.group);
   }
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Tab" && !$("#node-details-modal")!.classList.contains("is-hidden")) {
+    const controls = $$<HTMLButtonElement>("#node-details-modal button:not(:disabled)");
+    const first = controls[0], last = controls[controls.length - 1];
+    if (first && last && ((event.shiftKey ? document.activeElement === first : document.activeElement === last)
+        || !$("#node-details-modal")!.contains(document.activeElement))) {
+      event.preventDefault(); (event.shiftKey ? last : first).focus();
+    }
+  }
   if (event.key === "Tab" && !$("#confirmation-modal")!.classList.contains("is-hidden")) {
     const controls = $$<HTMLButtonElement>("#confirmation-modal button:not(:disabled)");
     const first = controls[0], last = controls[controls.length - 1];
