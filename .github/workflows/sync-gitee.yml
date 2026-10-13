@@ -11,6 +11,11 @@ on:
     types: [published, edited]
   workflow_dispatch:
     inputs:
+      restore_public:
+        description: One-time approved restoration of public access to original cmmuu/serylane
+        required: false
+        type: boolean
+        default: false
       release_tag:
         description: Optional published stable tag; latest-version retention always takes precedence
         required: false
@@ -86,12 +91,16 @@ jobs:
           SYNC_BUILD_REF: ${{ github.event.workflow_run.head_branch }}
           SYNC_REQUESTED_TAG: ${{ inputs.release_tag }}
           SYNC_DRY_RUN: ${{ inputs.dry_run }}
+          SYNC_RESTORE_PUBLIC: ${{ inputs.restore_public }}
           SYNC_TRANSFER_WORKERS: ${{ inputs.transfer_workers == '1' && '1' || '3' }}
         shell: bash
         run: |
           # Explicitly approved retention: keep the newest stable release on
           # Gitee; GitHub history, release metadata and all Git tags stay intact.
           args=(--repo serylane --work-dir "$RUNNER_TEMP/gitee-sync" --keep-latest-releases 1 --transfer-workers "$SYNC_TRANSFER_WORKERS" --sync-display-name --migrate-legacy-path)
+          if [ "$SYNC_EVENT" = "workflow_dispatch" ] && [ "$SYNC_RESTORE_PUBLIC" = "true" ]; then
+            args+=(--restore-public)
+          fi
           if [ "$SYNC_DRY_RUN" != "true" ]; then
             args+=(--apply)
           fi

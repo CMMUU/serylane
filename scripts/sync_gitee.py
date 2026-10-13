@@ -179,7 +179,9 @@ class Api:
         return Api(self.service, self.token, self.storage_hosts)
 
     def headers(self):
-        headers = {"Authorization": "Bearer " + self.token, "User-Agent": "CMMUU-Gitee-Sync/1", "Accept": "application/json"}
+        headers = {"User-Agent": "CMMUU-Gitee-Sync/1", "Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
         if self.service == "github":
             headers["X-GitHub-Api-Version"] = "2022-11-28"
         return headers
@@ -459,6 +461,50 @@ def git_run(repo, *args):
         if kind != "transient network" or attempt == attempts - 1:
             raise SyncError(f"Git {operation} failed ({kind}); no credential output is logged and remote refs were not forced") from None
         time.sleep(2 ** attempt)
+
+
+def restore_public_repository(github, gitee, anonymous, apply=False):
+    """One-time, user-approved restoration of the original public mirror only."""
+    source = github.request("/repos/CMMUU/serylane")
+    target = gitee.request("/repos/cmmuu/serylane")
+    if (source.get("id") != 1355770287 or source.get("full_name") != "CMMUU/serylane"
+            or source.get("private") is not False
+            or str(gitee.request("/user").get("login", "")).casefold() != GE_OWNER
+            or target.get("id") != 50078322 or type(target.get("id")) is not int
+            or target.get("path") != "serylane" or target.get("name") != "Serylane"
+            or str(target.get("owner", {}).get("login", "")).casefold() != GE_OWNER
+            or target.get("default_branch") != "main" or type(target.get("private")) is not bool):
+        raise SyncError("Public restoration identity or visibility schema mismatch; no settings changed")
+    print("Gitee visibility audit: private=" + str(target["private"]).lower(), flush=True)
+    path = "/repos/cmmuu/serylane"
+    if target["private"]:
+        if not apply:
+            print("Preview: restore public access to original repository ID 50078322; no write")
+            return False
+        before_releases = {r["id"]: r["tag_name"] for r in gitee.pages(path + "/releases")}
+        before_head = gitee.request(path + "/branches/main")["commit"]["sha"]
+        fields = {"name": "Serylane", "private": "false"}
+        for key in ("has_issues", "has_wiki", "can_comment", "merge_enabled", "squash_enabled", "rebase_enabled"):
+            if type(target.get(key)) is bool:
+                fields[key] = str(target[key]).lower()
+        # Do not retry an uncertain privacy write. Re-read authoritative state.
+        try:
+            gitee.request(path, "PATCH", fields)
+        except SyncError:
+            pass
+        current = gitee.request(path)
+        if (current.get("id") != 50078322 or current.get("path") != "serylane"
+                or current.get("private") is not False):
+            raise SyncError("Gitee public access not confirmed; check repository opening/review status before retrying")
+        if (gitee.request(path + "/branches/main")["commit"]["sha"] != before_head
+                or {r["id"]: r["tag_name"] for r in gitee.pages(path + "/releases")} != before_releases
+                or any(current.get(k) != target[k] for k in fields if k not in {"name", "private"})):
+            raise SyncError("Public restoration did not preserve checked repository state")
+    public = anonymous.request(path)
+    if public.get("id") != 50078322 or public.get("private") is not False:
+        raise SyncError("Gitee anonymous repository access not verified")
+    print("Verified anonymous access to original public Gitee repository", flush=True)
+    return True
 
 
 def migrate_legacy_path(github, gitee, apply=False):
@@ -1007,6 +1053,8 @@ def main():
                         help="Align the Gitee display name with Serylane without changing its URL")
     parser.add_argument("--migrate-legacy-path", action="store_true",
                         help="Migrate only original repository ID 50078322 to cmmuu/serylane before synchronization")
+    parser.add_argument("--restore-public", action="store_true",
+                        help="Explicit one-time approval to restore public visibility of original cmmuu/serylane")
     args = parser.parse_args()
     gh_token, ge_token = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITEE_TOKEN")
     if not gh_token or not ge_token:
@@ -1018,6 +1066,8 @@ def main():
     max_total = configured_bytes("GITEE_MAX_TOTAL_BYTES", GE_MAX_TOTAL, 100_000_000_000)
     reserved = configured_bytes("GITEE_OTHER_ATTACHMENT_BYTES", 0, max_total)
     github, gitee = Api("github", gh_token), Api("gitee", ge_token, extra_hosts)
+    if args.restore_public and not restore_public_repository(github, gitee, Api("gitee", ""), args.apply):
+        return
     if args.migrate_legacy_path and not migrate_legacy_path(github, gitee, args.apply):
         return
     Sync(args.repo, github, gitee, args.work_dir,
