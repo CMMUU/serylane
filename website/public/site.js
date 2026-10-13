@@ -118,7 +118,7 @@
       if (resolvingDownload) return;
       resolvingDownload = true;
       const target = `${selectedSystem}-${selectedArchitecture}`;
-      const status = document.querySelector("#channel-note");
+      const status = document.querySelector("#download-progress");
       status.textContent = `正在核对 ${target} 最新安装包与实际下载来源…`;
       try {
         const reply = await fetch(`/api/download/${target}${id === "download-github" ? "?channel=github" : ""}`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(20000) });
