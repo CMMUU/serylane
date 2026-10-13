@@ -705,6 +705,55 @@ rules:
     }
 
     #[test]
+    fn small_ai_pools_survive_policy_roundtrip_and_native_validation() {
+        for count in [2usize, 3, 10] {
+            let mut source = "proxies:\n".to_string();
+            for i in 0..count {
+                source.push_str(&format!(
+                    " - {{name: JP-{i}, type: socks5, server: 127.0.0.1, port: 1080}}\n"
+                ));
+            }
+            source.push_str("proxy-groups:\n - {name: PROXY, type: select, proxies: [JP-0]}\nrules:\n - MATCH,PROXY\n");
+            let original = OpenAiPolicy {
+                enabled: true,
+                stability_enabled: true,
+                selected_nodes: (0..count).map(|i| node(&format!("JP-{i}"), 80.0)).collect(),
+                candidate_count: count,
+                healthy_count: count,
+                ..Default::default()
+            };
+            let restored: OpenAiPolicy =
+                serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+            let settings = AppSettings {
+                proxy_mode: crate::manual_outbound::ProxyMode::Ai,
+                ..Default::default()
+            };
+            let effective = build_effective_config_with_policy(
+                &source,
+                &settings,
+                RoutingMode::Rule,
+                Some(&restored),
+            )
+            .unwrap();
+            let document: Value = serde_yaml::from_str(&effective.yaml).unwrap();
+            assert_eq!(
+                document["proxy-groups"][0]["proxies"]
+                    .as_sequence()
+                    .unwrap()
+                    .len(),
+                count + 1
+            );
+            if let Some(binary) = std::env::var_os("MIHOMO_TEST_BINARY") {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("pool.yaml");
+                std::fs::write(&path, effective.yaml).unwrap();
+                crate::runtime::validate_file(std::path::Path::new(&binary), root.path(), &path)
+                    .expect("native small pool config");
+            }
+        }
+    }
+
+    #[test]
     fn rejects_new_requests_when_fewer_than_two_eligible_nodes_still_exist() {
         let policy = OpenAiPolicy {
             enabled: true,

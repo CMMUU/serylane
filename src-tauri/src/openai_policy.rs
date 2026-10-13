@@ -46,6 +46,19 @@ pub enum OpenAiTaskPhase {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionDiagnostics {
+    pub extracted: usize,
+    pub excluded_region: usize,
+    pub excluded_cost: usize,
+    pub eligible: usize,
+    pub tested: usize,
+    pub reachable: Option<usize>,
+    pub quality_passed: Option<usize>,
+    pub selected: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAiPolicyTaskSnapshot {
@@ -59,6 +72,7 @@ pub struct OpenAiPolicyTaskSnapshot {
     pub finished_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
     pub result: Option<OpenAiPolicy>,
+    pub diagnostics: Option<SelectionDiagnostics>,
 }
 
 impl Default for OpenAiPolicyTaskSnapshot {
@@ -74,6 +88,7 @@ impl Default for OpenAiPolicyTaskSnapshot {
             finished_at: None,
             error: None,
             result: None,
+            diagnostics: None,
         }
     }
 }
@@ -131,6 +146,7 @@ impl OpenAiPolicyTaskManager {
             finished_at: None,
             error: None,
             result: None,
+            diagnostics: None,
         };
         *self
             .snapshot
@@ -162,6 +178,19 @@ impl OpenAiPolicyTaskManager {
         Ok(())
     }
 
+    fn diagnostics(&self, change: impl FnOnce(&mut SelectionDiagnostics)) -> AppResult<()> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| AppError::Runtime("OpenAI 任务状态暂不可用".into()))?;
+        change(
+            snapshot
+                .diagnostics
+                .get_or_insert_with(SelectionDiagnostics::default),
+        );
+        Ok(())
+    }
+
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
@@ -178,7 +207,11 @@ impl OpenAiPolicyTaskManager {
             snapshot.phase = OpenAiTaskPhase::Completed;
             snapshot.completed = selected;
             snapshot.total = selected;
-            snapshot.message = format!("已生成 {selected} 个节点，{healthy} 个候选通过检测");
+            snapshot.message = if selected == 2 {
+                "已生成 2 个可用节点 · 一主一备".into()
+            } else {
+                format!("已生成 {selected} 个节点，{healthy} 个候选通过检测")
+            };
             snapshot.finished_at = Some(Utc::now());
             snapshot.error = None;
             snapshot.result = Some(policy);
@@ -296,33 +329,41 @@ async fn generate_and_apply(
     let source = storage.load_revision_source(profile_id, revision_id)?;
     let cost_preferences = storage.openai_costs(profile_id)?;
     let costs = cost_preferences.resolve(&source)?;
-    let candidates: Vec<_> = extract_candidates(&source)?
+    let extracted = extract_candidates(&source)?;
+    let excluded_region = extracted
+        .iter()
+        .filter(|n| !crate::node_metadata::eligible(&n.name))
+        .count();
+    let excluded_cost = extracted
+        .iter()
+        .filter(|n| crate::node_metadata::eligible(&n.name) && !costs.allowed(&n.name))
+        .count();
+    let eligible = extracted.len() - excluded_region - excluded_cost;
+    app.state::<OpenAiPolicyTaskManager>().diagnostics(|d| {
+        d.extracted = extracted.len();
+        d.excluded_region = excluded_region;
+        d.excluded_cost = excluded_cost;
+        d.eligible = eligible;
+        d.tested = 0;
+    })?;
+    let candidates: Vec<_> = extracted
         .into_iter()
         .filter(|node| costs.allowed(&node.name) && crate::node_metadata::eligible(&node.name))
         .take(MAX_CANDIDATES)
         .collect();
     if candidates.len() < MIN_HEALTHY_NODES {
-        return Err(AppError::Config(
-            if costs.value_mode() {
-                "符合地区及成本策略的显式节点少于 2 个；请检查名称地区、倍率与上限"
-            } else {
-                "支持地区的显式节点少于 2 个；未知、多地区冲突或受限制地区不进入 OpenAI 灾备"
-            }
-            .to_string(),
-        ));
+        return Err(AppError::Config(format!("可提取 {} 个节点，地区条件排除 {excluded_region} 个，成本条件排除 {excluded_cost} 个，剩余 {eligible} 个；AI 代理需要至少 2 个不同的合格节点。请检查节点名称地区和成本设置。", eligible + excluded_region + excluded_cost)));
     }
     check_cancelled(app)?;
-
-    let excluded = extract_candidates(&source)?
-        .iter()
-        .filter(|n| !crate::node_metadata::eligible(&n.name))
-        .count();
     update_progress(
         app,
         OpenAiTaskPhase::Preparing,
         0,
         candidates.len(),
-        format!("地区筛选排除 {excluded} 个节点；继续按质量和预算筛选"),
+        format!(
+            "符合条件 {eligible} 个，本轮检测 {} 个；最低 2 个，最多选用 10 个",
+            candidates.len()
+        ),
     )?;
     let mut policy = benchmark_nodes(app, &source, candidates, auto_maintain, &costs).await?;
     if !costs.value_mode() && profile.openai_policy.last_benchmarked_at.is_some() {
@@ -488,11 +529,14 @@ async fn benchmark_nodes(
     while let Some((candidate, result)) = checks.next().await {
         check_cancelled(app)?;
         completed += 1;
+        app.state::<OpenAiPolicyTaskManager>()
+            .diagnostics(|d| d.tested = completed)?;
         if let Ok(payload) = result {
             if let Some(delay) = payload
                 .get("delay")
                 .and_then(serde_json::Value::as_u64)
                 .and_then(|delay| u32::try_from(delay).ok())
+                .filter(|delay| *delay > 0 && *delay <= 8_000)
             {
                 reachable.push(ReachableNode {
                     candidate,
@@ -512,6 +556,8 @@ async fn benchmark_nodes(
         )?;
     }
 
+    app.state::<OpenAiPolicyTaskManager>()
+        .diagnostics(|d| d.reachable = Some(reachable.len()))?;
     if reachable.len() < MIN_HEALTHY_NODES {
         return Err(AppError::Runtime(format!(
             "仅 {} 个节点通过 OpenAI 可达性检测，至少需要 2 个",
@@ -629,9 +675,10 @@ async fn benchmark_nodes(
     }
 
     if costs.value_mode() {
-        let best = ranked.iter().map(|(_, n)| n.score).fold(0.0_f64, f64::max);
-        ranked.retain(|(_, n)| n.score >= (best - 15.0).max(50.0));
+        retain_value_candidates(&mut ranked);
     }
+    app.state::<OpenAiPolicyTaskManager>()
+        .diagnostics(|d| d.quality_passed = Some(ranked.len()))?;
     ranked.sort_by(|left, right| {
         costs
             .utility(&right.1.name, right.1.score)
@@ -639,8 +686,10 @@ async fn benchmark_nodes(
             .then_with(|| left.1.latency_ms.cmp(&right.1.latency_ms))
     });
     let selected_nodes = select_diverse_nodes(ranked, SELECTED_NODES);
+    app.state::<OpenAiPolicyTaskManager>()
+        .diagnostics(|d| d.selected = Some(selected_nodes.len()))?;
     if selected_nodes.len() < MIN_HEALTHY_NODES {
-        return Err(AppError::Runtime("综合检测后少于 2 个可用节点".to_string()));
+        return Err(AppError::Runtime(format!("初次检测通过 {healthy_count} 个，复测及基础质量筛选后剩余 {} 个；至少需要 2 个。原有策略未替换，请检查失败节点或补充合格节点。", selected_nodes.len())));
     }
     Ok(OpenAiPolicy {
         stability_enabled: true,
@@ -887,7 +936,7 @@ fn extract_candidates(source: &str) -> AppResult<Vec<CandidateNode>> {
     let proxies = root
         .get(Value::String("proxies".to_string()))
         .and_then(Value::as_sequence)
-        .ok_or_else(|| AppError::Config("订阅中没有显式 proxies 节点".to_string()))?;
+        .ok_or_else(|| AppError::Config("当前 AI 筛选需要订阅中的显式 proxies 节点；仅含 proxy-providers 的配置请先在自选节点页使用".to_string()))?;
     let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();
     for proxy in proxies {
@@ -967,6 +1016,18 @@ fn node_score(latency_ms: u32, jitter_ms: u32, bandwidth_mbps: Option<f64>) -> f
     let jitter = 15.0 * (1.0 - (f64::from(jitter_ms) / 1_500.0).clamp(0.0, 1.0));
     let bandwidth = 35.0 * (bandwidth_mbps.unwrap_or(0.0) / 200.0).clamp(0.0, 1.0);
     (10.0 + latency + jitter + bandwidth).clamp(0.0, 100.0)
+}
+
+// Absolute health/cost/region requirements remain hard gates. The relative
+// quality window is a preference, not a reason to discard the only backup.
+fn retain_value_candidates(ranked: &mut Vec<(CandidateNode, OpenAiNodeScore)>) {
+    ranked.retain(|(_, n)| n.score.is_finite() && n.score >= 50.0);
+    let mut scores: Vec<_> = ranked.iter().map(|(_, n)| n.score).collect();
+    scores.sort_by(|a, b| b.total_cmp(a));
+    if let Some(best) = scores.first() {
+        let cutoff = (best - 15.0).max(50.0).min(*scores.get(1).unwrap_or(best));
+        ranked.retain(|(_, n)| n.score >= cutoff);
+    }
 }
 
 fn select_diverse_nodes(
@@ -1254,6 +1315,38 @@ rules:
             build_benchmark_config(SOURCE, &settings, &candidates).expect("isolated benchmark");
         assert!(!yaml.contains("DOMAIN,example.com"));
         assert_eq!(settings.user_rules.len(), 1);
+    }
+
+    #[test]
+    fn value_relative_preference_keeps_two_absolute_qualified_backups() {
+        for (scores, expected) in [
+            (vec![95.0, 60.0], 2),
+            (vec![95.0, 49.0], 1),
+            (vec![95.0], 1),
+            (vec![95.0, 92.0, 80.0, 60.0], 3),
+            (vec![f64::NAN, 60.0, 50.0], 2),
+            (vec![], 0),
+        ] {
+            let mut candidates: Vec<_> = scores
+                .iter()
+                .enumerate()
+                .map(|(i, s)| ranked(&format!("JP-{i}"), "same-server", *s))
+                .collect();
+            super::retain_value_candidates(&mut candidates);
+            assert_eq!(candidates.len(), expected);
+            assert_eq!(
+                select_diverse_nodes(candidates, super::SELECTED_NODES).len(),
+                expected
+            );
+        }
+        let mut candidates: Vec<_> = (0..20)
+            .map(|i| ranked(&format!("US-{i}"), "same-server", 80.0))
+            .collect();
+        super::retain_value_candidates(&mut candidates);
+        assert_eq!(
+            select_diverse_nodes(candidates, super::SELECTED_NODES).len(),
+            10
+        );
     }
 
     #[test]

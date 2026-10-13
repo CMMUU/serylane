@@ -1,3 +1,4 @@
+import type { NodeTestResult } from "./node-test";
 import type { ProxyMap } from './node-selection';
 export type ProxyMode = 'manual' | 'ai';
 export type ManualOutboundState = { mode: ProxyMode; revision: string; activeProfileId: string | null; legacySelection: boolean };
@@ -7,6 +8,8 @@ export const manualOutboundMarkup = `<article class="panel manual-outbound-panel
   <div class="mode-banner"><p id="manual-current" role="status">正在读取选点方式…</p><button class="button button-primary" id="manual-apply" disabled>使用自选节点</button></div>
   <p class="hint">与 AI 代理互斥，二者仅一个生效；Codex 路由接入独立，不受切换影响。不会自动开启系统代理或 TUN。</p>
   <p id="manual-result" role="status"></p>
+  <div class="manual-test-toolbar"><button type="button" class="button button-primary" id="manual-test-all" disabled>测试全部</button><button type="button" class="button button-quiet" id="manual-test-cancel" hidden>停止测试</button><progress id="manual-test-progress" max="1" value="0" aria-label="节点测试进度" hidden></progress></div>
+  <p id="manual-test-status" class="hint" role="status" aria-live="polite">正在读取测试状态…</p>
   <fieldset id="manual-controls"><legend class="sr-only">订阅策略组选点</legend>
     <div class="manual-filters"><label>当前配置<select id="manual-profile" aria-label="选用订阅或本地配置"></select></label><label>筛选节点<input id="manual-search" type="search" placeholder="搜索节点名称或协议" /></label><label>排序<select id="manual-sort"><option value="source">订阅顺序</option><option value="delay">延迟优先</option><option value="name">名称</option></select></label></div>
     <div class="routing-segments" id="manual-routing-mode" role="group" aria-label="自选节点路由模式"><button type="button" data-routing-mode="rule">规则</button><button type="button" data-routing-mode="global">全局</button><button type="button" data-routing-mode="direct">直连</button></div>
@@ -15,14 +18,16 @@ export const manualOutboundMarkup = `<article class="panel manual-outbound-panel
   </fieldset>
 </article>`;
 
-export function nodeGridMarkup(group: string, map: ProxyMap, query: string, sort: string, busy: boolean): string {
+export function nodeGridMarkup(group: string, map: ProxyMap, query: string, sort: string, busy: boolean, results: NodeTestResult[] = [], testing = false): string {
   const value = map[group] ?? {};
   const selectable = ['Selector', 'Fallback', 'URLTest'].includes(value.type ?? '');
-  const delay = (name: string) => { const history = map[name]?.history; const sample = history?.[history.length - 1]?.delay; return typeof sample === 'number' && sample > 0 ? sample : null; };
+  const measured = new Map(results.map(n => [n.name, n]));
+  const delay = (name: string) => { const result = measured.get(name); if (result) return result.state === 'passed' ? result.delayMs : null; const history = map[name]?.history; const sample = history?.[history.length - 1]?.delay; return typeof sample === 'number' && sample > 0 ? sample : null; };
   const nodes = (value.all ?? []).filter(name => `${name} ${map[name]?.type ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   if (sort === 'name') nodes.sort((a,b) => a.localeCompare(b));
   if (sort === 'delay') nodes.sort((a,b) => (delay(a) ?? Infinity) - (delay(b) ?? Infinity));
-  return `<div class="manual-node-list" role="group" aria-label="${escape(group)} 节点">${nodes.map(name => `<div class="manual-node${value.now === name ? ' is-selected' : ''}"><button type="button" data-node-choice="${escape(name)}" data-node-group="${escape(group)}" aria-pressed="${value.now === name}" ${busy || !selectable ? 'disabled' : ''}><strong>${escape(name)}</strong><small>${escape(map[name]?.type ?? '节点')} · ${value.now === name ? '当前选中' : '候选'}</small></button><button type="button" class="proxy-delay node-latency" data-proxy="${escape(name)}" aria-label="测试 ${escape(name)} 延迟" ${busy ? 'disabled' : ''}>${delay(name) === null ? '测速' : `${delay(name)} ms`}</button></div>`).join('') || '<p class="empty-state">没有匹配节点。</p>'}</div>`;
+  const label = (name: string) => { const n = measured.get(name); return n ? ({pending: '未测试', testing: '测试中…', passed: `${n.delayMs} ms`, timeout: '超时', failed: '测试失败', unavailable: '暂未测得'})[n.state] : delay(name) === null ? '测速' : `${delay(name)} ms`; };
+  return `<div class="manual-node-list" role="group" aria-label="${escape(group)} 节点">${nodes.map(name => `<div class="manual-node${value.now === name ? ' is-selected' : ''}"><button type="button" data-node-choice="${escape(name)}" data-node-group="${escape(group)}" aria-pressed="${value.now === name}" ${busy || !selectable ? 'disabled' : ''}><strong>${escape(name)}</strong><small>${escape(map[name]?.type ?? '节点')} · ${value.now === name ? '当前选中' : '候选'}</small></button><button type="button" class="proxy-delay node-latency" data-proxy="${escape(name)}" aria-label="测试 ${escape(name)} 延迟" ${busy || testing ? 'disabled' : ''}>${escape(label(name))}</button></div>`).join('') || '<p class="empty-state">没有匹配节点。</p>'}</div>`;
 }
 
 export function mountManualOutbound(root: HTMLElement, options: {

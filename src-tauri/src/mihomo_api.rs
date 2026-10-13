@@ -135,6 +135,48 @@ impl MihomoApiClient {
         self.get_url(url).await
     }
 
+    /// A delay-test failure differs from a broken/auth-failed controller. Do not
+    /// turn an unavailable controller into a measured zero or failed node.
+    pub async fn node_latency_probe(
+        &self,
+        proxy: &str,
+    ) -> (crate::node_test::NodeState, Option<u64>) {
+        use crate::node_test::NodeState;
+        let Ok(mut url) = self.path_url(&["proxies", proxy, "delay"]) else {
+            return (NodeState::Unavailable, None);
+        };
+        url.query_pairs_mut()
+            .append_pair("url", "https://www.gstatic.com/generate_204")
+            .append_pair("timeout", "5000")
+            .append_pair("expected", "204");
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(&self.secret)
+            .timeout(Duration::from_secs(6))
+            .send()
+            .await;
+        match response {
+            Ok(response) => match response.status().as_u16() {
+                200 => match response
+                    .json::<Value>()
+                    .await
+                    .ok()
+                    .and_then(|v| v["delay"].as_u64())
+                    .filter(|d| *d > 0 && *d <= 5000)
+                {
+                    Some(delay) => (NodeState::Passed, Some(delay)),
+                    _ => (NodeState::Unavailable, None),
+                },
+                504 => (NodeState::Timeout, None),
+                503 => (NodeState::Failed, None),
+                _ => (NodeState::Unavailable, None),
+            },
+            // A controller transport timeout is not proof of a node timeout.
+            Err(_) => (NodeState::Unavailable, None),
+        }
+    }
+
     pub async fn health_probe(
         &self,
         proxy: &str,
@@ -319,5 +361,44 @@ mod readiness_deadline_tests {
             "must not inherit the 10s per-request timeout"
         );
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod node_latency_tests {
+    use super::*;
+    use crate::node_test::NodeState;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn latency_protocol_keeps_unknown_distinct_and_uses_only_encoded_get() {
+        for (status, body, want) in [
+            (200, r#"{"delay":42}"#, (NodeState::Passed, Some(42))),
+            (200, r#"{"delay":0}"#, (NodeState::Unavailable, None)),
+            (200, r#"{"delay":5001}"#, (NodeState::Unavailable, None)),
+            (200, r#"{"delay":-1}"#, (NodeState::Unavailable, None)),
+            (200, "not-json", (NodeState::Unavailable, None)),
+            (401, "{}", (NodeState::Unavailable, None)),
+            (503, "{}", (NodeState::Failed, None)),
+            (504, "{}", (NodeState::Timeout, None)),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut data = vec![0; 8192];
+                let count = socket.read(&mut data).await.unwrap();
+                let request = String::from_utf8_lossy(&data[..count]);
+                assert!(request.starts_with("GET /proxies/A%2FB%20%3F/delay?"));
+                assert!(request.contains("timeout=5000"));
+                assert!(request.contains("expected=204"));
+                assert!(request
+                    .to_lowercase()
+                    .contains("authorization: bearer fixture"));
+                socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            });
+            let client = MihomoApiClient::from_endpoint(port, "fixture".into()).unwrap();
+            assert_eq!(client.node_latency_probe("A/B ?").await, want);
+            server.await.unwrap();
+        }
     }
 }

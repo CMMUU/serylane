@@ -63,7 +63,9 @@ export type OpenAiTaskPhase =
   | "failed"
   | "cancelled";
 
+export type SelectionDiagnostics = { extracted: number; excludedRegion: number; excludedCost: number; eligible: number; tested: number; reachable: number | null; qualityPassed: number | null; selected: number | null };
 export type OpenAiPolicyTask = {
+  diagnostics?: SelectionDiagnostics | null;
   running: boolean;
   profileId: string | null;
   phase: OpenAiTaskPhase;
