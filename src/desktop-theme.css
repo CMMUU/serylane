@@ -45,7 +45,7 @@
   --accent-rgb: 77, 135, 255;
   --accent-strong: #80abff;
   --primary-background: #2764df;
-  --primary-hover: #3272f0;
+  --primary-hover: #2464df;
   --primary-pressed: #2058c7;
   --nav-active: rgba(100, 154, 241, .15);
   --hover: rgba(168, 198, 243, .09);
@@ -507,4 +507,13 @@ input:disabled, select:disabled, textarea:disabled { opacity: 1; color: var(--di
   .toggle-switch input:checked + .toggle-track { background: Highlight; forced-color-adjust: none; }
   .preference-segments input:checked + span { outline: 2px solid Highlight; outline-offset: -2px; }
   .button, input, select, textarea { border: 1px solid ButtonText; }
+}
+
+/* Selected state owns the entire hover palette, not just its background. */
+.status-mode-button.is-active:hover:not(:disabled),
+.button-openai.is-enabled:hover:not(:disabled) {
+  color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
+}
+.status-mode-button.is-active:disabled {
+  color: var(--disabled-text); background: var(--disabled-background); border-color: var(--line);
 }

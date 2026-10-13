@@ -1,3 +1,5 @@
+import type { SubscriptionEdit } from "./subscription-editor";
+import type { DomainSelection, DomainRouteState } from "./domain-routing";
 import type { NodeTestScope, NodeTestSnapshot } from "./node-test";
 import type { DownloadOptions, SubscriptionTask } from "./subscription-task";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,6 +47,11 @@ import type {
 } from "./types";
 
 export const api = {
+  readSubscriptionEdit: (profileId: string) => invoke<SubscriptionEdit>("read_subscription_edit", {profileId}),
+  saveSubscriptionEdit: (input: SubscriptionEdit) => invoke<SubscriptionEdit>("save_subscription_edit", {input, confirmed: true}),
+  domainRouteStatus: () => invoke<DomainRouteState>("domain_route_status"),
+  saveDomainRoute: (policy: DomainSelection, expectedRevision: number) => invoke<DomainRouteState>("save_domain_route", {policy, expectedRevision}),
+  applyDomainRoute: (enabled: boolean, state: DomainRouteState) => invoke<DomainRouteState>("apply_domain_route", {enabled, expectedRevision: state.document.revision, profileId: state.profileId, profileRevision: state.profileRevision, confirmed: true}),
   startNodeTest: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_node_test", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision }),
   nodeTestStatus: () => invoke<NodeTestSnapshot | null>("node_test_status"),
   cancelNodeTest: (taskId: string) => invoke<NodeTestSnapshot>("cancel_node_test", { taskId }),
@@ -52,6 +59,7 @@ export const api = {
   setManualOutbound: (mode: ProxyMode, expectedRevision: string) => invoke<ManualOutboundState>("set_manual_outbound", {mode, expectedRevision, confirmed: true}),
   connectionFeedback: () => invoke<ConnectionFeedback>("connection_feedback"),
   recheckConnection: () => invoke<ConnectionFeedback>("recheck_connection"),
+  legacyRouteStatus: () => invoke<RouteSnapshot | null>("legacy_route_status"),
   localRouteStatus: () => invoke<RouteSnapshot>("local_route_status"),
   saveLocalRoute: (settings: RouteSettings, expectedRevision: number) => invoke<RouteSnapshot>("save_local_route", { settings, expectedRevision }),
   setLocalRouteEnabled: (enabled: boolean, expectedRevision: number, confirmed: boolean) => invoke<RouteSnapshot>("set_local_route_enabled", { enabled, expectedRevision, confirmed }),

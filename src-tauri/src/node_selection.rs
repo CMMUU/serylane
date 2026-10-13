@@ -128,6 +128,14 @@ pub async fn select(
         && runtime_group["type"] == "Selector";
     if let Some(node) = node {
         validate_choice(runtime_group, node)?;
+        if group == GROUP
+            && !storage
+                .openai_costs(id)?
+                .resolve(&storage.load_revision_source(id, revision)?)?
+                .allowed(node)
+        {
+            return Err(AppError::InvalidInput("所选节点不符合当前预算限制".into()));
+        }
         if group == GROUP && !crate::node_metadata::eligible(node) {
             return Err(AppError::InvalidInput(
                 crate::node_metadata::parse(node).region_reason,
@@ -148,12 +156,13 @@ pub async fn select(
     } else if !managed && !matches!(runtime_group["type"].as_str(), Some("Fallback" | "URLTest")) {
         return Err(AppError::InvalidInput("该策略组没有自动选择模式".into()));
     }
-    let previous_manual = if managed {
+    let remember = group == GROUP && profile.openai_policy.enabled;
+    let previous_manual = if remember {
         storage.openai_manual_node(id)?
     } else {
         None
     };
-    if managed {
+    if remember {
         // Persist first. On failure there is no controller write; if the
         // controller rejects the change, roll the intent back explicitly.
         storage.save_openai_manual_node(id, node)?;
@@ -164,7 +173,7 @@ pub async fn select(
         None => api.clear_proxy_selection(group).await,
     };
     if let Err(error) = result {
-        if managed {
+        if remember {
             storage.save_openai_manual_node(id, previous_manual.as_deref())?;
         }
         return Err(error);

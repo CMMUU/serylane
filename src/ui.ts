@@ -37,7 +37,7 @@ export const NAV_ITEMS = [
 
 export type ViewName = typeof NAV_ITEMS[number]["id"];
 
-export const navigationMarkup = NAV_ITEMS.map((item) => `
+export const navigationMarkup = NAV_ITEMS.filter((item) => item.id !== "programs").map((item) => `
   <button class="nav-item${item.id === "overview" ? " is-active" : ""}" data-view="${item.id}" title="${item.label}"${item.id === "overview" ? ' aria-current="page"' : ""}>
     <span class="nav-icon">${icon(item.icon)}</span>${item.label}
   </button>`).join("");

@@ -499,12 +499,15 @@ async fn refresh_subscription_candidate(
 ) -> AppResult<(ProfileOperationResult, Option<SubscriptionUsage>)> {
     let profile_id = profile.id;
     let latest = storage.list_revisions(profile_id)?.into_iter().next();
-    let etag = latest
-        .as_ref()
+    let validators = latest.as_ref().filter(|revision| {
+        profile
+            .subscription_source_updated_at
+            .is_none_or(|changed| revision.fetched_at > changed)
+    });
+    let etag = validators
         .and_then(|revision| revision.subscription.as_ref())
         .and_then(|metadata| metadata.etag.as_deref());
-    let last_modified = latest
-        .as_ref()
+    let last_modified = validators
         .and_then(|revision| revision.subscription.as_ref())
         .and_then(|metadata| metadata.last_modified.as_deref());
     let fetched = SubscriptionFetcher::for_task(app, download, Some(task.clone()))?
@@ -513,6 +516,13 @@ async fn refresh_subscription_candidate(
     let usage = fetched.metadata.usage.clone();
     let permit = user_rules::acquire_configuration_for_task(app, &task).await?;
     let current = storage.load_profile(profile_id)?;
+    if !matches!(&current.source, ProfileSource::RemoteSubscription {url:now_url,user_agent:now_ua} if now_url == url && now_ua == user_agent)
+        || current.subscription_source_updated_at != profile.subscription_source_updated_at
+    {
+        return Err(AppError::Conflict(
+            "下载期间订阅地址或客户端标识已修改，旧结果未写入，请重新刷新".into(),
+        ));
+    }
     let now_latest = storage.list_revisions(profile_id)?.into_iter().next();
     // Policy-only revisions may legitimately change while fetching; rebase on
     // their fresh settings. A different source must never be overwritten by an older request.

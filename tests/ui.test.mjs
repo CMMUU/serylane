@@ -197,7 +197,7 @@ test("refreshBase rejects a delayed pre-start snapshot after a network mutation"
     store: { settings: { networkMode: "manual" }, runtime: staleRuntime },
     action: async (_label, operation) => operation(),
     api: new Proxy({ settings: () => settingsRead, runtime: async () => staleRuntime }, { get: (target, key) => target[key] ?? (async () => null) }),
-    renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop, renderSettings: noop,
+    invalidateNodeDetailsContext: noop, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop, renderSettings: noop,
     renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
   };
   const source = main.slice(main.indexOf("async function refreshBase()"), main.indexOf("function renderHeader()"));
@@ -235,7 +235,7 @@ function runtimeRefreshFixture() {
       systemProxy: async () => ({ active: activeRequest.proxyActive }),
       tunHelperStatus: async () => ({ state: "ready" }),
     },
-    renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshConnectionFeedback: async () => {},
+    renderTunHelper: noop, invalidateNodeDetailsContext: noop, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshConnectionFeedback: async () => {},
   };
   const source = main.slice(main.indexOf("async function refreshRuntimeOnly("), main.indexOf("async function startRuntime("));
   vm.createContext(environment);
@@ -294,12 +294,12 @@ test("latest runtime read wins and a late in-action read cannot cross busy relea
   assert.equal(f.environment.store.systemProxy.active, true);
 });
 
-test("all twelve navigation items retain unique routes, labels and code-native icons", () => {
+test("eleven visible routes retain unique labels and icons while program route is parked", () => {
   assert.deepEqual(NAV_ITEMS.map(({ id }) => id), ["overview", "profiles", "subscriptions", "proxies", "manual", "programs", "routing", "rules", "connections", "logs", "diagnostics", "settings"]);
   assert.equal(new Set(NAV_ITEMS.map(({ id }) => id)).size, 12);
-  assert.equal((navigationMarkup.match(/<svg /g) ?? []).length, 12);
+  assert.equal((navigationMarkup.match(/<svg /g) ?? []).length, 11);
   assert.equal((navigationMarkup.match(/aria-current="page"/g) ?? []).length, 1);
-  assert.equal((navigationMarkup.match(/aria-hidden="true"/g) ?? []).length, 12);
+  assert.equal((navigationMarkup.match(/aria-hidden="true"/g) ?? []).length, 11);
 });
 test("switches retain a native checked input and keyboard-focusable control", () => {
   assert.match(preferenceSwitch("settings-launch"), /id="settings-launch" type="checkbox" role="switch"/);

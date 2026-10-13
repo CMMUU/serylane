@@ -40,6 +40,6 @@ test("startup mode composes existing preferences without coupling Codex routing"
   assert.match(read("src/settings-view.ts"), /settings-startup-mode/);
   assert.match(read("src/session-resume.ts"), /silentStartup: mode === "background", restoreLastSession: true/);
   assert.match(read("src/types.ts"), /silentStartup: boolean/);
-  assert.match(read("src/main.ts"), /data-openai-action="stability"/);
+  assert.doesNotMatch(read("src/main.ts"), /data-openai-action="stability"/);
   assert.match(read("src/main.ts"), /无需开启本地路由或接入 Codex/);
 });

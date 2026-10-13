@@ -17,8 +17,8 @@ function fixture(overrides={}) {
   manager.accept(structuredClone(state));
   return {manager,writes,els,click:id=>els.get(id).handlers.click()};
 }
-test('group UI explains rules, exclusivity and independent Codex route without turning on networking',()=>{
-  assert.match(manualOutboundMarkup,/与 AI 代理互斥/);assert.match(manualOutboundMarkup,/Codex 路由接入独立/);
+test('group UI explains rules, exclusivity and independent domain route without turning on networking',()=>{
+  assert.match(manualOutboundMarkup,/与 AI 代理互斥/);assert.match(manualOutboundMarkup,/域名路由独立/);
   assert.match(manualOutboundMarkup,/不会自动开启系统代理或 TUN/);assert.match(manualOutboundMarkup,/保留原有分流规则/);
 });
 test('cancel writes nothing; apply sends expected revision and returning to AI is explicit',async()=>{

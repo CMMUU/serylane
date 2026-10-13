@@ -6,7 +6,7 @@ const escape = (v: string) => v.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;
 export const manualOutboundMarkup = `<article class="panel manual-outbound-panel">
   <div class="panel-heading"><div><h2>自选节点</h2><p>按订阅策略组选择出口，保留原有分流规则。</p></div><button class="button button-quiet" id="manual-refresh">刷新</button></div>
   <div class="mode-banner"><p id="manual-current" role="status">正在读取选点方式…</p><button class="button button-primary" id="manual-apply" disabled>使用自选节点</button></div>
-  <p class="hint">与 AI 代理互斥，二者仅一个生效；Codex 路由接入独立，不受切换影响。不会自动开启系统代理或 TUN。</p>
+  <p class="hint">与 AI 代理互斥，二者仅一个生效；域名路由独立，不受切换影响。不会自动开启系统代理或 TUN。</p>
   <p id="manual-result" role="status"></p>
   <div class="manual-test-toolbar"><button type="button" class="button button-primary" id="manual-test-all" disabled>测试全部</button><button type="button" class="button button-quiet" id="manual-test-cancel" hidden>停止测试</button><progress id="manual-test-progress" max="1" value="0" aria-label="节点测试进度" hidden></progress></div>
   <p id="manual-test-status" class="hint" role="status" aria-live="polite">正在读取测试状态…</p>
@@ -59,7 +59,7 @@ export function mountManualOutbound(root: HTMLElement, options: {
     accept(state);
     try {
       const name = mode === 'manual' ? '自选节点' : 'AI 代理';
-      if (!await options.confirm({title: `切换为${name}？`, message: mode === 'manual' ? '暂停 AI 自动筛选与灾备，恢复订阅原有策略组和分流规则。既有 AI 偏好会保留，Codex 路由接入不变。核心运行中会重新加载配置。' : '暂停自选节点操作，启用当前配置中已保存的 AI 策略；尚未生成策略时需在 AI 代理页生成。Codex 路由接入不变。核心运行中会重新加载配置。', confirmLabel: `使用${name}`})) return;
+      if (!await options.confirm({title: `切换为${name}？`, message: mode === 'manual' ? '暂停 AI 自动筛选与灾备，恢复订阅原有策略组和分流规则。既有 AI 偏好会保留，域名路由设置不变。核心运行中会重新加载配置。' : '暂停自选节点操作，启用当前配置中已保存的 AI 策略；尚未生成策略时需在 AI 代理页生成。域名路由设置不变。核心运行中会重新加载配置。', confirmLabel: `使用${name}`})) return;
       const next = await options.write(mode, state.revision);
       accept(next); message(`已切换为${name}；核心未运行时，下次启动生效。`);
       try { await options.changed(next); } catch { message('选点方式已保存，请刷新页面状态。'); }

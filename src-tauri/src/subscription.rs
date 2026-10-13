@@ -711,7 +711,7 @@ fn validate_content(content: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn validate_subscription_url(url: &str) -> AppResult<Url> {
+pub(crate) fn validate_subscription_url(url: &str) -> AppResult<Url> {
     let parsed = Url::parse(url).map_err(|error| AppError::InvalidInput(error.to_string()))?;
     match parsed.scheme() {
         "https" => Ok(parsed),

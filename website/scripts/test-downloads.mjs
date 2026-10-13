@@ -139,7 +139,9 @@ assert.equal(byId('download-github').attributes.href, '/download/windows-x64?cha
 for (const tag of [...systemTags, ...architectureTags]) assert.ok(Object.hasOwn(tag.attributes, 'disabled'));
 assert.doesNotMatch(html, /releases\/download\/v[0-9]/, 'No version-pinned HTML fallback');
 assert.match(html, /界面示意 · 非实时状态/);
-assert.match(html, /三个独立操作/);
+assert.match(html, /保存草稿/);
+assert.match(html, /应用路由/);
+assert.match(html, /常见 AI 工具/);
 assert.equal(byId('hero-download').attributes.href, '#download');
 assert.equal(contentById('hero-download').replace(/<[^>]+>/g, ''), '下载 Serylane');
 assert.match(html, /支持 Windows、macOS 与 Linux/);

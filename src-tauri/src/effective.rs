@@ -141,11 +141,17 @@ pub fn build_effective_config_with_policy(
 
     crate::manual_outbound::require_profile(settings, uuid::Uuid::nil())?;
     if settings.proxy_mode == crate::manual_outbound::ProxyMode::Ai {
-        if let Some(policy) = openai_policy {
-            apply_openai_policy(root, policy, &mut summary)?;
+        if let Some(policy) = openai_policy.filter(|policy| policy.enabled) {
+            apply_openai_policy(
+                root,
+                policy,
+                &policy.runtime_costs.resolve(source)?,
+                &mut summary,
+            )?;
         }
     }
     crate::user_rules::merge_into_config(root, &settings.user_rules, &mut summary)?;
+    crate::domain_routing::merge(root, &settings.domain_routing, &mut summary)?;
 
     let yaml =
         serde_yaml::to_string(&document).map_err(|error| AppError::Config(error.to_string()))?;
@@ -271,12 +277,14 @@ fn normalize_proxy_groups(root: &mut Mapping, summary: &mut ProfileSummary) -> A
 fn apply_openai_policy(
     root: &mut Mapping,
     policy: &OpenAiPolicy,
+    costs: &crate::openai_cost::ResolvedCosts,
     summary: &mut ProfileSummary,
 ) -> AppResult<()> {
     if !policy.enabled {
         return Ok(());
     }
 
+    let enhanced = crate::capabilities::ENHANCED_STABILITY && policy.stability_enabled;
     let available_nodes: BTreeSet<String> = root
         .get(Value::String("proxies".to_string()))
         .and_then(Value::as_sequence)
@@ -297,16 +305,33 @@ fn apply_openai_policy(
         }
         if available_nodes.contains(&node.name)
             && crate::node_metadata::eligible(&node.name)
+            && costs.allowed(&node.name)
             && seen.insert(node.name.clone())
         {
             selected.push(node.name.clone());
         }
     }
 
+    // A retired enhanced Selector preference becomes Fallback priority only.
+    // Never resurrect an absent or over-budget node from the old intent file.
+    if !enhanced {
+        if let Some(index) = policy
+            .runtime_manual_node
+            .as_ref()
+            .and_then(|name| selected.iter().position(|n| n == name))
+        {
+            let preferred = selected.remove(index);
+            selected.insert(0, preferred);
+            summary.warnings.push(
+                "增强稳定策略已暂停；原手动节点作为基础 Fallback 优先项，失效时仍可回退".into(),
+            );
+        }
+    }
     let insufficient = selected.len() < 2;
     if insufficient {
         summary.warnings.push(
-            "OpenAI 支持地区的有效节点少于 2 个；托管路径拒绝新请求，请重新生成灾备".to_string(),
+            "OpenAI 符合地区与预算限制的有效节点少于 2 个；托管路径拒绝新请求，请重新生成灾备"
+                .to_string(),
         );
         selected.clear();
     }
@@ -335,7 +360,7 @@ fn apply_openai_policy(
         &mut group,
         "type",
         Value::String(
-            if policy.stability_enabled || insufficient {
+            if enhanced || insufficient {
                 "select"
             } else {
                 "fallback"
@@ -349,7 +374,7 @@ fn apply_openai_policy(
         Value::Sequence(
             selected
                 .into_iter()
-                .chain((policy.stability_enabled || insufficient).then(|| "REJECT".to_string()))
+                .chain((enhanced || insufficient).then(|| "REJECT".to_string()))
                 .map(Value::String)
                 .collect(),
         ),
@@ -688,13 +713,13 @@ rules:
         let stable_doc: Value = serde_yaml::from_str(&stable.yaml).unwrap();
         assert_eq!(
             stable_doc["proxy-groups"][0]["type"].as_str(),
-            Some("select")
+            Some("fallback")
         );
         let candidates = stable_doc["proxy-groups"][0]["proxies"]
             .as_sequence()
             .unwrap();
-        assert_eq!(candidates.len(), 3);
-        assert_eq!(candidates.last().and_then(Value::as_str), Some("REJECT"));
+        assert_eq!(candidates.len(), 2);
+        assert!(!candidates.iter().any(|n| n.as_str() == Some("REJECT")));
         if let Some(binary) = std::env::var_os("MIHOMO_TEST_BINARY") {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("stable-selector.yaml");
@@ -704,6 +729,34 @@ rules:
         }
     }
 
+    #[test]
+    fn paused_stability_keeps_value_budget_fail_closed() {
+        let source="proxies:\n - {name: 'JP 1x', type: socks5, server: a.invalid, port: 1080}\n - {name: 'US 5x', type: socks5, server: b.invalid, port: 1080}\nproxy-groups: []\nrules: ['MATCH,DIRECT']";
+        let policy = OpenAiPolicy {
+            enabled: true,
+            stability_enabled: true,
+            selected_nodes: vec![node("JP 1x", 90.0), node("US 5x", 80.0)],
+            runtime_costs: crate::openai_cost::CostPreferences {
+                mode: crate::openai_cost::CostMode::Value,
+                max_multiplier: Some(2.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let settings = AppSettings {
+            proxy_mode: crate::manual_outbound::ProxyMode::Ai,
+            ..Default::default()
+        };
+        let result =
+            build_effective_config_with_policy(source, &settings, RoutingMode::Rule, Some(&policy))
+                .unwrap();
+        let doc: Value = serde_yaml::from_str(&result.yaml).unwrap();
+        assert_eq!(
+            doc["proxy-groups"][0]["proxies"].as_sequence().unwrap(),
+            &vec![Value::String("REJECT".into())]
+        );
+        assert!(!result.summary.warnings.is_empty());
+    }
     #[test]
     fn small_ai_pools_survive_policy_roundtrip_and_native_validation() {
         for count in [2usize, 3, 10] {
@@ -741,7 +794,7 @@ rules:
                     .as_sequence()
                     .unwrap()
                     .len(),
-                count + 1
+                count
             );
             if let Some(binary) = std::env::var_os("MIHOMO_TEST_BINARY") {
                 let root = tempfile::tempdir().unwrap();

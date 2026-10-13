@@ -1,0 +1,23 @@
+[
+  {
+    "id": "openai",
+    "name": "OpenAI · ChatGPT / API",
+    "domains": ["openai.com", "*.openai.com", "chatgpt.com", "*.chatgpt.com", "oaistatic.com", "*.oaistatic.com", "oaiusercontent.com", "*.oaiusercontent.com", "oaistatsig.com", "*.oaistatsig.com", "openaimerge.com", "*.openaimerge.com"],
+    "note": "OpenAI 自有服务与资源域名；不自动包含共享登录、支付、客服或语音 IP。",
+    "sources": ["https://help.openai.com/en/articles/9247338-network-recommendations-for-chatgpt-errors-on-web-and-apps"]
+  },
+  {
+    "id": "claude",
+    "name": "Claude · 网页 / API",
+    "domains": ["claude.ai", "*.claude.ai", "claude.com", "*.claude.com", "anthropic.com", "*.anthropic.com"],
+    "note": "Claude 与 Anthropic 服务域名；第三方登录及共享资源仍沿用原规则。",
+    "sources": ["https://support.claude.com/en/articles/13198485-enforce-network-level-access-control-with-tenant-restrictions"]
+  },
+  {
+    "id": "gemini",
+    "name": "Gemini · 网页 / AI Studio / API",
+    "domains": ["gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com"],
+    "note": "仅 Gemini 主入口及 API；不接管整个 Google 域名，Google 登录和共享资源可按需自定义。",
+    "sources": ["https://support.google.com/gemini/answer/13278668", "https://ai.google.dev/api"]
+  }
+]

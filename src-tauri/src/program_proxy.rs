@@ -563,6 +563,7 @@ pub async fn list_proxy_programs(
     app: AppHandle,
     refresh: Option<bool>,
 ) -> Result<ProgramState, AppErrorDto> {
+    crate::capabilities::require_program_proxy()?;
     tauri::async_runtime::spawn_blocking(move || -> AppResult<ProgramState> {
         let storage = AppStorage::from_app(&app)?;
         let manager = app.state::<ProgramProxyManager>();
@@ -604,6 +605,7 @@ pub async fn list_installed_proxy_applications(
     app: AppHandle,
     refresh: Option<bool>,
 ) -> Result<PickerSnapshot, AppErrorDto> {
+    crate::capabilities::require_program_proxy()?;
     let manager = app.state::<ProgramProxyManager>();
     let mut cache = manager
         .picker
@@ -632,6 +634,7 @@ pub async fn list_installed_proxy_applications(
 pub async fn inspect_proxy_application(
     path: String,
 ) -> Result<app_binding::InstalledApplication, AppErrorDto> {
+    crate::capabilities::require_program_proxy()?;
     tauri::async_runtime::spawn_blocking(move || {
         if !valid_stored_path(&path) {
             return Err(invalid("应用路径格式不正确").dto());
@@ -650,6 +653,7 @@ pub async fn save_proxy_program(
     input: ProgramInput,
     expected_revision: u64,
 ) -> Result<ProgramState, AppErrorDto> {
+    crate::capabilities::require_program_proxy()?;
     tauri::async_runtime::spawn_blocking(move || -> AppResult<ProgramState> {
         if !supported_platform() {
             return Err(invalid("此平台暂未适配程序代理启动"));
@@ -695,6 +699,7 @@ pub async fn delete_proxy_program(
     program_id: Uuid,
     expected_revision: u64,
 ) -> Result<ProgramState, AppErrorDto> {
+    crate::capabilities::require_program_proxy()?;
     tauri::async_runtime::spawn_blocking(move || -> AppResult<ProgramState> {
         let storage = AppStorage::from_app(&app)?;
         let manager = app.state::<ProgramProxyManager>();
@@ -901,6 +906,7 @@ pub async fn launch_proxy_program(
     program_id: Uuid,
     expected_revision: u64,
 ) -> Result<ProgramState, AppErrorDto> {
+    crate::capabilities::require_program_proxy()?;
     tauri::async_runtime::spawn_blocking(move || -> AppResult<ProgramState> {
         if !supported_platform() {
             return Err(invalid("此平台暂未适配程序代理启动"));
@@ -1004,6 +1010,7 @@ pub async fn launch_proxy_program(
 pub async fn choose_proxy_program(
     window: tauri::WebviewWindow,
 ) -> Result<Option<String>, AppErrorDto> {
+    crate::capabilities::require_program_proxy()?;
     #[cfg(windows)]
     {
         let owner = window

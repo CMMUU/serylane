@@ -217,26 +217,20 @@ pub struct CostInput {
     pub nodes: Vec<CostRow>,
 }
 #[tauri::command]
-pub fn save_openai_costs(
+pub async fn save_openai_costs(
     app: AppHandle,
     input: CostInput,
     confirmed: bool,
 ) -> Result<CostSnapshot, AppErrorDto> {
-    let work = || -> AppResult<CostSnapshot> {
+    let work = async {
         if !confirmed {
             return Err(AppError::InvalidInput(
                 "修改自动选点成本策略需要确认".into(),
             ));
         }
-        let _permit = crate::user_rules::acquire_configuration(&app)?;
+        let permit = crate::user_rules::acquire_configuration(&app)?;
         let storage = AppStorage::from_app(&app)?;
         let current = snapshot(&storage, input.profile_id)?;
-        let policy = storage.load_profile(input.profile_id)?.openai_policy;
-        if input.mode == CostMode::Value && policy.enabled && !policy.stability_enabled {
-            return Err(AppError::Conflict(
-                "请先启用稳定优先，再保存性价比策略；基础 Fallback 无法保证成本限制".into(),
-            ));
-        }
         if storage.state()?.active_profile_id != Some(input.profile_id)
             || current.profile_revision != input.profile_revision
             || current.revision != input.revision
@@ -279,12 +273,40 @@ pub fn save_openai_costs(
             }
         }
         prefs.validate()?;
-        storage.save_openai_costs(input.profile_id, &prefs)?;
+        let previous = storage.openai_costs(input.profile_id)?;
+        let previous_config = storage.active_runtime_config()?;
+        let mut profile = storage.load_profile(input.profile_id)?;
+        profile.openai_policy.runtime_costs = prefs.clone();
+        let source = storage.load_revision_source(input.profile_id, input.profile_revision)?;
+        let candidate = crate::effective::build_effective_config_with_policy(
+            &source,
+            &storage.settings()?,
+            profile.routing_mode,
+            Some(&profile.openai_policy),
+        )?;
+        crate::user_rules::apply_profile_config(
+            &app,
+            &storage,
+            &candidate.yaml,
+            || {
+                if let Err(error) = storage
+                    .save_openai_costs(input.profile_id, &prefs)
+                    .and_then(|()| storage.restore_active_runtime_config(Some(&candidate.yaml)))
+                {
+                    storage.save_openai_costs(input.profile_id, &previous)?;
+                    storage.restore_active_runtime_config(previous_config.as_deref())?;
+                    return Err(error);
+                }
+                Ok(())
+            },
+            &permit,
+        )
+        .await?;
         app.state::<crate::openai_stability::StabilityManager>()
             .invalidate_observations();
         snapshot(&storage, input.profile_id)
     };
-    work().map_err(|e| e.dto())
+    work.await.map_err(|e: AppError| e.dto())
 }
 
 #[cfg(test)]

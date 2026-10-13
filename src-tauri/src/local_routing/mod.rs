@@ -1,7 +1,7 @@
 //! Opt-in local model routing. Saving preferences never launches or takes over an application.
 mod allowlist;
 pub(crate) mod codex;
-mod files;
+pub(crate) mod files;
 mod server;
 
 use crate::{
@@ -272,36 +272,14 @@ impl LocalRoutingManager {
     pub fn bootstrap(&self, app: &AppHandle) -> AppResult<()> {
         let storage = AppStorage::from_app(app)?;
         let doc = RouteDocument::read(&storage.routing_dir())?;
+        // Retire the old relay only after an ownership-checked restore. No new
+        // endpoint or domain route is started during migration.
+        codex::restore(&codex::config_path(app)?, &storage.routing_dir(), None)?;
         if doc.enabled {
-            let settings = storage.settings()?;
-            let running = if doc.settings.listen_port == settings.controller_port {
-                Err(AppError::InvalidInput("路由端口不能占用控制端口".into()))
-            } else {
-                server::start(&doc, settings.mixed_port, Some(app.clone()))
-            };
-            match running {
-                Ok(server) => *self.lock()? = Some(server),
-                Err(e) => {
-                    // A failed restart must not silently leave an owned dead Codex endpoint.
-                    let restore =
-                        codex::restore(&codex::config_path(app)?, &storage.routing_dir(), None);
-                    *self
-                        .error
-                        .lock()
-                        .map_err(|_| AppError::Runtime("路由状态锁不可用".into()))? =
-                        Some(format!(
-                            "路由未启动：{e}。{}",
-                            if restore.is_ok() {
-                                "已恢复原接入配置；如原配置为 CC Switch，请保持其服务开启"
-                            } else {
-                                "配置恢复有冲突，请在路由页面检查备份"
-                            }
-                        ));
-                }
-            }
-        } else {
-            // Recover an interrupted stop, but only when the lease still owns the fields.
-            codex::restore(&codex::config_path(app)?, &storage.routing_dir(), None)?;
+            let mut doc = doc;
+            doc.enabled = false;
+            doc.bump()?;
+            doc.write(&storage.routing_dir())?;
         }
         Ok(())
     }
@@ -327,6 +305,21 @@ pub(crate) fn stability_target(app: &AppHandle) -> AppResult<crate::route_health
     })
 }
 
+#[tauri::command]
+pub fn legacy_route_status(
+    app: AppHandle,
+    state: State<'_, LocalRoutingManager>,
+) -> Result<Option<RouteSnapshot>, AppErrorDto> {
+    (|| -> AppResult<_> {
+        let storage = AppStorage::from_app(&app)?;
+        let dir = storage.routing_dir();
+        if !codex::has_lease(&dir)? && !RouteDocument::read(&dir)?.enabled {
+            return Ok(None);
+        }
+        state.snapshot(&app).map(Some)
+    })()
+    .map_err(|e| e.dto())
+}
 #[tauri::command]
 pub fn local_route_status(
     app: AppHandle,
@@ -387,6 +380,11 @@ pub fn set_local_route_enabled(
         let dir = storage.routing_dir();
         let mut doc = RouteDocument::read(&dir)?;
         doc.expect_revision(expected_revision)?;
+        if enabled && !crate::capabilities::CODEX_ATTACH {
+            return Err(AppError::Conflict(
+                "旧模型中转已停用，请使用域名路由".into(),
+            ));
+        }
         if enabled {
             if guard
                 .as_ref()
@@ -464,6 +462,11 @@ pub fn set_codex_route(
         {
             return Err(AppError::Conflict(
                 "当前仍有模型请求，请结束后再更改接入".into(),
+            ));
+        }
+        if attach && !crate::capabilities::CODEX_ATTACH {
+            return Err(AppError::Conflict(
+                "新 Codex 接入暂时停用；仅保留旧接入恢复入口".into(),
             ));
         }
         if attach {

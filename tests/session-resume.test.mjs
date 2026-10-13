@@ -123,7 +123,7 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
     }, {
       get: (target, key) => target[key] ?? (async () => null),
     }),
-    renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
+    invalidateNodeDetailsContext: noop, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
     renderSettings: noop, renderManualMode: noop, renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
   };
   const main = read("src/main.ts");

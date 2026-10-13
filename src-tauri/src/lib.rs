@@ -2,9 +2,11 @@ mod app_binding;
 mod app_log;
 mod app_update;
 mod appearance;
+mod capabilities;
 mod config;
 mod connection_feedback;
 mod diagnostics;
+mod domain_routing;
 mod effective;
 mod error;
 mod local_routing;
@@ -36,6 +38,7 @@ mod startup;
 mod startup_macos;
 mod storage;
 mod subscription;
+mod subscription_edit;
 mod subscription_quota;
 mod subscription_task;
 mod traffic_monitor;
@@ -1458,7 +1461,11 @@ pub fn run() {
             startup::get_startup_status,
             startup::repair_startup_registration,
             startup::open_startup_settings,
+            domain_routing::domain_route_status,
+            domain_routing::save_domain_route,
+            domain_routing::apply_domain_route,
             local_routing::local_route_status,
+            local_routing::legacy_route_status,
             local_routing::save_local_route,
             local_routing::set_local_route_enabled,
             local_routing::set_codex_route,
@@ -1482,6 +1489,8 @@ pub fn run() {
             inspect_mihomo_yaml,
             list_profiles,
             list_subscriptions,
+            subscription_edit::read_subscription_edit,
+            subscription_edit::save_subscription_edit,
             get_profile_details,
             get_active_profile,
             create_inline_profile,

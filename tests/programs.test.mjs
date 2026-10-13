@@ -48,7 +48,8 @@ test("program page shares the single accessible navigation styling contract", ()
   const css = readFileSync(new URL("../src/desktop-theme.css", import.meta.url), "utf8");
   const ui = readFileSync(new URL("../src/ui.ts", import.meta.url), "utf8");
   assert.match(main, /id="programs-view"/);
-  assert.match(main, /if \(view === "programs"\) void programManager\.refresh\(\)/);
+  assert.doesNotMatch(main, /mountProgramManager|programManager\.refresh/);
+  assert.match(ui, /filter\(\(item\) => item.id !== "programs"\)/);
   assert.match(ui, /id: "programs", label: "程序代理"/);
   assert.match(css, /\.sidebar \.nav-item\[aria-current="page"\]/);
   assert.match(main, /button\.setAttribute\("aria-current", "page"\)/);

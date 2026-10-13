@@ -164,3 +164,21 @@
 .subscription-import-progress button { flex-shrink: 0; }
 
 @media (forced-colors: active) { .subscription-tile.is-active { border: 2px solid Highlight; } }
+
+.subscription-context-menu { position: fixed; z-index: 100; min-width: 180px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: var(--accent-shadow); }
+.subscription-context-menu[hidden] { display: none; }
+.subscription-context-menu .button { width: 100%; }
+.subscription-edit-dialog { width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; color: var(--text); background: var(--panel-solid, var(--panel)); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
+.subscription-edit-dialog::backdrop { background: #11182788; }
+.subscription-edit-dialog fieldset { display: grid; gap: 16px; border: 0; padding: 0; }
+.subscription-edit-dialog label { display: grid; gap: 6px; }
+.subscription-edit-dialog input { width: 100%; min-width: 0; }
+#domain-form fieldset { border: 0; padding: 0; display: grid; gap: 14px; }
+#domain-form label { display: grid; gap: 8px; }
+#domain-domains { resize: vertical; min-height: 160px; }
+#domain-legacy { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 16px; }
+.domain-preset { padding: 12px 0; border-bottom: 1px solid var(--line); }
+#domain-form .domain-preset > label { display: flex; align-items: center; gap: 10px; }
+.domain-preset input { width: 18px; height: 18px; }
+.domain-preset details { margin: 8px 0 0 28px; color: var(--muted); font-size: 13px; }
+.domain-preset code { display: block; margin-top: 8px; overflow-wrap: anywhere; }
