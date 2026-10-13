@@ -2,12 +2,51 @@
 import unittest
 from types import SimpleNamespace
 
-from sync_gitee import Api, NotFoundError, SyncError, migrate_legacy_path
+from sync_gitee import Api, NotFoundError, SyncError, migrate_legacy_path, restore_public_repository
 from test_sync_gitee import Opener
 from urllib.error import HTTPError
 
 
 class GiteeMigrationTests(unittest.TestCase):
+    def test_public_restoration_is_explicit_identity_bound_and_idempotent(self):
+        for uncertain in (False, True):
+            gh, ge, target, writes = self.fixture("serylane", uncertain=uncertain)
+            target["private"] = True
+            self.assertFalse(restore_public_repository(gh, ge, ge))
+            self.assertEqual(writes, [])
+            self.assertTrue(restore_public_repository(gh, ge, ge, True))
+            self.assertFalse(target["private"])
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(writes[0]["private"], "false")
+            self.assertTrue(restore_public_repository(gh, ge, ge, True))
+            self.assertEqual(len(writes), 1)
+
+    def test_public_restore_never_guesses_visibility_or_changes_other_repositories(self):
+        for key, value in [("private", None), ("private", "true"), ("id", 1), ("path", "other"), ("owner", {"login": "other"}), ("name", "other"), ("default_branch", "other")]:
+            gh, ge, target, writes = self.fixture("serylane")
+            target[key] = value
+            with self.assertRaises(SyncError): restore_public_repository(gh, ge, ge, True)
+            self.assertEqual(writes, [])
+
+    def test_anonymous_probe_has_no_credentials_and_must_see_original_public_repo(self):
+        self.assertNotIn("Authorization", Api("gitee", "").headers())
+        gh, ge, target, writes = self.fixture("serylane")
+        anon = SimpleNamespace(request=lambda path: {"id": 1, "private": False})
+        with self.assertRaisesRegex(SyncError, "anonymous"): restore_public_repository(gh, ge, anon, True)
+        self.assertEqual(writes, [])
+
+    def test_delayed_opening_is_reported_without_repeating_privacy_write(self):
+        gh, ge, target, writes = self.fixture("serylane")
+        target["private"] = True
+        original = ge.request
+        def request(path, method="GET", data=None):
+            result = original(path, method, data)
+            if method == "PATCH": target["private"] = True
+            return result
+        ge.request = request
+        with self.assertRaisesRegex(SyncError, "opening/review"): restore_public_repository(gh, ge, ge, True)
+        self.assertEqual(len(writes), 1)
+
     def fixture(self, slug="routedeck", uncertain=False):
         target = {"id": 50078322, "name": "Serylane", "path": slug,
                   "owner": {"login": "cmmuu"}, "private": False,
