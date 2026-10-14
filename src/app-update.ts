@@ -21,7 +21,7 @@ export function describeAppUpdate(status: AppUpdateStatus) {
     installing: ["安装中", `正在安装更新 · ${updateStageLabel(status.stage)}`, status.stage === "preflight" ? "正在核对安装条件，尚未停止代理。" : "确认后安全停止旧进程，再替换应用。TUN 等可选服务恢复单独处理。"],
     cancelled: ["已取消", "下载已取消", "未执行安装，代理未改变；可以重新下载。"],
     failed: ["操作失败", status.stage === "preflight" ? "安装前检查未通过，代理未停止" : "更新暂未完成",
-      `${status.error ?? "请查看更新日志，或打开发布页获取完整安装包。"}${retryInstall ? " 已验证的安装包仍保留；处理上述问题后可重新安装，无需重复下载。" : status.stage === "preflight" ? " 请重新下载或使用完整安装包。" : ["stopping", "services", "replacing", "restarting"].includes(status.stage ?? "") ? " 请核对代理与回退状态；恢复资料保留，重新打开应用后再继续。" : ""}`],
+      `${status.error ?? "请查看更新日志，或打开发布页获取完整安装包。"}${retryInstall ? " 已验证的安装包仍保留；处理上述问题后可重新安装，无需重复下载。" : status.stage === "preflight" ? " 请按具体原因处理，当前应用保持运行。" : ["stopping", "services", "replacing", "restarting"].includes(status.stage ?? "") ? " 请核对代理与回退状态；恢复资料保留，重新打开应用后再继续。" : ""}`],
   };
   const [badge, label, detail] = labels[phase];
   return {

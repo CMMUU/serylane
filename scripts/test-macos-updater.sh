@@ -7,6 +7,8 @@ if [ $# -gt 0 ]; then
   test -d "$1"
   export SERYLANE_UPDATE_BUNDLE="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
   cargo test --manifest-path src-tauri/Cargo.toml --lib macos_native_release_artifact_uses_product_backup_validator -- --ignored --nocapture
+  python3 scripts/test-native-updater.py "${SERYLANE_UPDATE_BUNDLE}.tar.gz"
 else
+  cargo test --manifest-path src-tauri/Cargo.toml --lib updater_ -- --nocapture
   cargo test --manifest-path src-tauri/Cargo.toml --lib macos_native_ -- --nocapture
 fi

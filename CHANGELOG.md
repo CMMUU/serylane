@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.28 - 2026-10-14
+
+- Bind updates to the validated platform/installer manifest key instead of comparing Tauri's OS-only target with OS-architecture. Revalidate identity, strict newer version and bytes before any disruption.
+- Share the product installation coordinator with native signed-download, replacement, rollback and new-process confirmation tests; gate published macOS/Windows/Linux artifacts, not just isolated installer helpers.
+- Keep retryable preflight packages, reject invalid candidates, retain failed restart evidence and distinguish recovery instructions. Add a read-only process identity probe that never initializes user storage or networking.
+- Existing v0.7.24–v0.7.27 installations need a first full-installer migration; preserve app data and follow current verified download metadata. TUN/signing scope is unchanged.
+
 ## 0.7.26 - 2026-10-14
 
 - Validate macOS application bundles separately from executable-only IPC trust; verify both backups and replacements with strict nested signatures, identity and version.

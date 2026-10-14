@@ -260,7 +260,7 @@ foreach ($kind in @('nsis','msi')) {
     }
     $current = Join-Path $repo "src-tauri/target/release/bundle/$kind/Serylane_${version}_$suffix"
     if (!(Test-Path -LiteralPath $current)) { throw 'Expected signed build installer is missing.' }
-    foreach ($scenario in @('fresh','upgrade','upgrade-login','upgrade-login-disabled','upgrade-login-legacy-settings')) {
+    foreach ($scenario in @('fresh','upgrade','upgrade-login','upgrade-login-disabled','upgrade-login-legacy-settings','upgrade-in-app')) {
         Reset-FixtureInstallLocations
         $approval = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', $true)
         if ($approval) {
@@ -286,7 +286,40 @@ foreach ($kind in @('nsis','msi')) {
                 }
             }
         }
-        Install-Package $current $directory
+        if ($scenario -eq 'upgrade-in-app') {
+            $env:SERYLANE_UPDATE_INSTALL_DIR = $directory
+            $env:SERYLANE_UPDATE_ARCHIVE = $current
+            $env:SERYLANE_UPDATE_RECEIPT = Join-Path $testRoot "$kind-update-receipt.json"
+            try {
+                & cargo test --manifest-path (Join-Path $repo 'src-tauri/Cargo.toml') --lib updater_native_windows_installer_child -- --ignored --nocapture
+                if ($LASTEXITCODE -ne 0) { throw 'Product updater child failed before installer launch.' }
+                if (!(Test-Path -LiteralPath $env:SERYLANE_UPDATE_RECEIPT)) { throw 'Product updater did not execute.' }
+                $receipt = Get-Content -LiteralPath $env:SERYLANE_UPDATE_RECEIPT -Raw | ConvertFrom-Json
+                if ($receipt.stage -ne 'replacing' -or $receipt.target -ne $version) { throw 'Product updater did not pass its preflight.' }
+                $until = [DateTime]::UtcNow.AddSeconds(180)
+                do {
+                    Start-Sleep -Milliseconds 500
+                    $next = Join-Path $directory 'serylane.exe'
+                    $installed = $false
+                    if (Test-Path -LiteralPath $next) {
+                        try { $installed = [string]([Diagnostics.FileVersionInfo]::GetVersionInfo($next).ProductVersion) -match ('^' + [regex]::Escape($version) + '(\.0)?$') }
+                        catch [IO.FileNotFoundException] { } # Atomic installer replacement gap.
+                    }
+                } while (!$installed -and [DateTime]::UtcNow -lt $until)
+                if (!$installed) { throw 'Installer launched but new executable was not installed.' }
+                Start-Sleep -Seconds 3
+                $probeFile = Join-Path $testRoot "$kind-new-process.json"
+                $probe = Start-Process -FilePath $next -ArgumentList '--serylane-update-probe' -RedirectStandardOutput $probeFile -Wait -PassThru
+                if ($probe.ExitCode -ne 0) { throw 'Installed executable failed identity probe.' }
+                $identity = Get-Content -LiteralPath $probeFile -Raw | ConvertFrom-Json
+                if ($identity.version -ne $version -or $identity.identifier -ne 'com.cmmuu.mihomodesktop') { throw 'New process did not confirm the expected version.' }
+                Write-Host "PASS: product check/download/signature/preflight/installer/new-process $kind $Architecture."
+            } finally {
+                Remove-Item Env:SERYLANE_UPDATE_INSTALL_DIR,Env:SERYLANE_UPDATE_ARCHIVE,Env:SERYLANE_UPDATE_RECEIPT -ErrorAction SilentlyContinue
+            }
+        } else {
+            Install-Package $current $directory
+        }
         $executable = Join-Path $directory 'serylane.exe'
         $info = (Get-Item -LiteralPath $executable).VersionInfo
         if ($info.ProductName -ne 'Serylane' -or !$info.ProductVersion.StartsWith($version)) { throw 'Installed binary branding/version mismatch.' }

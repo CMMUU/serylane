@@ -13,6 +13,12 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 use url::Url;
 
+#[cfg(test)]
+mod contract_tests;
+#[cfg(all(test, unix))]
+mod native_tests;
+mod transaction;
+
 const HK_MANIFEST: &str = "https://downloads.cmmuu.com/api/releases/serylane/latest";
 const HK_RELEASES: &str = "https://files.cmmuu.com/releases/serylane";
 const GITHUB_MANIFEST: &str =
@@ -164,6 +170,122 @@ struct Candidate {
     version: StableVersion,
     sha256: String,
     size: u64,
+    // This is the validated manifest key, not Update.target (an OS name).
+    platform_key: String,
+}
+
+#[derive(Clone, Debug)]
+struct UpdatePlatform {
+    base: String,
+    installer: Option<&'static str>,
+}
+impl UpdatePlatform {
+    fn native() -> AppResult<Self> {
+        use tauri::utils::config::BundleType;
+        Ok(Self {
+            base: tauri_plugin_updater::target().ok_or_else(|| failure("此平台不支持更新"))?,
+            installer: match tauri::utils::platform::bundle_type() {
+                Some(BundleType::Msi) => Some("msi"),
+                Some(BundleType::Nsis) => Some("nsis"),
+                _ => None,
+            },
+        })
+    }
+    fn keys(&self) -> Vec<String> {
+        if self.base.starts_with("windows-") {
+            if self.installer == Some("msi") {
+                // Our unqualified Windows alias is NSIS, never an MSI fallback.
+                vec![format!("{}-msi", self.base)]
+            } else {
+                vec![format!("{}-nsis", self.base), self.base.clone()]
+            }
+        } else {
+            vec![self.base.clone()]
+        }
+    }
+}
+
+impl Candidate {
+    fn from_update(
+        mut update: Update,
+        source: UpdateSource,
+        platform: &UpdatePlatform,
+    ) -> AppResult<Self> {
+        let version = parse_version(&update.version)?;
+        if update.signature.len() > 4096
+            || update.signature.trim().is_empty()
+            || update.raw_json.to_string().len() > MAX_METADATA_BYTES
+            || update.raw_json["version"].as_str() != Some(update.version.as_str())
+        {
+            return Err(failure("更新清单的版本或签名无效，请重新检查更新"));
+        }
+        let platform_key = platform
+            .keys()
+            .into_iter()
+            .find(|key| {
+                update.raw_json["platforms"][key]["url"].as_str()
+                    == Some(update.download_url.as_str())
+                    && update.raw_json["platforms"][key]["signature"].as_str()
+                        == Some(update.signature.as_str())
+            })
+            .ok_or_else(|| {
+                failure("更新包的平台、架构或安装格式与当前应用不匹配，请使用对应系统的完整安装包")
+            })?;
+        let os = platform.base.split('-').next().unwrap_or_default();
+        if update.target != os && update.target != platform.base && update.target != platform_key {
+            return Err(failure(
+                "更新器的平台信息不一致，请重新检查更新或使用完整安装包",
+            ));
+        }
+        let (sha256, size) = validate_asset(
+            source,
+            &platform_key,
+            &update.version,
+            &update.download_url,
+            &update.raw_json,
+        )?;
+        update.timeout = Some(Duration::from_secs(600));
+        Ok(Self {
+            update,
+            source,
+            version,
+            sha256,
+            size,
+            platform_key,
+        })
+    }
+    fn verify_for_install(
+        &self,
+        selected: &Self,
+        bytes: &[u8],
+        current: &str,
+        platform: &UpdatePlatform,
+    ) -> AppResult<()> {
+        let checked = Self::from_update(self.update.clone(), self.source, platform)?;
+        if self.version <= parse_version(current)? {
+            return Err(failure("此安装包不是更新版本，请重新检查更新；未执行安装"));
+        }
+        if !same_build(self, selected)
+            || !same_build(self, &checked)
+            || self.source != selected.source
+            || self.update.download_url != selected.update.download_url
+        {
+            return Err(failure(
+                "待安装版本或平台信息已变化，请重新检查更新；未执行安装",
+            ));
+        }
+        verify_download(self, bytes)
+    }
+}
+
+fn verify_download(candidate: &Candidate, bytes: &[u8]) -> AppResult<()> {
+    if bytes.len() as u64 != candidate.size {
+        return Err(failure("更新包大小与清单不符，请重新下载；未执行安装"));
+    }
+    if format!("{:x}", Sha256::digest(bytes)) != candidate.sha256 {
+        return Err(failure("更新包 SHA-256 校验失败，请重新下载；未执行安装"));
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -428,7 +550,7 @@ async fn check_source(
         UpdateSource::Gitee => gitee_manifest(proxy).await?,
         UpdateSource::Auto => return Err(failure("请指定实际发布渠道")),
     };
-    let target = tauri_plugin_updater::target().ok_or_else(|| failure("此平台不支持更新"))?;
+    let platform = UpdatePlatform::native()?;
     let mut builder = app
         .updater_builder()
         .timeout(Duration::from_secs(10))
@@ -447,55 +569,26 @@ async fn check_source(
     if let Some(proxy) = proxy {
         builder = builder.proxy(proxy.clone());
     }
-    let mut update = builder
+    let update = builder
         .build()
         .map_err(|_| failure("此安装方式不支持内置更新；Linux 请使用 AppImage"))?
         .check()
         .await
         .map_err(|e| failure(format!("{} 更新清单不可用：{e}", source.label())))?
         .ok_or_else(|| failure("发布服务没有返回更新清单"))?;
-    let version = parse_version(&update.version)?;
-    if update.signature.len() > 4096
-        || update.signature.trim().is_empty()
-        || update.raw_json.to_string().len() > MAX_METADATA_BYTES
-    {
-        return Err(failure("更新清单或签名无效"));
-    }
-    let manifest_target = [
-        format!("{target}-msi"),
-        format!("{target}-nsis"),
-        target.clone(),
-    ]
-    .into_iter()
-    .find(|key| {
-        update.raw_json["platforms"][key]["url"].as_str() == Some(update.download_url.as_str())
-    })
-    .ok_or_else(|| failure("更新包不属于当前系统架构"))?;
-    let (sha256, size) = validate_asset(
-        source,
-        &manifest_target,
-        &update.version,
-        &update.download_url,
-        &update.raw_json,
-    )?;
+    let candidate = Candidate::from_update(update, source, &platform)?;
     if manifest
         .expected_version
-        .is_some_and(|expected| expected != version)
+        .is_some_and(|expected| expected != candidate.version)
     {
         return Err(failure("Gitee 发布标签与更新清单版本不一致"));
     }
-    update.timeout = Some(Duration::from_secs(600));
-    Ok(Candidate {
-        update,
-        source,
-        version,
-        sha256,
-        size,
-    })
+    Ok(candidate)
 }
 
 fn same_build(a: &Candidate, b: &Candidate) -> bool {
     a.version == b.version
+        && a.platform_key == b.platform_key
         && a.sha256 == b.sha256
         && a.size == b.size
         && a.update.signature == b.update.signature
@@ -676,9 +769,19 @@ pub async fn check_app_update(
 }
 
 async fn download_candidate(candidate: &Candidate, state: &AppUpdateManager) -> AppResult<Vec<u8>> {
+    download_with_transport(candidate, &candidate.update, state).await
+}
+
+// Production always supplies candidate.update. Native tests replace only the
+// transport URL with a loopback server while preserving the signed identity.
+async fn download_with_transport(
+    candidate: &Candidate,
+    transport: &Update,
+    state: &AppUpdateManager,
+) -> AppResult<Vec<u8>> {
     let oversized = AtomicBool::new(false);
     let mut received = 0_u64;
-    let download = candidate.update.download(
+    let download = transport.download(
         |length, total| {
             received = received.saturating_add(length as u64);
             if received > candidate.size || total.is_some_and(|size| size != candidate.size) {
@@ -704,12 +807,10 @@ async fn download_candidate(candidate: &Candidate, state: &AppUpdateManager) -> 
         return Err(failure("下载已取消"));
     }
     state.lock()?.status.stage = "verify".into();
-    if oversized.load(Ordering::Acquire)
-        || bytes.len() as u64 != candidate.size
-        || format!("{:x}", Sha256::digest(&bytes)) != candidate.sha256
-    {
-        return Err(failure("更新包大小或 SHA-256 校验失败，已拒绝安装"));
+    if oversized.load(Ordering::Acquire) {
+        return Err(failure("更新包大小与发布清单不符，请重新下载"));
     }
+    verify_download(candidate, &bytes)?;
     Ok(bytes)
 }
 
@@ -892,6 +993,30 @@ fn install_with_service_transaction(
     Ok(())
 }
 
+fn select_install(session: &mut Session, version_tag: &str) -> AppResult<Candidate> {
+    if !(session.status.phase == "ready"
+        || session.status.phase == "failed" && session.status.retry_install)
+        || !session
+            .status
+            .info
+            .as_ref()
+            .is_some_and(|i| i.available && i.latest_version == version_tag)
+    {
+        return Err(failure("请先下载并验证当前选定的新版本"));
+    }
+    let candidate = session
+        .ready
+        .as_ref()
+        .ok_or_else(|| failure("已验证安装包已失效，请重新下载"))?
+        .0
+        .clone();
+    session.status.phase = "installing".into();
+    session.status.stage = "preflight".into();
+    session.status.error = None;
+    session.status.retry_install = false;
+    Ok(candidate)
+}
+
 #[tauri::command]
 pub async fn install_app_update(
     app: AppHandle,
@@ -907,27 +1032,7 @@ pub async fn install_app_update(
         Arc::new(crate::user_rules::acquire_configuration(&app).map_err(|e| e.dto())?);
     let candidate = {
         let mut session = state.lock().map_err(|e| e.dto())?;
-        if !(session.status.phase == "ready"
-            || session.status.phase == "failed" && session.status.retry_install)
-            || !session
-                .status
-                .info
-                .as_ref()
-                .is_some_and(|i| i.available && i.latest_version == version_tag)
-        {
-            return Err(failure("请先下载并验证当前选定的新版本").dto());
-        }
-        let candidate = session
-            .ready
-            .as_ref()
-            .ok_or_else(|| failure("已验证安装包已失效，请重新下载").dto())?
-            .0
-            .clone();
-        session.status.phase = "installing".into();
-        session.status.stage = "preflight".into();
-        session.status.error = None;
-        session.status.retry_install = false;
-        candidate
+        select_install(&mut session, &version_tag).map_err(|e| e.dto())?
     };
     let worker_status = state.session.clone();
     let worker_operation = _operation.clone();
@@ -935,139 +1040,14 @@ pub async fn install_app_update(
     tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
         let _operation = worker_operation;
         let _configuration = worker_configuration;
-        let target = candidate.update.version.clone();
-        let stage = |value: &str| -> AppResult<()> {
-            // Persist intent before mutation. Logging never masks a disk error.
-            crate::update_receipt::write(&app, &target, value)?;
-            worker_status
-                .lock()
-                .map_err(|_| failure("更新状态锁不可用"))?
-                .status
-                .stage = value.into();
-            crate::app_log::record(
-                0,
-                crate::app_log::Area::App,
-                &format!(
-                    "软件更新 v{target}：{}",
-                    crate::update_receipt::stage_label(value)
-                ),
-            );
-            Ok(())
-        };
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> AppResult<()> {
-                stage("preflight")?;
-                {
-                    let mut session = worker_status
-                        .lock()
-                        .map_err(|_| failure("更新状态锁不可用"))?;
-                    let valid = session.ready.as_ref().is_some_and(|(c, bytes)| {
-                        c.version > parse_version(env!("CARGO_PKG_VERSION")).expect("build version")
-                            && c.update.target == tauri_plugin_updater::target().unwrap_or_default()
-                            && c.update.version == target
-                            && c.version == candidate.version
-                            && bytes.len() as u64 == c.size
-                            && format!("{:x}", Sha256::digest(bytes)) == c.sha256
-                    });
-                    if !valid {
-                        session.ready = None;
-                        return Err(failure(
-                            "已验证安装包的版本、架构或摘要发生变化，请重新下载",
-                        ));
-                    }
-                }
-                crate::tun_service::preflight_app_upgrade(&app)?;
-                installation_preflight(&app, candidate.size)?;
-                #[cfg(target_os = "macos")]
-                let backup = {
-                    let backup = crate::macos_update_install::Backup::prepare()?;
-                    crate::update_receipt::set_backup(&app, backup.path())?;
-                    backup.retain(&target)?
-                };
-                // Keep verified bytes for every preflight failure. Once disruptive
-                // work begins they are consumed; no blind retry after partial install.
-                stage("stopping")?;
-                let (_, bytes) = worker_status
-                    .lock()
-                    .map_err(|_| failure("更新状态锁不可用"))?
-                    .ready
-                    .take()
-                    .ok_or_else(|| failure("安装包已失效"))?;
-                app.state::<crate::local_routing::LocalRoutingManager>()
-                    .shutdown(&app)?;
-                app.state::<crate::openai_stability::StabilityManager>()
-                    .stop();
-                crate::platform::restore_system_proxy(&app)?;
-                app.state::<MihomoRuntime>().stop(Some(&app))?;
-                app.state::<crate::OpenAiPolicyTaskManager>().cancel()?;
-                app.state::<crate::GlobalTrafficMonitor>().stop();
-                AppStorage::from_app(&app)?.mark_clean_shutdown(true)?;
-                stage("services")?;
-                install_with_service_transaction(
-                    || crate::tun_service::prepare_app_upgrade(&app, &target),
-                    || {
-                        stage("replacing")?;
-                        let replace = || {
-                            candidate
-                                .update
-                                .install(bytes)
-                                .map_err(|e| failure(format!("安装启动失败：{e}")))
-                        };
-                        #[cfg(target_os = "macos")]
-                        {
-                            backup.install(replace)
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            replace()
-                        }
-                    },
-                    || crate::tun_service::rollback_app_upgrade(&app),
-                )?;
-                stage("restarting")?;
-                Ok(())
-            }))
-            .unwrap_or_else(|_| Err(failure("安装任务意外中断；请核对日志与保留的备份")));
-        if let Err(error) = &outcome {
-            let (failed_stage, retry) = {
-                let mut session = worker_status
-                    .lock()
-                    .map_err(|_| failure("更新状态锁不可用"))?;
-                let retry = session.ready.is_some() && session.status.stage == "preflight";
-                session.status.phase = "failed".into();
-                session.status.retry_install = retry;
-                session.status.error = Some(crate::app_log::sanitize(&error.to_string()));
-                (session.status.stage.clone(), retry)
-            };
-            crate::app_log::record(
-                2,
-                crate::app_log::Area::App,
-                &format!(
-                    "软件更新 v{target} 失败 [{}，可重试安装={retry}]：{error}",
-                    failed_stage
-                ),
-            );
-            // A receipt failure must not replace the actual installation failure.
-            if let Err(journal) = crate::update_receipt::failed(
-                &app,
-                &target,
-                &failed_stage,
-                &error.to_string(),
-                failed_stage != "preflight",
-            ) {
-                crate::app_log::record(
-                    1,
-                    crate::app_log::Area::App,
-                    &format!("更新失败记录写入未完成：{journal}"),
-                );
-            }
-        } else {
-            // Worker owns restart: cancellation of the awaiting IPC must not
-            // strand a successfully replaced app running its old binary.
-            #[cfg(not(windows))]
-            app.restart();
-        }
-        outcome
+        let host = transaction::NativeHost { app };
+        transaction::run_install(
+            &worker_status,
+            &candidate,
+            env!("CARGO_PKG_VERSION"),
+            &UpdatePlatform::native()?,
+            &host,
+        )
     })
     .await
     .map_err(|_| failure("安装工作线程意外结束，请重新打开应用核对状态").dto())?

@@ -43,14 +43,14 @@ test("automatic update preferences clearly describe the download-center-first fa
 test("updater uses confirmed native installation and separately saved non-network preferences", () => {
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  const rust = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8");
+  const rust = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8") + readFileSync(new URL("../src-tauri/src/app_update/transaction.rs", import.meta.url), "utf8");
   assert.match(api, /invoke<void>\("install_app_update", \{ versionTag, confirmed \}\)/);
   assert.match(main, /if \(!confirmed\) \{ appUpdateActionBusy = false; renderAppUpdate\(\); return; \}[\s\S]*api\.installAppUpdate\(version, true\)/);
   assert.match(main, /6 \* 60 \* 60 \* 1_000/);
   assert.match(main, /saveUpdatePreferences/);
   assert.match(rust, /candidate\s*\.update\s*\.install\(bytes\)/);
-  assert.match(rust, /prepare_app_upgrade\(&app, &target\)/);
-  assert.match(rust, /rollback_app_upgrade\(&app\)/);
+  assert.match(rust, /prepare_app_upgrade\(&self\.app, target\)/);
+  assert.match(rust, /rollback_app_upgrade\(&self\.app\)/);
   assert.ok(rust.indexOf("if !confirmed") < rust.indexOf("let candidate = {", rust.indexOf("pub async fn install_app_update")));
   assert.doesNotMatch(api, /downloadAndInstall|install_app_update[^\n]*(?:url|path|bytes)/);
 });
@@ -158,7 +158,7 @@ test("only native retained preflight packages expose reinstall without redownloa
 });
 test("bundle validation, retry ownership and macOS release acceptance stay wired", () => {
   const backup = readFileSync(new URL("../src-tauri/src/macos_update_install.rs", import.meta.url), "utf8");
-  const update = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8");
+  const update = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8") + readFileSync(new URL("../src-tauri/src/app_update/transaction.rs", import.meta.url), "utf8");
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.match(backup, /validate_bundle/);
   assert.doesNotMatch(backup, /codesign::validate\(/);
@@ -174,4 +174,26 @@ test("confirmation is covered by the update busy guard and backdrop ignores open
   const handler = main.slice(main.indexOf('$("#app-update-install")!.addEventListener'));
   assert.ok(handler.indexOf("appUpdateActionBusy = true;") < handler.indexOf("await confirmAction"));
   assert.match(main, /if \(target.id === "confirmation-modal"\) \{\s*if \(event.detail > 1\) return/);
+});
+
+
+test("preflight errors preserve the actual recovery instruction instead of always recommending redownload", () => {
+  const identity = describeAppUpdate({ ...status("failed"), stage: "preflight", retryInstall: false, error: "更新包的平台、架构或安装格式与当前应用不匹配，请使用对应系统的完整安装包" });
+  assert.match(identity.detail, /完整安装包/);
+  assert.doesNotMatch(identity.detail, /请重新下载/);
+  const digest = describeAppUpdate({ ...status("failed"), stage: "preflight", retryInstall: false, error: "更新包 SHA-256 校验失败，请重新下载；未执行安装" });
+  assert.match(digest.detail, /请重新下载/);
+});
+
+test("release gates execute the shared product coordinator and a new-process probe", () => {
+  const backend = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8");
+  const native = readFileSync(new URL("../src-tauri/src/app_update/native_tests.rs", import.meta.url), "utf8");
+  const windows = readFileSync(new URL("../scripts/test-windows-installers.ps1", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.match(backend, /transaction::run_install/);
+  assert.doesNotMatch(backend, /update\.target == tauri_plugin_updater::target/);
+  assert.match(native, /run_install\(/);
+  assert.match(native, /--serylane-update-probe/);
+  assert.match(windows, /updater_native_windows_installer_child/);
+  assert.match(workflow, /test-native-updater.py/);
 });

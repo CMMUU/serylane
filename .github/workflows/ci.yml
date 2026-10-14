@@ -80,6 +80,8 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
         env:
           SERYLANE_NATIVE_TRAY_SNAPSHOT_DIR: ${{ runner.temp }}/native-tray
+      - name: Verify product updater contract and transaction on this platform
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib updater_ -- --nocapture
       - name: Verify macOS native updater success and failure paths
         if: runner.os == 'macOS'
         shell: bash
