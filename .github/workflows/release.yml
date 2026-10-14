@@ -277,6 +277,13 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: bash scripts/test-macos-updater.sh src-tauri/target/release/bundle/macos/Serylane.app
+      - name: Verify Linux product updater and next upgrade on isolated AppImages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          archives=(src-tauri/target/release/bundle/appimage/*.AppImage)
+          test "${#archives[@]}" = 1
+          python3 scripts/test-native-updater.py "${archives[0]}"
       - name: Verify Windows installers on disposable runner
         if: runner.os == 'Windows'
         shell: pwsh

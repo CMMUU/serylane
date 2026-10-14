@@ -17,7 +17,7 @@ impl Backup {
         let root = crate::tun_service::codesign::bundle_root().map_err(AppError::Update)?;
         Self::prepare_at(&root, env!("CARGO_PKG_VERSION"))
     }
-    fn prepare_at(root: &Path, version: &str) -> AppResult<Self> {
+    pub(crate) fn prepare_at(root: &Path, version: &str) -> AppResult<Self> {
         crate::tun_service::codesign::validate_bundle(root, version).map_err(AppError::Update)?;
         let root = root.to_path_buf();
         if fs::symlink_metadata(&root)?.file_type().is_symlink() {

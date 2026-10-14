@@ -91,13 +91,16 @@ fn save(path: &Path, value: &Receipt) -> AppResult<()> {
 }
 
 pub fn write(app: &AppHandle, target: &str, stage: &str) -> AppResult<()> {
-    let path = path(app)?;
-    let previous = read(&path)?;
+    write_at(&path(app)?, target, stage)
+}
+
+pub(crate) fn write_at(path: &Path, target: &str, stage: &str) -> AppResult<()> {
+    let previous = read(path)?;
     let backup = previous
         .filter(|r| r.target == target && stage != "preflight")
         .and_then(|r| r.backup);
     save(
-        &path,
+        path,
         &Receipt {
             schema: 2,
             target: target.into(),
@@ -110,10 +113,14 @@ pub fn write(app: &AppHandle, target: &str, stage: &str) -> AppResult<()> {
 
 #[cfg(target_os = "macos")]
 pub fn set_backup(app: &AppHandle, backup: &Path) -> AppResult<()> {
-    let path = path(app)?;
-    let mut receipt = read(&path)?.ok_or_else(|| AppError::Update("缺少安装预检记录".into()))?;
+    set_backup_at(&path(app)?, backup)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn set_backup_at(path: &Path, backup: &Path) -> AppResult<()> {
+    let mut receipt = read(path)?.ok_or_else(|| AppError::Update("缺少安装预检记录".into()))?;
     receipt.backup = Some(backup.to_string_lossy().into_owned());
-    save(&path, &receipt)
+    save(path, &receipt)
 }
 
 pub fn failed(
@@ -123,13 +130,22 @@ pub fn failed(
     reason: &str,
     disruption_started: bool,
 ) -> AppResult<()> {
-    let path = path(app)?;
-    let previous = read(&path)?;
+    failed_at(&path(app)?, target, stage, reason, disruption_started)
+}
+
+pub(crate) fn failed_at(
+    path: &Path,
+    target: &str,
+    stage: &str,
+    reason: &str,
+    disruption_started: bool,
+) -> AppResult<()> {
+    let previous = read(path)?;
     let backup = previous
         .filter(|r| r.target == target)
         .and_then(|r| r.backup);
     save(
-        &path,
+        path,
         &Receipt {
             schema: 2,
             target: target.into(),
@@ -144,45 +160,67 @@ pub fn failed(
     )
 }
 
+/// Confirmation requires the running version and its native verification, not an installer exit code.
+pub(crate) fn confirm_at(
+    path: &Path,
+    running: &str,
+    verify: impl FnOnce(&Receipt) -> AppResult<()>,
+) -> AppResult<bool> {
+    let Some(mut receipt) = read(path)? else {
+        return Ok(false);
+    };
+    if receipt.target != running {
+        return Ok(false);
+    }
+    verify(&receipt)?;
+    receipt.stage = "confirmed".into();
+    receipt.schema = 2;
+    receipt.backup = None;
+    receipt.failure = None;
+    save(path, &receipt)?;
+    Ok(true)
+}
+
 pub fn summary(app: &AppHandle) -> AppResult<Option<String>> {
     let path = path(app)?;
     let receipt = match read(&path)? {
         Some(r) => Some(r),
         None => read(&path.with_file_name("app-update-receipt-v1.json"))?,
     };
-    let Some(mut receipt) = receipt else {
+    let Some(receipt) = receipt else {
         return Ok(None);
     };
     let installed = receipt.target == env!("CARGO_PKG_VERSION");
     if installed {
-        #[cfg(target_os = "macos")]
-        {
-            let root = crate::tun_service::codesign::bundle_root().map_err(AppError::Update)?;
-            crate::tun_service::codesign::validate_bundle(&root, &receipt.target)
-                .map_err(AppError::Update)?;
-            if let Some(backup) = &receipt.backup {
-                if let Err(error) = crate::macos_update_install::confirm_backup(
-                    Path::new(backup),
-                    &root,
-                    &receipt.target,
-                ) {
-                    return Ok(Some(format!(
-                        "已启动 v{}；备份清理未完成，资料仍保留：{}",
-                        receipt.target,
-                        crate::app_log::sanitize(&error.to_string())
-                    )));
+        // A v1 receipt is read above; preserve that migration before confirming v2.
+        if !path.exists() {
+            save(&path, &receipt)?;
+        }
+        let result = confirm_at(&path, env!("CARGO_PKG_VERSION"), |_record| {
+            #[cfg(target_os = "macos")]
+            {
+                let root = crate::tun_service::codesign::bundle_root().map_err(AppError::Update)?;
+                crate::tun_service::codesign::validate_bundle(&root, &_record.target)
+                    .map_err(AppError::Update)?;
+                if let Some(backup) = &_record.backup {
+                    crate::macos_update_install::confirm_backup(
+                        Path::new(backup),
+                        &root,
+                        &_record.target,
+                    )?;
                 }
             }
-        }
-        receipt.stage = "confirmed".into();
-        receipt.schema = 2;
-        receipt.backup = None;
-        receipt.failure = None;
-        save(&path, &receipt)?;
-        return Ok(Some(format!(
-            "已确认启动 v{}；辅助服务状态单独显示。",
-            receipt.target
-        )));
+            Ok(())
+        });
+        return Ok(Some(match result {
+            Ok(true) => format!("已确认启动 v{}；辅助服务状态单独显示。", receipt.target),
+            Ok(false) => "更新记录已变化，请刷新后核对安装状态。".into(),
+            Err(error) => format!(
+                "已启动 v{}；安装验证或备份清理未完成，资料仍保留：{}",
+                receipt.target,
+                crate::app_log::sanitize(&error.to_string())
+            ),
+        }));
     }
     let detail = receipt
         .failure
@@ -261,6 +299,25 @@ mod tests {
             "invalid write preserves evidence"
         );
     }
+    #[test]
+    fn new_process_confirmation_requires_version_and_native_verification() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("receipt.json");
+        write_at(&path, "9.0.1", "restarting").unwrap();
+        assert!(!confirm_at(&path, "9.0.0", |_| panic!(
+            "old process must not verify or clean"
+        ))
+        .unwrap());
+        let before = fs::read(&path).unwrap();
+        assert!(confirm_at(&path, "9.0.1", |_| Err(AppError::Update(
+            "fixture verification failed".into()
+        )))
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(confirm_at(&path, "9.0.1", |_| Ok(())).unwrap());
+        assert_eq!(read(&path).unwrap().unwrap().stage, "confirmed");
+    }
+
     #[test]
     fn bounded_journal_rejects_invalid_states_and_links() {
         let d = tempfile::tempdir().unwrap();

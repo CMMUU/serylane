@@ -43,7 +43,9 @@ mod subscription_quota;
 mod subscription_task;
 mod traffic_monitor;
 pub mod tun_service;
+mod update_probe;
 mod update_receipt;
+pub use update_probe::update_probe;
 mod user_rules;
 #[cfg(all(test, windows, target_env = "msvc"))]
 mod windows_test_manifest;

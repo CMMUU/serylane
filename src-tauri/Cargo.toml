@@ -1,6 +1,6 @@
 [package]
 name = "serylane"
-version = "0.7.27"
+version = "0.7.28"
 license = "GPL-3.0-only"
 description = "Serylane: lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]
@@ -89,8 +89,10 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSApplication", "block2", "libc", "NSAttributedString", "NSImage", "NSButton", "NSCell", "NSControl", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSText", "NSView", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSDate", "NSError", "NSFileManager", "NSPropertyList", "NSURL", "NSAttributedString", "NSDictionary", "NSGeometry", "NSRange", "NSString", "NSValue"] }
 
-[target.'cfg(target_os = "macos")'.dev-dependencies]
+[dev-dependencies]
 tauri = { version = "~2.11", features = ["test"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAppearance", "NSApplication", "NSMenu", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSStringDrawing"] }
 
 [[test]]

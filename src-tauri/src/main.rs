@@ -2,5 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    serylane_lib::run()
+    if !serylane_lib::update_probe() {
+        serylane_lib::run()
+    }
 }

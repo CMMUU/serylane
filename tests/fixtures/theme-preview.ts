@@ -1326,6 +1326,13 @@ mockIPC(async (command, payload) => {
     if (!args.confirmed || !(fixtureUpdate.phase === "ready" || fixtureUpdate.retryInstall) || args.versionTag !== fixtureUpdate.info?.latestVersion) throw new Error("合成安装条件不满足");
     document.documentElement.dataset.fixtureUpdateInstalls = String(++updateInstallCount);
     fixtureUpdate.phase = "installing";
+    if (updateScenario === "identity-failure") {
+      fixtureUpdate.phase = "failed";
+      fixtureUpdate.stage = "preflight";
+      fixtureUpdate.retryInstall = false;
+      fixtureUpdate.error = "更新包的平台、架构或安装格式与当前应用不匹配，请使用对应系统的完整安装包";
+      throw new Error(fixtureUpdate.error);
+    }
     if (updateScenario === "preflight-failure") {
       fixtureUpdate.phase = "failed";
       fixtureUpdate.stage = "preflight";
