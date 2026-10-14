@@ -232,6 +232,57 @@ mod tests {
             .arg(&root));
         root
     }
+    fn read_fixture_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        use std::io::Read;
+        // Darwin may inherit O_NONBLOCK from the accept listener. A read timeout
+        // alone does not turn that socket back into a blocking connection.
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.windows(4).any(|value| value == b"\r\n\r\n") {
+            let mut buffer = [0_u8; 4096];
+            let size = stream.read(&mut buffer).unwrap();
+            assert!(size > 0 && request.len() + size <= 16 * 1024);
+            request.extend_from_slice(&buffer[..size]);
+        }
+        request
+    }
+
+    #[test]
+    fn macos_native_http_fixture_reads_delayed_fragmented_headers() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let (mut socket, _) = loop {
+            match listener.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        let worker = std::thread::spawn(move || read_fixture_request(&mut socket));
+        std::thread::sleep(Duration::from_millis(30));
+        client
+            .write_all(b"GET /manifest HTTP/1.1\r\nHost: ")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        client.write_all(b"localhost\r\n\r\n").unwrap();
+        assert_eq!(
+            worker.join().unwrap(),
+            b"GET /manifest HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        );
+    }
+
     #[test]
     fn macos_native_bundle_integrity_and_backup_failures() {
         use crate::tun_service::codesign::{validate, validate_bundle};
@@ -315,7 +366,7 @@ mod tests {
     }
     #[tokio::test]
     async fn macos_native_signed_download_replace_and_new_process_confirmation() {
-        use std::io::{Read, Write};
+        use std::io::Write;
         use tauri_plugin_updater::UpdaterExt;
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().canonicalize().unwrap();
@@ -350,12 +401,8 @@ mod tests {
                     }
                     Err(e) => panic!("{e}"),
                 };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut request = [0; 4096];
-                let n = stream.read(&mut request).unwrap();
-                let body = if String::from_utf8_lossy(&request[..n]).starts_with("GET /manifest ") {
+                let request = read_fixture_request(&mut stream);
+                let body = if String::from_utf8_lossy(&request).starts_with("GET /manifest ") {
                     &manifest
                 } else {
                     &bytes
