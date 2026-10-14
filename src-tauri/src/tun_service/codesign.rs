@@ -19,6 +19,7 @@ extern "C" {
     fn CFDictionaryGetValue(dictionary: CfRef, key: CfRef) -> CfRef;
     fn CFGetTypeID(value: CfRef) -> usize;
     fn CFStringGetTypeID() -> usize;
+    fn CFDictionaryGetTypeID() -> usize;
     fn CFURLCreateFromFileSystemRepresentation(
         allocator: CfRef,
         buffer: *const u8,
@@ -39,6 +40,8 @@ extern "C" {
 #[link(name = "Security", kind = "framework")]
 extern "C" {
     static kSecCodeInfoTeamIdentifier: CfStringRef;
+    static kSecCodeInfoIdentifier: CfStringRef;
+    static kSecCodeInfoPList: CfStringRef;
     fn SecCodeCopySigningInformation(
         code: SecStaticCodeRef,
         flags: u32,
@@ -165,6 +168,92 @@ pub fn designated_requirement(path: &Path) -> Result<String, String> {
 
 pub fn validate(path: &Path) -> Result<(), String> {
     designated_requirement(path).map(|_| ())
+}
+
+/// Bundle integrity is deliberately separate from executable-only IPC trust and
+/// Developer ID requirements. Never weaken those callers to accept directories.
+pub fn validate_bundle(path: &Path, version: &str) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || path.extension().and_then(|s| s.to_str()) != Some("app")
+    {
+        return Err("更新对象不是完整的 .app 应用包".into());
+    }
+    for (relative, directory) in [
+        ("Contents", true),
+        ("Contents/MacOS", true),
+        ("Contents/Info.plist", false),
+        ("Contents/MacOS/serylane", false),
+    ] {
+        let m = std::fs::symlink_metadata(path.join(relative)).map_err(|_| "应用包结构不完整")?;
+        if m.file_type().is_symlink() || (directory && !m.is_dir()) || (!directory && !m.is_file())
+        {
+            return Err("应用包结构异常或关键文件为链接".into());
+        }
+    }
+    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    let bytes = canonical.as_os_str().as_bytes();
+    unsafe {
+        let url = CFURLCreateFromFileSystemRepresentation(
+            ptr::null(),
+            bytes.as_ptr(),
+            bytes.len() as isize,
+            true,
+        );
+        if url.is_null() {
+            return Err("读取应用包地址失败".into());
+        }
+        let _url = OwnedCf(url);
+        let mut code = ptr::null_mut();
+        let status = SecStaticCodeCreateWithPath(url, 0, &mut code);
+        if status != ERR_SUCCESS || code.is_null() {
+            return Err(format!("读取应用包签名失败：OSStatus {status}"));
+        }
+        let _code = OwnedCf(code.cast());
+        // SDK: CheckAllArchitectures | CheckNestedCode | StrictValidate.
+        let status =
+            SecStaticCodeCheckValidity(code, (1 << 0) | (1 << 3) | (1 << 4), ptr::null_mut());
+        if status != ERR_SUCCESS {
+            return Err(format!("应用包完整性检查未通过：OSStatus {status}"));
+        }
+        let mut info = ptr::null();
+        let status = SecCodeCopySigningInformation(code, 0, &mut info);
+        if status != ERR_SUCCESS || info.is_null() {
+            return Err("读取应用包身份失败".into());
+        }
+        let _info = OwnedCf(info);
+        let identifier = CFDictionaryGetValue(info, kSecCodeInfoIdentifier);
+        if identifier.is_null()
+            || CFGetTypeID(identifier) != CFStringGetTypeID()
+            || cf_string(identifier)? != "com.cmmuu.mihomodesktop"
+        {
+            return Err("更新应用的签名标识不匹配".into());
+        }
+        let plist = CFDictionaryGetValue(info, kSecCodeInfoPList);
+        if plist.is_null() || CFGetTypeID(plist) != CFDictionaryGetTypeID() {
+            return Err("应用包缺少受签名保护的清单".into());
+        }
+        for (key, expected) in [
+            (c"CFBundleIdentifier", "com.cmmuu.mihomodesktop"),
+            (c"CFBundleExecutable", "serylane"),
+            (c"CFBundleShortVersionString", version),
+        ] {
+            let key = CFStringCreateWithCString(ptr::null(), key.as_ptr(), UTF8);
+            if key.is_null() {
+                return Err("读取应用包属性失败".into());
+            }
+            let _key = OwnedCf(key);
+            let value = CFDictionaryGetValue(plist, key);
+            if value.is_null()
+                || CFGetTypeID(value) != CFStringGetTypeID()
+                || cf_string(value)? != expected
+            {
+                return Err("应用包身份、入口或版本与本次更新不匹配".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Integrity alone accepts ad-hoc signatures; a privileged service also needs

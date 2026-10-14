@@ -1109,6 +1109,7 @@ function renderAppUpdate() {
     const item = document.createElement("li"); item.textContent = `${updateSourceLabel(attempt.source)}：${attempt.result}`; return item;
   }));
   attempts.hidden = !attempts.childElementCount;
+  $("#app-update-install")!.textContent = presentation.installLabel;
   const state = $("#app-update-state")!;
   state.textContent = presentation.badge;
   state.classList.toggle("is-hidden", appUpdateStatus.phase === "idle");
@@ -1166,7 +1167,7 @@ function acceptAppUpdate(status: AppUpdateStatus) {
 }
 
 async function checkForAppUpdate(silent: boolean) {
-  if (appUpdateChecking || appUpdateActionBusy || describeAppUpdate(appUpdateStatus).busy || appUpdateStatus.phase === "ready" && silent) return;
+  if (appUpdateChecking || appUpdateActionBusy || describeAppUpdate(appUpdateStatus).busy || (appUpdateStatus.phase === "ready" || appUpdateStatus.retryInstall) && silent) return;
   updateCheckAttemptedThisSession = true;
   appUpdateChecking = true;
   appUpdateError = null;
@@ -2669,6 +2670,7 @@ $("#subscription-manager-list")!.addEventListener("click", (event) => {
 $("#confirmation-modal")!.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   if (target.id === "confirmation-modal") {
+    if (event.detail > 1) return; // Ignore the second click that opened this backdrop.
     closeConfirmation(false);
     return;
   }
@@ -2913,6 +2915,8 @@ $("#app-update-cancel")!.addEventListener("click", async () => {
 });
 $("#app-update-install")!.addEventListener("click", async (event) => {
   if (appUpdateActionBusy || !describeAppUpdate(appUpdateStatus).canInstall || !store.appUpdate) return;
+  appUpdateActionBusy = true;
+  renderAppUpdate();
   const version = store.appUpdate.latestVersion;
   const confirmed = await confirmAction({
     title: `安装 Serylane ${version}`,
@@ -2920,8 +2924,7 @@ $("#app-update-install")!.addEventListener("click", async (event) => {
     confirmLabel: "确认安装并重启",
     returnFocus: event.currentTarget as HTMLElement,
   });
-  if (!confirmed) return;
-  appUpdateActionBusy = true;
+  if (!confirmed) { appUpdateActionBusy = false; renderAppUpdate(); return; }
   const operationId = ++appUpdateOperationId;
   appUpdateStatus = { ...appUpdateStatus, phase: "installing", stage: "preflight" };
   const poll = window.setInterval(async () => {

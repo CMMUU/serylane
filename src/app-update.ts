@@ -9,6 +9,7 @@ export function describeAppUpdate(status: AppUpdateStatus) {
   const { phase, info } = status;
   const busy = ["checking", "downloading", "installing"].includes(phase);
   const source = updateSourceLabel(info?.source);
+  const retryInstall = phase === "failed" && status.stage === "preflight" && status.retryInstall === true && Boolean(info?.available);
   const labels: Record<AppUpdateStatus["phase"], [string, string, string]> = {
     idle: ["待检查", "尚未检查", "自动模式优先下载中心，同版本 Gitee / GitHub 备用；下载和检查不会停止代理。"],
     checking: ["检查中", "正在检查更新", "正在读取所选渠道的版本和安装包信息…"],
@@ -19,14 +20,16 @@ export function describeAppUpdate(status: AppUpdateStatus) {
     ready: ["已验证", "更新已就绪，等待你确认", "更新签名和 SHA-256 校验通过。安装会暂时停止代理并重新打开 Serylane，请先结束重要连接。"],
     installing: ["安装中", `正在安装更新 · ${updateStageLabel(status.stage)}`, status.stage === "preflight" ? "正在核对安装条件，尚未停止代理。" : "确认后安全停止旧进程，再替换应用。TUN 等可选服务恢复单独处理。"],
     cancelled: ["已取消", "下载已取消", "未执行安装，代理未改变；可以重新下载。"],
-    failed: ["操作失败", "更新暂未完成", status.error ?? "请稍后重试，或切换官方渠道。"],
+    failed: ["操作失败", status.stage === "preflight" ? "安装前检查未通过，代理未停止" : "更新暂未完成",
+      `${status.error ?? "请查看更新日志，或打开发布页获取完整安装包。"}${retryInstall ? " 已验证的安装包仍保留；处理上述问题后可重新安装，无需重复下载。" : status.stage === "preflight" ? " 请重新下载或使用完整安装包。" : ["stopping", "services", "replacing", "restarting"].includes(status.stage ?? "") ? " 请核对代理与回退状态；恢复资料保留，重新打开应用后再继续。" : ""}`],
   };
   const [badge, label, detail] = labels[phase];
   return {
     state: phase, badge, label, detail, busy,
     canOpen: !busy && Boolean(info),
-    canDownload: !busy && Boolean(info?.available) && phase !== "ready",
-    canInstall: phase === "ready" && Boolean(info?.available),
+    canDownload: !busy && Boolean(info?.available) && phase !== "ready" && !retryInstall,
+    canInstall: (phase === "ready" && Boolean(info?.available)) || retryInstall,
+    installLabel: retryInstall ? "重新安装" : "安装并更新",
     progress: status.totalBytes > 0 ? Math.max(0, Math.min(100, status.downloadedBytes / status.totalBytes * 100)) : 0,
   };
 }

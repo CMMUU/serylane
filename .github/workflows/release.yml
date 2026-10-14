@@ -273,6 +273,10 @@ jobs:
         if: always() && runner.os == 'macOS'
         shell: bash
         run: rm -f "$RUNNER_TEMP/serylane-notary.p8" "$RUNNER_TEMP/serylane-release-config.json"
+      - name: Verify macOS product updater on isolated signed bundles
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash scripts/test-macos-updater.sh src-tauri/target/release/bundle/macos/Serylane.app
       - name: Verify Windows installers on disposable runner
         if: runner.os == 'Windows'
         shell: pwsh
