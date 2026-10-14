@@ -146,6 +146,7 @@ const subscriptionRefreshing = new Set<string>();
 let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
 let runtimeActionInFlight = false;
+let domainRouteChanging = false;
 let manualModeSwitching = false;
 const nodeDetailsSession = new InteractionSession();
 let nodeDetailsReturnFocus: HTMLElement | null = null;
@@ -217,6 +218,7 @@ app.innerHTML = `
             <span class="platform-chip" id="platform-chip">检测平台中</span>
             <button class="button status-mode-button" id="global-system-proxy" type="button" aria-pressed="false">系统代理</button>
             <button class="button status-mode-button" id="global-tun" type="button" aria-pressed="false">TUN 模式</button>
+            <button class="button status-mode-button global-route-button" id="global-domain-route" type="button" aria-pressed="false" disabled>路由</button>
             <button class="button button-quiet" id="global-refresh">刷新</button>
           </div>
           <div class="header-runtime" aria-live="polite"><span class="application-status-dot" id="application-status-dot"></span><strong id="application-runtime-state">正在读取</strong></div>
@@ -758,6 +760,7 @@ async function refreshBase() {
   renderOpenAiPolicy();
   renderGlobalTraffic();
   void openAiCosts.refresh();
+  void localRouting.refresh(true);
   scheduleAutomaticUpdateCheck();
   void refreshSessionResume();
   void refreshProxies(true);
@@ -819,7 +822,8 @@ async function refreshSessionResume(force = false) {
 function renderHeader() {
   const running = store.runtime?.phase === "running";
   const mode = store.settings?.networkMode;
-  const controlsBusy = networkModeSwitching || runtimeActionInFlight;
+  const controlsBusy = networkModeSwitching || runtimeActionInFlight || domainRouteChanging;
+  localRouting.render();
   ($("#global-refresh") as HTMLButtonElement).disabled = controlsBusy;
   const systemProxyActive = Boolean(
     running && mode === "system_proxy" && store.systemProxy?.active,
@@ -1421,7 +1425,7 @@ async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
 async function startRuntime(mode: RuntimeStartMode) {
   connectionFeedback.clearIssue();
   const result = await startRuntimeInMode(mode, {
-    state: () => ({ settings: store.settings, runtime: store.runtime, systemProxyActive: Boolean(store.systemProxy?.active), hasProfile: Boolean(store.activeProfile), busy: runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching }),
+    state: () => ({ settings: store.settings, runtime: store.runtime, systemProxyActive: Boolean(store.systemProxy?.active), hasProfile: Boolean(store.activeProfile), busy: runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching || domainRouteChanging }),
     setBusy: (busy) => { runtimeMutationRevision++; runtimeActionInFlight = busy; renderHeader(); renderOverview(); renderAppearance(themeController.snapshot); },
     setSettings: (settings) => { store.settings = settings; },
     setRuntime: (runtime) => { store.runtime = runtime; },
@@ -1449,11 +1453,12 @@ async function startRuntime(mode: RuntimeStartMode) {
   }
   void refreshConnectionFeedback();
   void refreshSessionResume(true);
+  void localRouting.refresh(true);
 }
 
 async function stopRuntime() {
   connectionFeedback.clearIssue();
-  if (runtimeActionInFlight || networkModeSwitching) return;
+  if (runtimeActionInFlight || networkModeSwitching || domainRouteChanging) return;
   runtimeActionInFlight = true;
   runtimeMutationRevision++;
   renderHeader();
@@ -1489,7 +1494,7 @@ function toggleGlobalNetworkMode(mode: "system_proxy" | "tun") {
 
 async function switchNetworkMode(mode: NetworkMode) {
   if (!store.settings) return;
-  if (networkModeSwitching || runtimeActionInFlight || settingsSaving) return;
+  if (networkModeSwitching || runtimeActionInFlight || settingsSaving || domainRouteChanging) return;
   let wasRunning = false;
   let currentMode = store.settings.networkMode;
   let keepCore = false;
@@ -2454,7 +2459,14 @@ const openAiCosts = mountOpenAiCosts({
   changed: () => { void refreshProxies(true); },
 });
 const subscriptionEditor = mountSubscriptionEditor($("#subscription-manager-list")!, {read: api.readSubscriptionEdit, save: api.saveSubscriptionEdit, changed: refreshBase, error: errorMessage});
-const localRouting = mountDomainRouting($("#routing-view")!, { api, confirm: confirmAction, error: errorMessage });
+const localRouting = mountDomainRouting($("#routing-view")!, {
+  api, confirm: confirmAction, error: errorMessage,
+  globalToggle: $("#global-domain-route") as HTMLButtonElement,
+  isBlocked: () => runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching,
+  contextKey: () => [runtimeMutationRevision, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, store.activeProfile?.profile.routingMode, store.runtime?.phase, store.runtime?.pid].join('/'),
+  busyChanged: busy => { domainRouteChanging = busy; renderHeader(); },
+  reportError: text => { if (store.view !== 'routing') toast(text, 'error'); },
+});
 
 
 const ruleManager = mountRuleManager($("#rules-view")!, {
@@ -2971,7 +2983,7 @@ $("#settings-startup-check")!.addEventListener("click", () => { void refreshSess
 
 $("#settings-form")!.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!store.settings || settingsSaving || runtimeActionInFlight || networkModeSwitching || themeController.snapshot.saving) return;
+  if (!store.settings || settingsSaving || runtimeActionInFlight || networkModeSwitching || domainRouteChanging || themeController.snapshot.saving) return;
   const mode = ($("#settings-mode") as HTMLSelectElement).value as NetworkMode;
   const settings: AppSettings = {
     ...startupModeSettings(store.settings, startupModeDraft ?? startupModeFromSettings(store.settings)),
@@ -3015,6 +3027,7 @@ $("#settings-form")!.addEventListener("submit", async (event) => {
 });
 
 window.setInterval(() => {
+  if (!document.hidden) void localRouting.refresh(true);
   if (sessionResumePresentation(sessionResumeStatus).busy) void refreshSessionResume();
   if (store.view === "logs") void refreshLogs();
   if (store.runtime?.phase === "running") {

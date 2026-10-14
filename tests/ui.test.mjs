@@ -193,11 +193,11 @@ test("refreshBase rejects a delayed pre-start snapshot after a network mutation"
   const noop = () => {};
   const environment = {
     themeController: { mutationRevision: 0, sync: () => true },
-    runtimeMutationRevision: 0, baseReadSequence: 0, runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
+    runtimeMutationRevision: 0, baseReadSequence: 0, domainRouteChanging: false, runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
     store: { settings: { networkMode: "manual" }, runtime: staleRuntime },
     action: async (_label, operation) => operation(),
     api: new Proxy({ settings: () => settingsRead, runtime: async () => staleRuntime }, { get: (target, key) => target[key] ?? (async () => null) }),
-    invalidateNodeDetailsContext: noop, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop, renderSettings: noop,
+    invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop, renderSettings: noop,
     renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
   };
   const source = main.slice(main.indexOf("async function refreshBase()"), main.indexOf("function renderHeader()"));
@@ -228,14 +228,14 @@ function runtimeRefreshFixture() {
   let reads = 0;
   const environment = {
     runtimeMutationRevision: 0, runtimeReadSequence: 0,
-    runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
+    domainRouteChanging: false, runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
     store: { runtime: { phase: "stopped" }, systemProxy: { active: false } },
     api: {
       runtime: () => { reads++; activeRequest = requests.shift(); return activeRequest.promise; },
       systemProxy: async () => ({ active: activeRequest.proxyActive }),
       tunHelperStatus: async () => ({ state: "ready" }),
     },
-    renderTunHelper: noop, invalidateNodeDetailsContext: noop, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshConnectionFeedback: async () => {},
+    renderTunHelper: noop, invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshConnectionFeedback: async () => {},
   };
   const source = main.slice(main.indexOf("async function refreshRuntimeOnly("), main.indexOf("async function startRuntime("));
   vm.createContext(environment);

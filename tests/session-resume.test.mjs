@@ -113,7 +113,7 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
   const subscription = status => ({ profile: { id: "quota-fixture" }, status });
   const context = {
     baseReadSequence: 0, runtimeMutationRevision: 0, proxyReadSequence: 0, overviewNodeDetails: {}, refreshProxies: async () => {}, openAiCosts: { refresh: async () => {} },
-    runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
+    domainRouteChanging: false, runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
     sessionResumeReadBusy: true,
     themeController: { mutationRevision: 0, sync: () => true },
     store: { subscriptions: [] }, action: async (_message, run) => run(), newestSubscriptionStatus, synchronizedProfiles,
@@ -123,7 +123,7 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
     }, {
       get: (target, key) => target[key] ?? (async () => null),
     }),
-    invalidateNodeDetailsContext: noop, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
+    invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
     renderSettings: noop, renderManualMode: noop, renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
   };
   const main = read("src/main.ts");

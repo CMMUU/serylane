@@ -136,7 +136,7 @@ function mainFixture(options = {}) {
       activeProfile: options.hasProfile === false ? null : { profile: { id: "fixture" } },
       systemProxy: { active: actualMode === "system_proxy" && actualRuntime.phase === "running" },
     },
-    networkModeSwitching: false, runtimeActionInFlight: false, settingsSaving: false, runtimeMutationRevision: 0,
+    networkModeSwitching: false, domainRouteChanging: false, runtimeActionInFlight: false, settingsSaving: false, runtimeMutationRevision: 0,
     prepareTunForStart, canStartRuntime, friendlyError,
     errorMessage: error => error?.userMessage?.details ?? error?.message ?? String(error),
     $: selector => {
@@ -550,7 +550,7 @@ function settingsFixture(options = {}) {
   };
   const env = {
     store: { settings: { ...persisted }, runtime: runtime(options.phase ?? "stopped") },
-    settingsSaving: false, runtimeActionInFlight: false, networkModeSwitching: false,
+    settingsSaving: false, domainRouteChanging: false, runtimeActionInFlight: false, networkModeSwitching: false,
     runtimeMutationRevision: 0, sessionResumeRevision: 0, startupStatus: null, startupModeDraft: null,
     themeController: { snapshot: { saving: false, preference: "system" }, refresh: noop },
     $: selector => {
@@ -650,7 +650,7 @@ function helperManagementFixture(options = {}) {
       tunHelper: helper(options.helperState ?? "unreachable"),
       runtime: runtime(options.phase ?? "stopped"),
     },
-    networkModeSwitching: false, runtimeActionInFlight: false, settingsSaving: false,
+    networkModeSwitching: false, domainRouteChanging: false, runtimeActionInFlight: false, settingsSaving: false,
     runtimeMutationRevision: 0, ...options.busy,
     canStartRuntime,
     $: selector => {
@@ -790,4 +790,13 @@ test("Helper operation or readback failure releases the mutation lock without re
     assert.equal(f.issues[0].userMessage.details, `${option} fixture`);
     assert.equal(f.env.runtimeActionInFlight, false);
   }
+});
+
+
+test("global route mutation prevents simultaneous network-mode switching", async () => {
+  const f = mainFixture();
+  f.env.domainRouteChanging = true;
+  await f.switch("tun");
+  assert.deepEqual(f.mutations(), []);
+  assert.deepEqual(f.calls, []);
 });
