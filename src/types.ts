@@ -404,6 +404,7 @@ export type AppUpdateInfo = {
 };
 
 export type AppUpdateStatus = {
+  retryInstall?: boolean;
   stage?: string;
   networkPath?: string;
   attempts?: Array<{source: Exclude<UpdateSource, "auto">; result: string}>;

@@ -123,7 +123,7 @@ let failProgramSave = false;
 let cancelProgramPicker = false;
 let updatePreferences = { updateSource: "auto" as UpdateSource, autoCheckUpdates: false, autoDownloadUpdates: false };
 let fixtureUpdate: AppUpdateStatus = { phase: "idle", info: null, downloadedBytes: 0, totalBytes: 0, error: null };
-let updateScenario = "available";
+let updateScenario = previewQuery.get("updateScenario") ?? "available";
 let cancelUpdateDownload = false;
 let updateInstallCount = 0;
 let appearanceSettings = { launchAtLogin: false, silentStartup: true, restoreLastSession: true, showGlobalTraffic: true, diagnosticsRetentionDays: 7, appLogRetentionDays: 3 };
@@ -1323,9 +1323,16 @@ mockIPC(async (command, payload) => {
   }
   if (command === "cancel_app_update") { cancelUpdateDownload = true; return; }
   if (command === "install_app_update") {
-    if (!args.confirmed || fixtureUpdate.phase !== "ready" || args.versionTag !== fixtureUpdate.info?.latestVersion) throw new Error("合成安装条件不满足");
+    if (!args.confirmed || !(fixtureUpdate.phase === "ready" || fixtureUpdate.retryInstall) || args.versionTag !== fixtureUpdate.info?.latestVersion) throw new Error("合成安装条件不满足");
     document.documentElement.dataset.fixtureUpdateInstalls = String(++updateInstallCount);
     fixtureUpdate.phase = "installing";
+    if (updateScenario === "preflight-failure") {
+      fixtureUpdate.phase = "failed";
+      fixtureUpdate.stage = "preflight";
+      fixtureUpdate.retryInstall = true;
+      fixtureUpdate.error = "合成预检：磁盘预留空间不足。尚未停止代理。";
+      throw new Error(fixtureUpdate.error);
+    }
     return; // Synthetic receipt only; no processes, files, proxy changes or exit.
   }
   if (command === "list_installed_proxy_applications") return fixtureCatalog(args.refresh === true);

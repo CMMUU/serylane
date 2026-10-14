@@ -45,13 +45,13 @@ test("updater uses confirmed native installation and separately saved non-networ
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const rust = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8");
   assert.match(api, /invoke<void>\("install_app_update", \{ versionTag, confirmed \}\)/);
-  assert.match(main, /if \(!confirmed\) return;[\s\S]*api\.installAppUpdate\(version, true\)/);
+  assert.match(main, /if \(!confirmed\) \{ appUpdateActionBusy = false; renderAppUpdate\(\); return; \}[\s\S]*api\.installAppUpdate\(version, true\)/);
   assert.match(main, /6 \* 60 \* 60 \* 1_000/);
   assert.match(main, /saveUpdatePreferences/);
   assert.match(rust, /candidate\s*\.update\s*\.install\(bytes\)/);
-  assert.match(rust, /prepare_app_upgrade\(&install_app, &target_version\)/);
-  assert.match(rust, /rollback_app_upgrade\(&install_app\)/);
-  assert.ok(rust.indexOf("if !confirmed") < rust.indexOf("let install_app = app.clone()"));
+  assert.match(rust, /prepare_app_upgrade\(&app, &target\)/);
+  assert.match(rust, /rollback_app_upgrade\(&app\)/);
+  assert.ok(rust.indexOf("if !confirmed") < rust.indexOf("let candidate = {", rust.indexOf("pub async fn install_app_update")));
   assert.doesNotMatch(api, /downloadAndInstall|install_app_update[^\n]*(?:url|path|bytes)/);
 });
 
@@ -138,4 +138,40 @@ test("download source, current network path and installation stages are not conf
   }
   assert.match(describeAppUpdate({...status("installing"), stage: "preflight"}).detail, /尚未停止代理/);
   assert.match(describeAppUpdate({...status("installing"), stage: "replacing"}).label, /替换应用/);
+});
+
+
+test("only native retained preflight packages expose reinstall without redownload", () => {
+  const retry = { ...status("failed"), stage: "preflight", retryInstall: true };
+  const view = describeAppUpdate(retry);
+  assert.equal(view.canInstall, true);
+  assert.equal(view.canDownload, false);
+  assert.equal(view.installLabel, "重新安装");
+  assert.match(view.label, /代理未停止/);
+  assert.match(view.detail, /无需重复下载/);
+  for (const stage of ["stopping", "services", "replacing", "restarting", "verify", "download"]) {
+    assert.equal(describeAppUpdate({ ...retry, stage }).canInstall, false);
+  }
+  assert.equal(describeAppUpdate({ ...retry, retryInstall: false }).canInstall, false);
+  assert.equal(describeAppUpdate({ ...retry, info: null }).canInstall, false);
+  assert.match(describeAppUpdate({ ...retry, stage: "replacing" }).detail, /恢复资料保留/);
+});
+test("bundle validation, retry ownership and macOS release acceptance stay wired", () => {
+  const backup = readFileSync(new URL("../src-tauri/src/macos_update_install.rs", import.meta.url), "utf8");
+  const update = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.match(backup, /validate_bundle/);
+  assert.doesNotMatch(backup, /codesign::validate\(/);
+  assert.match(backup, /directory\.keep\(/);
+  assert.match(workflow, /test-macos-updater.sh src-tauri\/target\/release\/bundle\/macos\/Serylane.app/);
+  const install = update.slice(update.indexOf("pub async fn install_app_update"));
+  assert.match(install, /stage\("stopping"\)\?;[\s\S]*?\.ready[\s\S]*?\.take\(\)/);
+  assert.match(install, /update_receipt::failed/);
+});
+
+test("confirmation is covered by the update busy guard and backdrop ignores opener double clicks", () => {
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const handler = main.slice(main.indexOf('$("#app-update-install")!.addEventListener'));
+  assert.ok(handler.indexOf("appUpdateActionBusy = true;") < handler.indexOf("await confirmAction"));
+  assert.match(main, /if \(target.id === "confirmation-modal"\) \{\s*if \(event.detail > 1\) return/);
 });

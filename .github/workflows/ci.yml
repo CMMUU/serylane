@@ -80,6 +80,10 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
         env:
           SERYLANE_NATIVE_TRAY_SNAPSHOT_DIR: ${{ runner.temp }}/native-tray
+      - name: Verify macOS native updater success and failure paths
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash scripts/test-macos-updater.sh
       - name: Verify version-independent Windows application binding
         if: runner.os == 'Windows'
         shell: pwsh

@@ -133,6 +133,7 @@ pub struct AppUpdateStatus {
     pub network_path: String,
     pub attempts: Vec<UpdateAttempt>,
     pub last_install: Option<String>,
+    pub retry_install: bool,
     pub info: Option<AppUpdateInfo>,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
@@ -147,6 +148,7 @@ impl Default for AppUpdateStatus {
             network_path: "待确定".into(),
             attempts: Vec::new(),
             last_install: None,
+            retry_install: false,
             info: None,
             downloaded_bytes: 0,
             total_bytes: 0,
@@ -193,7 +195,16 @@ impl Drop for Operation {
                 "checking" | "downloading" | "installing"
             ) {
                 session.status.phase = "failed".into();
-                session.status.error = Some("操作已中断，请重试".into());
+                session.status.retry_install =
+                    session.ready.is_some() && session.status.stage == "preflight";
+                session.status.error = Some(
+                    if session.status.stage == "restarting" {
+                        "应用已替换，请重新打开 Serylane 核对版本"
+                    } else {
+                        "操作已中断，请核对状态后重试"
+                    }
+                    .into(),
+                );
             }
         }
         self.busy.store(false, Ordering::Release);
@@ -222,7 +233,14 @@ impl AppUpdateManager {
                 "failed"
             }
             .into();
+            session.status.retry_install =
+                session.ready.is_some() && session.status.stage == "preflight";
             session.status.error = Some(crate::app_log::sanitize(&error.to_string()));
+            crate::app_log::record(
+                2,
+                crate::app_log::Area::App,
+                &format!("软件更新失败 [{}]：{}", session.status.stage, error),
+            );
         }
         error.dto()
     }
@@ -526,9 +544,15 @@ pub fn app_update_status(
     app: AppHandle,
     state: State<'_, AppUpdateManager>,
 ) -> Result<AppUpdateStatus, AppErrorDto> {
-    if !state.receipt_checked.swap(true, Ordering::AcqRel) {
-        let summary = crate::update_receipt::summary(&app).unwrap_or_else(|e| Some(e.to_string()));
-        state.lock().map_err(|e| e.dto())?.status.last_install = summary;
+    // Do not confirm/clean an old backup concurrently with a new transaction.
+    if !state.receipt_checked.load(Ordering::Acquire) {
+        if let Ok(_operation) = state.begin() {
+            if !state.receipt_checked.swap(true, Ordering::AcqRel) {
+                let summary =
+                    crate::update_receipt::summary(&app).unwrap_or_else(|e| Some(e.to_string()));
+                state.lock().map_err(|e| e.dto())?.status.last_install = summary;
+            }
+        }
     }
     state
         .lock()
@@ -707,6 +731,7 @@ pub async fn download_app_update(
             return Err(failure("更新版本已变化或不是新版本，请重新检查").dto());
         }
         session.ready = None;
+        session.status.retry_install = false;
         session.status.phase = "downloading".into();
         session.status.stage = "download".into();
         session.status.attempts.clear();
@@ -775,6 +800,35 @@ pub fn cancel_app_update(state: State<'_, AppUpdateManager>) -> Result<(), AppEr
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn bundle_size(root: &std::path::Path) -> AppResult<u64> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut size = 0_u64;
+    let mut count = 0;
+    while let Some(path) = pending.pop() {
+        count += 1;
+        if count > 100_000 {
+            return Err(failure("应用文件数量异常，请使用完整安装包升级"));
+        }
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(path)? {
+                pending.push(entry?.path());
+            }
+        } else if metadata.is_file() {
+            size = size.saturating_add(metadata.len());
+        }
+    }
+    Ok(size)
+}
+
+fn installation_reserve(compressed: u64, installed: u64) -> u64 {
+    compressed
+        .saturating_mul(8)
+        .saturating_add(installed.saturating_mul(2))
+        .saturating_add(128 * 1024 * 1024)
+}
+
 fn installation_preflight(app: &AppHandle, size: u64) -> AppResult<()> {
     let directory = app
         .path()
@@ -792,7 +846,11 @@ fn installation_preflight(app: &AppHandle, size: u64) -> AppResult<()> {
             "请先把 Serylane 完整应用移到应用程序目录，再启动并更新；尚未停止代理",
         ));
     }
-    let reserve = size.saturating_mul(4).saturating_add(64 * 1024 * 1024);
+    #[cfg(target_os = "macos")]
+    let installed = bundle_size(&crate::tun_service::codesign::bundle_root().map_err(failure)?)?;
+    #[cfg(not(target_os = "macos"))]
+    let installed = std::fs::metadata(&executable)?.len();
+    let reserve = installation_reserve(size, installed);
     for path in [&directory, &executable, &std::env::temp_dir()] {
         if let Some(disk) = disks
             .iter()
@@ -847,124 +905,173 @@ pub async fn install_app_update(
     let _operation = Arc::new(state.begin().map_err(|e| e.dto())?);
     let _configuration =
         Arc::new(crate::user_rules::acquire_configuration(&app).map_err(|e| e.dto())?);
-    let result = async {
-        let (candidate, bytes) = {
-            let mut session = state.lock()?;
-            if session.status.phase != "ready"
-                || !session
-                    .status
-                    .info
-                    .as_ref()
-                    .is_some_and(|info| info.available && info.latest_version == version_tag)
-            {
-                return Err(failure("请先下载并验证当前选定的新版本"));
-            }
-            let (candidate, bytes) = session
-                .ready
+    let candidate = {
+        let mut session = state.lock().map_err(|e| e.dto())?;
+        if !(session.status.phase == "ready"
+            || session.status.phase == "failed" && session.status.retry_install)
+            || !session
+                .status
+                .info
                 .as_ref()
-                .ok_or_else(|| failure("已验证的安装包不可用，请重新下载"))?;
-            if candidate.version <= parse_version(env!("CARGO_PKG_VERSION"))?
-                || bytes.len() as u64 != candidate.size
-                || format!("{:x}", Sha256::digest(bytes)) != candidate.sha256
-            {
-                return Err(failure("安装包版本、大小或摘要校验失败"));
-            }
-            let ready = session
-                .ready
-                .take()
-                .ok_or_else(|| failure("安装包已失效"))?;
-            session.status.phase = "installing".into();
-            ready
-        };
-        // No session MutexGuard is held across await. Blocking lifecycle waits
-        // and archive extraction must not block the async runtime/UI executor.
-        let install_app = app.clone();
-        let worker_status = state.session.clone();
-        let worker_operation = _operation.clone();
-        let worker_configuration = _configuration.clone();
-        tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
-            // Blocking work outlives cancellation of its awaiting command. Keep
-            // both gates owned by the worker until rollback/install really ends.
-            let _operation = worker_operation;
-            let _configuration = worker_configuration;
-            let target_version = candidate.update.version.clone();
-            let stage = |value: &str| -> AppResult<()> {
-                if let Ok(mut session) = worker_status.lock() {
-                    session.status.stage = value.into();
-                }
-                if value != "preflight" {
-                    crate::update_receipt::write(&install_app, &target_version, value)?;
-                }
-                crate::app_log::record(
-                    0,
-                    crate::app_log::Area::App,
-                    &format!("软件更新：{}", crate::update_receipt::stage_label(value)),
-                );
-                Ok(())
-            };
-            stage("preflight")?;
-            crate::tun_service::preflight_app_upgrade(&install_app)?;
-            installation_preflight(&install_app, candidate.size)?;
-            #[cfg(target_os = "macos")]
-            let backup = crate::macos_update_install::Backup::prepare()?;
-            stage("stopping")?;
-            // No disruptive work before explicit confirmation and verified bytes.
-            install_app
-                .state::<crate::local_routing::LocalRoutingManager>()
-                .shutdown(&install_app)?;
-            install_app
-                .state::<crate::openai_stability::StabilityManager>()
-                .stop();
-            crate::platform::restore_system_proxy(&install_app)?;
-            install_app
-                .state::<MihomoRuntime>()
-                .stop(Some(&install_app))?;
-            install_app
-                .state::<crate::OpenAiPolicyTaskManager>()
-                .cancel()?;
-            install_app.state::<crate::GlobalTrafficMonitor>().stop();
-            AppStorage::from_app(&install_app)?.mark_clean_shutdown(true)?;
-            stage("services")?;
-            let result = install_with_service_transaction(
-                || crate::tun_service::prepare_app_upgrade(&install_app, &target_version),
-                || {
-                    stage("replacing")?;
-                    let replace = || {
-                        candidate
-                            .update
-                            .install(bytes)
-                            .map_err(|error| failure(format!("安装启动失败：{error}")))
-                    };
-                    #[cfg(target_os = "macos")]
-                    {
-                        backup.install(replace)
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        replace()
-                    }
-                },
-                || crate::tun_service::rollback_app_upgrade(&install_app),
+                .is_some_and(|i| i.available && i.latest_version == version_tag)
+        {
+            return Err(failure("请先下载并验证当前选定的新版本").dto());
+        }
+        let candidate = session
+            .ready
+            .as_ref()
+            .ok_or_else(|| failure("已验证安装包已失效，请重新下载").dto())?
+            .0
+            .clone();
+        session.status.phase = "installing".into();
+        session.status.stage = "preflight".into();
+        session.status.error = None;
+        session.status.retry_install = false;
+        candidate
+    };
+    let worker_status = state.session.clone();
+    let worker_operation = _operation.clone();
+    let worker_configuration = _configuration.clone();
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
+        let _operation = worker_operation;
+        let _configuration = worker_configuration;
+        let target = candidate.update.version.clone();
+        let stage = |value: &str| -> AppResult<()> {
+            // Persist intent before mutation. Logging never masks a disk error.
+            crate::update_receipt::write(&app, &target, value)?;
+            worker_status
+                .lock()
+                .map_err(|_| failure("更新状态锁不可用"))?
+                .status
+                .stage = value.into();
+            crate::app_log::record(
+                0,
+                crate::app_log::Area::App,
+                &format!(
+                    "软件更新 v{target}：{}",
+                    crate::update_receipt::stage_label(value)
+                ),
             );
-            if result.is_ok() {
-                stage("restarting")?;
-            }
-            result
-        })
-        .await
-        .map_err(|_| failure("安装任务意外结束；请重新打开应用核对辅助服务状态"))??;
-        // Windows exits from install(); its installer relaunches Serylane.
-        #[cfg(not(windows))]
-        {
-            app.restart()
-        }
-        #[cfg(windows)]
-        {
             Ok(())
+        };
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> AppResult<()> {
+                stage("preflight")?;
+                {
+                    let mut session = worker_status
+                        .lock()
+                        .map_err(|_| failure("更新状态锁不可用"))?;
+                    let valid = session.ready.as_ref().is_some_and(|(c, bytes)| {
+                        c.version > parse_version(env!("CARGO_PKG_VERSION")).expect("build version")
+                            && c.update.target == tauri_plugin_updater::target().unwrap_or_default()
+                            && c.update.version == target
+                            && c.version == candidate.version
+                            && bytes.len() as u64 == c.size
+                            && format!("{:x}", Sha256::digest(bytes)) == c.sha256
+                    });
+                    if !valid {
+                        session.ready = None;
+                        return Err(failure(
+                            "已验证安装包的版本、架构或摘要发生变化，请重新下载",
+                        ));
+                    }
+                }
+                crate::tun_service::preflight_app_upgrade(&app)?;
+                installation_preflight(&app, candidate.size)?;
+                #[cfg(target_os = "macos")]
+                let backup = {
+                    let backup = crate::macos_update_install::Backup::prepare()?;
+                    crate::update_receipt::set_backup(&app, backup.path())?;
+                    backup.retain(&target)?
+                };
+                // Keep verified bytes for every preflight failure. Once disruptive
+                // work begins they are consumed; no blind retry after partial install.
+                stage("stopping")?;
+                let (_, bytes) = worker_status
+                    .lock()
+                    .map_err(|_| failure("更新状态锁不可用"))?
+                    .ready
+                    .take()
+                    .ok_or_else(|| failure("安装包已失效"))?;
+                app.state::<crate::local_routing::LocalRoutingManager>()
+                    .shutdown(&app)?;
+                app.state::<crate::openai_stability::StabilityManager>()
+                    .stop();
+                crate::platform::restore_system_proxy(&app)?;
+                app.state::<MihomoRuntime>().stop(Some(&app))?;
+                app.state::<crate::OpenAiPolicyTaskManager>().cancel()?;
+                app.state::<crate::GlobalTrafficMonitor>().stop();
+                AppStorage::from_app(&app)?.mark_clean_shutdown(true)?;
+                stage("services")?;
+                install_with_service_transaction(
+                    || crate::tun_service::prepare_app_upgrade(&app, &target),
+                    || {
+                        stage("replacing")?;
+                        let replace = || {
+                            candidate
+                                .update
+                                .install(bytes)
+                                .map_err(|e| failure(format!("安装启动失败：{e}")))
+                        };
+                        #[cfg(target_os = "macos")]
+                        {
+                            backup.install(replace)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            replace()
+                        }
+                    },
+                    || crate::tun_service::rollback_app_upgrade(&app),
+                )?;
+                stage("restarting")?;
+                Ok(())
+            }))
+            .unwrap_or_else(|_| Err(failure("安装任务意外中断；请核对日志与保留的备份")));
+        if let Err(error) = &outcome {
+            let (failed_stage, retry) = {
+                let mut session = worker_status
+                    .lock()
+                    .map_err(|_| failure("更新状态锁不可用"))?;
+                let retry = session.ready.is_some() && session.status.stage == "preflight";
+                session.status.phase = "failed".into();
+                session.status.retry_install = retry;
+                session.status.error = Some(crate::app_log::sanitize(&error.to_string()));
+                (session.status.stage.clone(), retry)
+            };
+            crate::app_log::record(
+                2,
+                crate::app_log::Area::App,
+                &format!(
+                    "软件更新 v{target} 失败 [{}，可重试安装={retry}]：{error}",
+                    failed_stage
+                ),
+            );
+            // A receipt failure must not replace the actual installation failure.
+            if let Err(journal) = crate::update_receipt::failed(
+                &app,
+                &target,
+                &failed_stage,
+                &error.to_string(),
+                failed_stage != "preflight",
+            ) {
+                crate::app_log::record(
+                    1,
+                    crate::app_log::Area::App,
+                    &format!("更新失败记录写入未完成：{journal}"),
+                );
+            }
+        } else {
+            // Worker owns restart: cancellation of the awaiting IPC must not
+            // strand a successfully replaced app running its old binary.
+            #[cfg(not(windows))]
+            app.restart();
         }
-    }
-    .await;
-    result.map_err(|e| state.finish_error(&e))
+        outcome
+    })
+    .await
+    .map_err(|_| failure("安装工作线程意外结束，请重新打开应用核对状态").dto())?
+    .map_err(|e| e.dto())
 }
 
 #[tauri::command]
@@ -982,6 +1089,11 @@ pub fn open_official_release(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn space_budget_includes_uncompressed_backup_and_does_not_overflow() {
+        assert_eq!(installation_reserve(10, 100), 128 * 1024 * 1024 + 280);
+        assert_eq!(installation_reserve(u64::MAX, u64::MAX), u64::MAX);
+    }
     #[test]
     fn source_display_names_preserve_persisted_channel_identities() {
         for (source, key, label) in [

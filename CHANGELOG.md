@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.26 - 2026-10-14
+
+- Validate macOS application bundles separately from executable-only IPC trust; verify both backups and replacements with strict nested signatures, identity and version.
+- Retain verified downloads after preflight failures; preserve backups until new-process confirmation, and record actionable failure stages without interrupting proxy traffic during preflight.
+- Add real signed-bundle, Tauri updater, rollback and relaunch tests plus a release-artifact gate on both Mac architectures. Existing Windows/Linux and TUN trust boundaries remain unchanged.
+- v0.7.24/v0.7.25 require a one-time full repaired installer at the original location; an old updater does not execute the fix before replacement.
+
 ## 0.7.23 - 2026-10-13
 
 - Add bounded, cancellable backend latency jobs for deduplicated real nodes with progress and profile/mode/runtime identity isolation; never explicitly select an exit or start the proxy.
