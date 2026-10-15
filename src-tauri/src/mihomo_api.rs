@@ -4,6 +4,61 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use url::Url;
 
+/// Non-domain rules can be normalized by Mihomo (CIDR, regex, rule-set etc.).
+/// Compare their count, and compare the entire leading domain overlay exactly.
+/// Domain routes are always prepended; disabling also checks the base rule count.
+struct RuleExpectation {
+    mode: String,
+    count: usize,
+    prefix: Vec<(String, String, String)>,
+}
+impl RuleExpectation {
+    fn from_yaml(yaml: &str) -> AppResult<Self> {
+        let root: serde_yaml::Value = serde_yaml::from_str(yaml)
+            .map_err(|_| AppError::Config("路由验收配置格式无效".into()))?;
+        let mode = root["mode"].as_str().unwrap_or("rule").to_string();
+        let rules = root["rules"].as_sequence().cloned().unwrap_or_default();
+        let mut prefix = vec![];
+        for rule in &rules {
+            let Some(text) = rule.as_str() else { break };
+            let parts: Vec<_> = text.split(',').map(str::trim).collect();
+            if parts.len() != 3 || !matches!(parts[0], "DOMAIN" | "DOMAIN-WILDCARD") {
+                break;
+            }
+            prefix.push((
+                parts[0].replace('-', "").to_lowercase(),
+                parts[1].to_string(),
+                parts[2].to_string(),
+            ));
+        }
+        Ok(Self {
+            mode,
+            count: rules.len(),
+            prefix,
+        })
+    }
+    fn check(&self, config: &Value, response: &Value) -> AppResult<()> {
+        let mismatch =
+            || AppError::Conflict("路由规则与核心实际状态不一致，请重新应用或关闭路由".into());
+        if config["mode"].as_str() != Some(self.mode.as_str()) {
+            return Err(mismatch());
+        }
+        let rules = response["rules"].as_array().ok_or_else(mismatch)?;
+        if rules.len() != self.count {
+            return Err(mismatch());
+        }
+        for (actual, (kind, payload, target)) in rules.iter().zip(&self.prefix) {
+            if actual["type"].as_str().map(str::to_lowercase).as_ref() != Some(kind)
+                || actual["payload"].as_str() != Some(payload.as_str())
+                || actual["proxy"].as_str() != Some(target.as_str())
+            {
+                return Err(mismatch());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct MihomoApiClient {
     client: reqwest::Client,
@@ -75,6 +130,19 @@ impl MihomoApiClient {
 
     pub async fn rules(&self) -> AppResult<Value> {
         self.get("rules").await
+    }
+
+    /// Verify the rule count, domain-rule prefix and runtime mode, not merely a successful PUT.
+    /// No configuration or controller credentials are included in failure messages.
+    pub(crate) async fn verify_rule_config(&self, yaml: &str) -> AppResult<()> {
+        let expected = RuleExpectation::from_yaml(yaml)?;
+        let (config, rules) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::try_join!(self.get("configs"), self.rules())
+        })
+        .await
+        .map_err(|_| AppError::Runtime("路由核对超时，请刷新状态后重试".into()))?
+        .map_err(|_| AppError::Runtime("路由核心状态读取失败，请检查核心后刷新状态".into()))?;
+        expected.check(&config, &rules)
     }
 
     pub async fn connections(&self) -> AppResult<Value> {
@@ -400,5 +468,41 @@ mod node_latency_tests {
             assert_eq!(client.node_latency_probe("A/B ?").await, want);
             server.await.unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod routing_verification_tests {
+    use super::*;
+    #[test]
+    fn routing_readback_requires_mode_count_order_domains_and_targets() {
+        let expected = RuleExpectation::from_yaml("mode: rule\nrules: ['DOMAIN-WILDCARD,*.example.com,Exit','DOMAIN,example.com,Exit','MATCH,DIRECT']").unwrap();
+        let actual = json!({"rules":[{"type":"DomainWildcard","payload":"*.example.com","proxy":"Exit"},{"type":"Domain","payload":"example.com","proxy":"Exit"},{"type":"Match","payload":"","proxy":"DIRECT"}]});
+        expected.check(&json!({"mode":"rule"}), &actual).unwrap();
+        assert!(expected.check(&json!({"mode":"global"}), &actual).is_err());
+        for field in ["type", "payload", "proxy"] {
+            let mut wrong = actual.clone();
+            wrong["rules"][0][field] = json!("wrong");
+            assert!(expected.check(&json!({"mode":"rule"}), &wrong).is_err());
+        }
+        let mut stale = actual.clone();
+        stale["rules"].as_array_mut().unwrap().pop();
+        assert!(expected.check(&json!({"mode":"rule"}), &stale).is_err());
+        let mut reordered = actual.clone();
+        reordered["rules"].as_array_mut().unwrap().swap(0, 1);
+        assert!(expected.check(&json!({"mode":"rule"}), &reordered).is_err());
+        let off = RuleExpectation::from_yaml("mode: rule\nrules: ['MATCH,DIRECT']").unwrap();
+        assert!(off.check(&json!({"mode":"rule"}), &actual).is_err());
+    }
+    #[tokio::test]
+    async fn routing_readback_connection_failure_is_not_success() {
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        drop(socket);
+        let api = MihomoApiClient::from_endpoint(port, "fixture".into()).unwrap();
+        assert!(api
+            .verify_rule_config("mode: rule\nrules: []")
+            .await
+            .is_err());
     }
 }

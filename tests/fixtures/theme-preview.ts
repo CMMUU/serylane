@@ -227,11 +227,18 @@ function initialRoute(): RouteSnapshot {
 let route = initialRoute();
 const domainPolicy = { domains: aiRoutePresets[0].domains, tools:['openai'], customDomains:[], target: '' };
 let domainDocument: DomainRouteState['document'] = { schemaVersion: 1, revision: 0, enabled: false, draft: structuredClone(domainPolicy), applied: null };
+let domainVerification = 'verified';
+let domainApplyFailure = false;
+window.addEventListener('serylane-fixture-domain-runtime', event => {
+  const input = (event as CustomEvent<{verification?: string; failApply?: boolean}>).detail;
+  if (input.verification) domainVerification = input.verification;
+  if (typeof input.failApply === 'boolean') domainApplyFailure = input.failApply;
+});
 const subscriptionEdits = new Map<string, {url:string;revision:number}>();
 function domainState(): DomainRouteState {
   const profile=profiles.find(p=>p.id===activeProfileId);
   return { document: structuredClone(domainDocument), presets: aiRoutePresets, targets: Object.entries(fixtureNodes).filter(([n,g])=>Array.isArray(g.all)&&n!=='GLOBAL').map(([n])=>n), profileId:profile?.id??null,profileRevision:profile?.activeRevisionId??null,
-    status:domainDocument.enabled ? '已应用 · 合成运行状态，真实网络未变化' : '已关闭', warning:'域名路由优先于本地规则、AI 规则及订阅规则；覆盖全部路径，不修改 Codex。',userRuleCount:0 };
+    readiness: !profile ? 'no_profile' : !domainDocument.draft.target ? 'missing_target' : 'ready', verification: domainDocument.enabled ? domainVerification : 'off', status:domainDocument.enabled ? domainVerification === 'verified' ? '已生效 · 合成运行状态，真实网络未变化' : '生效状态待核对 · 合成核心规则不一致，可重新应用' : '已关闭', warning:'域名路由优先于本地规则、AI 规则及订阅规则；覆盖全部路径，不修改 Codex。',userRuleCount:0 };
 }
 
 let routeConfigRevision = 1;
@@ -1158,9 +1165,10 @@ mockIPC(async (command, payload) => {
     domainDocument={...domainDocument,revision:domainDocument.revision+1,draft:{...p,domains:[...new Set([...aiRoutePresets.filter(t=>p.tools.includes(t.id)).flatMap(t=>t.domains),...parseDomains(p.customDomains.join('\n'))])]}};return domainState();
   }
   if(command==='apply_domain_route') {
+    if (domainApplyFailure) throw {...routeError('CORE_ERROR','合成校验失败'),userMessage:{details:'核心规则核对失败；合成旧规则已恢复，草稿已保留。'}};
     if(args.confirmed!==true||args.expectedRevision!==domainDocument.revision)throw routeError('STATE_CONFLICT','路由修订已变化');
     if(args.enabled&&(!domainDocument.draft.domains.length||!domainState().targets.includes(domainDocument.draft.target)))throw routeError('INVALID_INPUT','请选择有效出口与域名');
-    domainDocument={...domainDocument,revision:domainDocument.revision+1,enabled:Boolean(args.enabled),applied:args.enabled?structuredClone(domainDocument.draft):domainDocument.applied};return domainState();
+    domainVerification='verified';domainDocument={...domainDocument,revision:domainDocument.revision+1,enabled:Boolean(args.enabled),applied:args.enabled?structuredClone(domainDocument.draft):domainDocument.applied};return domainState();
   }
   if(command==='read_subscription_edit'||command==='save_subscription_edit') {
     const i=args.input as import('../../src/subscription-editor').SubscriptionEdit;
