@@ -223,3 +223,9 @@
 }
 
 .local-route-field textarea { width: 100%; box-sizing: border-box; min-height: 120px; resize: vertical; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-solid); color: inherit; font: inherit; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+
+/* Route preference and verified runtime state are deliberately distinct. */
+.domain-route-panel #domain-status { overflow-wrap: anywhere; }
+.domain-route-panel #domain-status[data-tone="error"] { color: var(--danger); }
+.domain-route-panel #domain-status[data-tone="info"] { color: var(--accent); }
+.domain-route-panel :is(select, textarea, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

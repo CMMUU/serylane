@@ -32,6 +32,8 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct RunningServer {
     stop: watch::Sender<bool>,
     pub stats: Arc<RouteStats>,
+    #[cfg(test)]
+    port: u16,
 }
 
 impl RunningServer {
@@ -79,11 +81,15 @@ pub fn start(
 
 #[cfg(test)]
 fn start_inner(
-    document: &RouteDocument,
+    document: &mut RouteDocument,
     upstream: String,
     proxy: Option<String>,
 ) -> AppResult<RunningServer> {
-    start_with_app(document, upstream, proxy, None)
+    // Bind port zero once and retain that listener. No free-port / rebind race.
+    document.settings.listen_port = 0;
+    let server = start_with_app(document, upstream, proxy, None)?;
+    document.settings.listen_port = server.port;
+    Ok(server)
 }
 fn start_with_app(
     document: &RouteDocument,
@@ -183,7 +189,12 @@ fn start_with_app(
         // Explicit stop/exit cancels only this service's connections, never an application process.
         tasks.shutdown().await;
     });
-    Ok(RunningServer { stop, stats })
+    Ok(RunningServer {
+        stop,
+        stats,
+        #[cfg(test)]
+        port,
+    })
 }
 
 fn json(status: StatusCode, code: &'static str) -> Response<Body> {
@@ -830,8 +841,8 @@ mod tests {
             socket.write_all(reply.as_bytes()).await.unwrap();
             let _ = socket.read(&mut input).await;
         });
-        let doc = document(free_port());
-        let server = start_inner(&doc, upstream, None).unwrap();
+        let mut doc = document(0);
+        let server = start_inner(&mut doc, upstream, None).unwrap();
         let response = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -856,9 +867,9 @@ mod tests {
     async fn explicit_outbound_proxy_is_used_without_replaying_or_leaking_hop_headers() {
         let (proxy, task) =
             fixture("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await;
-        let doc = document(free_port());
+        let mut doc = document(0);
         let _server = start_inner(
-            &doc,
+            &mut doc,
             "http://official-fixture.invalid/v1".into(),
             Some(proxy),
         )
@@ -912,9 +923,9 @@ mod tests {
             socket.write_all(b"pong").await.unwrap();
             let _ = done.send(());
         });
-        let mut doc = document(free_port());
+        let mut doc = document(0);
         doc.settings.mode = RouteMode::Native;
-        let server = start_inner(&doc, upstream, None).unwrap();
+        let server = start_inner(&mut doc, upstream, None).unwrap();
         let response = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -970,8 +981,8 @@ mod tests {
             // Hyper may legally fail before forwarding headers on fast runners.
             wait.await.unwrap();
         });
-        let doc = document(free_port());
-        let server = start_inner(&doc, upstream, None).unwrap();
+        let mut doc = document(0);
+        let server = start_inner(&mut doc, upstream, None).unwrap();
         let response = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -1014,8 +1025,8 @@ mod tests {
             assert_eq!(n, 0);
             let _ = closed.send(());
         });
-        let doc = document(free_port());
-        let server = start_inner(&doc, upstream, None).unwrap();
+        let mut doc = document(0);
+        let server = start_inner(&mut doc, upstream, None).unwrap();
         let response = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -1073,13 +1084,6 @@ mod tests {
         (url, task)
     }
 
-    fn free_port() -> u16 {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
     fn endpoint(doc: &RouteDocument, suffix: &str) -> String {
         format!(
             "http://127.0.0.1:{}/rd/{}/v1{}",
@@ -1107,10 +1111,10 @@ mod tests {
             }],
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mut doc = document(free_port());
+            let mut doc = document(0);
             doc.settings.allowed_urls = rules;
             let _server = start_inner(
-                &doc,
+                &mut doc,
                 format!("http://{}", listener.local_addr().unwrap()),
                 None,
             )
@@ -1142,8 +1146,8 @@ mod tests {
     #[tokio::test]
     async fn http_errors_are_preserved_and_never_retried() {
         let (url, task) = fixture("HTTP/1.1 429 Too Many Requests\r\nContent-Length: 2\r\nRetry-After: 5\r\nConnection: close\r\n\r\n{}").await;
-        let doc = document(free_port());
-        let server = start_inner(&doc, url, None).unwrap();
+        let mut doc = document(0);
+        let server = start_inner(&mut doc, url, None).unwrap();
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let response = client
             .post(endpoint(&doc, "/responses"))
@@ -1177,9 +1181,9 @@ mod tests {
         let reserved = tokio::net::TcpSocket::new_v4().unwrap();
         reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let port = reserved.local_addr().unwrap().port();
-        let doc = document(free_port());
+        let mut doc = document(0);
         let server = start_inner(
-            &doc,
+            &mut doc,
             "https://official-fixture.invalid/v1".into(),
             Some(format!("http://127.0.0.1:{port}")),
         )
@@ -1225,8 +1229,8 @@ mod tests {
         let (url, task) =
             fixture("HTTP/1.1 503 Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
                 .await;
-        let doc = document(free_port());
-        let server = start_inner(&doc, url, None).unwrap();
+        let mut doc = document(0);
+        let server = start_inner(&mut doc, url, None).unwrap();
         let response = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -1254,8 +1258,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_browser_wrong_token_upgrade_and_unsupported_paths_before_forwarding() {
-        let doc = document(free_port());
-        let _server = start_inner(&doc, "http://127.0.0.1:1".into(), None).unwrap();
+        let mut doc = document(0);
+        let _server = start_inner(&mut doc, "http://127.0.0.1:1".into(), None).unwrap();
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         for (suffix, status) in [("/responses", 401), ("/admin", 404)] {
             assert_eq!(
@@ -1318,8 +1322,8 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let doc = document(free_port());
-        let server = start_inner(&doc, url, None).unwrap();
+        let mut doc = document(0);
+        let server = start_inner(&mut doc, url, None).unwrap();
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let response = client
             .post(endpoint(&doc, "/responses"))
@@ -1347,8 +1351,8 @@ mod tests {
     #[tokio::test]
     async fn redirects_are_not_followed() {
         let (url, task) = fixture("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
-        let doc = document(free_port());
-        let _server = start_inner(&doc, url, None).unwrap();
+        let mut doc = document(0);
+        let _server = start_inner(&mut doc, url, None).unwrap();
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let response = client
             .post(endpoint(&doc, "/responses"))

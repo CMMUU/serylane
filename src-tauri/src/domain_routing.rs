@@ -243,6 +243,8 @@ pub struct Snapshot {
     pub profile_id: Option<Uuid>,
     pub profile_revision: Option<Uuid>,
     pub status: String,
+    pub readiness: String,
+    pub verification: String,
     pub warning: String,
     pub user_rule_count: usize,
 }
@@ -280,41 +282,137 @@ fn state(app: &AppHandle) -> AppResult<Snapshot> {
         .status(Some(app))
         .phase
         == RuntimePhase::Running;
+    let readiness = if current.active_profile_id.is_none() {
+        "no_profile"
+    } else if document.draft.domains.is_empty() {
+        "empty_domains"
+    } else if !groups.contains(&document.draft.target) {
+        "missing_target"
+    } else if mode != RoutingMode::Rule {
+        "wrong_mode"
+    } else {
+        "ready"
+    }
+    .to_string();
+    let verification = if !document.enabled {
+        "off"
+    } else if !valid {
+        "missing_target"
+    } else if !running {
+        "waiting_core"
+    } else if mode != RoutingMode::Rule {
+        "wrong_mode"
+    } else {
+        "pending"
+    }
+    .to_string();
     let status = if !document.enabled {
         "已关闭"
     } else if !valid {
-        "需要重新选择出口 · 匹配流量拒绝连接"
+        "出口已失效 · 请重新选择出口或关闭路由"
     } else if !running {
         "已配置 · 等待核心启动"
     } else if mode != RoutingMode::Rule {
         "已配置 · 当前非规则模式，不生效"
     } else {
-        "已应用 · 仅处理进入代理核心的流量"
+        "已配置 · 等待核对核心规则"
     }
     .to_string();
     Ok(Snapshot { document, presets: presets(), targets: groups, profile_id: current.active_profile_id, profile_revision: current.active_revision_id,
-        status, warning: "域名路由优先于本地规则、AI 规则与订阅规则；未匹配流量保持原规则。*.example.com 仅匹配子域，根域须另列；覆盖 HTTPS/WSS 的所有路径，不解密内容，不修改 Codex 配置。".into(), user_rule_count: storage.user_rules()?.rules.len() })
+        status, readiness, verification, warning: "域名路由优先于本地规则、AI 规则与订阅规则；未匹配流量保持原规则。*.example.com 仅匹配子域，根域须另列；覆盖 HTTPS/WSS 的所有路径，不解密内容，不修改 Codex 配置。".into(), user_rule_count: storage.user_rules()?.rules.len() })
+}
+async fn verified_state(app: &AppHandle) -> AppResult<Snapshot> {
+    let storage = AppStorage::from_app(app)?;
+    let marker = crate::user_rules::configuration_fingerprint(app, &storage)?;
+    let mut snapshot = state(app)?;
+    if snapshot.verification != "pending" {
+        return Ok(snapshot);
+    }
+    let id = snapshot
+        .profile_id
+        .ok_or_else(|| AppError::Conflict("请先选用配置".into()))?;
+    let revision = snapshot
+        .profile_revision
+        .ok_or_else(|| AppError::Conflict("请重新选用配置".into()))?;
+    let profile = storage.load_profile(id)?;
+    let settings = storage.settings()?;
+    let candidate = build_effective_config_with_policy(
+        &storage.load_revision_source(id, revision)?,
+        &settings,
+        profile.routing_mode,
+        Some(&profile.openai_policy),
+    )?;
+    let result = crate::mihomo_api::MihomoApiClient::new(&settings)?
+        .verify_rule_config(&candidate.yaml)
+        .await;
+    if Document::read(&storage)?.revision != snapshot.document.revision
+        || crate::user_rules::configuration_fingerprint(app, &storage)? != marker
+    {
+        snapshot.verification = "changed".into();
+        snapshot.status = "配置正在变化 · 请刷新状态重新核对".into();
+    } else {
+        let (code, status) = match result {
+            Ok(()) => (
+                "verified",
+                "已生效 · 核心规则核对通过，仅处理进入核心的新连接",
+            ),
+            Err(AppError::Conflict(_)) => (
+                "mismatch",
+                "尚未生效 · 核心规则或模式不一致，请重新应用或关闭路由",
+            ),
+            Err(_) => (
+                "unavailable",
+                "生效状态待核对 · 核心读取未完成，请刷新状态；未自动改变网络",
+            ),
+        };
+        snapshot.verification = code.into();
+        snapshot.status = status.into();
+    }
+    Ok(snapshot)
+}
+
+fn record_operation(
+    id: Uuid,
+    action: &str,
+    phase: &str,
+    started: std::time::Instant,
+    error: Option<&AppError>,
+) {
+    crate::app_log::record(
+        if error.is_some() { 2 } else { 0 },
+        crate::app_log::Area::Routing,
+        &format!(
+            "domain_route operation={id} action={action} phase={phase} elapsed_ms={} result={}",
+            started.elapsed().as_millis(),
+            error.map_or("OK", AppError::code)
+        ),
+    );
+}
+
+#[tauri::command]
+pub async fn domain_route_status(app: AppHandle) -> Result<Snapshot, AppErrorDto> {
+    verified_state(&app).await.map_err(|e| e.dto())
 }
 #[tauri::command]
-pub fn domain_route_status(app: AppHandle) -> Result<Snapshot, AppErrorDto> {
-    state(&app).map_err(|e| e.dto())
-}
-#[tauri::command]
-pub fn save_domain_route(
+pub async fn save_domain_route(
     app: AppHandle,
     policy: Selection,
     expected_revision: u64,
 ) -> Result<Snapshot, AppErrorDto> {
-    (|| -> AppResult<_> {
-        let _permit = crate::user_rules::acquire_configuration(&app)?;
+    let operation = Uuid::new_v4();
+    let started = std::time::Instant::now();
+    let work = async {
+        let _permit = crate::user_rules::acquire_configuration_for_route(&app).await?;
         let storage = AppStorage::from_app(&app)?;
         let mut document = Document::read(&storage)?;
         document.bump(expected_revision)?;
         document.draft = expand(policy)?;
         document.write(&storage)?;
         state(&app)
-    })()
-    .map_err(|e| e.dto())
+    };
+    let result = work.await;
+    record_operation(operation, "save", "save", started, result.as_ref().err());
+    result.map_err(|e: AppError| e.dto())
 }
 #[tauri::command]
 pub async fn apply_domain_route(
@@ -325,11 +423,16 @@ pub async fn apply_domain_route(
     profile_revision: Option<Uuid>,
     confirmed: bool,
 ) -> Result<Snapshot, AppErrorDto> {
+    let operation = Uuid::new_v4();
+    let started = std::time::Instant::now();
+    let action = if enabled { "enable" } else { "disable" };
+    let mut phase = "prepare";
+    record_operation(operation, action, phase, started, None);
     let work = async {
         if !confirmed {
             return Err(AppError::InvalidInput("应用域名路由需要确认".into()));
         }
-        let permit = crate::user_rules::acquire_configuration(&app)?;
+        let permit = crate::user_rules::acquire_configuration_for_route(&app).await?;
         let storage = AppStorage::from_app(&app)?;
         let old = Document::read(&storage)?;
         let mut next = old.clone();
@@ -368,7 +471,9 @@ pub async fn apply_domain_route(
                 Some(&profile.openai_policy),
             )?;
             let previous_config = storage.active_runtime_config()?;
-            crate::user_rules::apply_profile_config(
+            phase = "validate_load_verify_commit";
+            record_operation(operation, action, phase, started, None);
+            crate::user_rules::apply_verified_route_config(
                 &app,
                 &storage,
                 &candidate.yaml,
@@ -384,6 +489,7 @@ pub async fn apply_domain_route(
                     Ok(())
                 },
                 &permit,
+                operation,
             )
             .await?;
         } else if enabled {
@@ -391,9 +497,22 @@ pub async fn apply_domain_route(
         } else {
             next.write(&storage)?;
         }
-        state(&app)
+        phase = "readback";
+        verified_state(&app).await
     };
-    work.await.map_err(|e: AppError| e.dto())
+    let result = work.await;
+    record_operation(
+        operation,
+        action,
+        if result.is_ok() { "complete" } else { phase },
+        started,
+        result.as_ref().err(),
+    );
+    result.map_err(|e: AppError| {
+        let mut dto = e.dto();
+        dto.stage = format!("domain_route/{phase}");
+        dto
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -537,3 +656,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod native_tests;

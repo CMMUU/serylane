@@ -2462,6 +2462,7 @@ const subscriptionEditor = mountSubscriptionEditor($("#subscription-manager-list
 const localRouting = mountDomainRouting($("#routing-view")!, {
   api, confirm: confirmAction, error: errorMessage,
   globalToggle: $("#global-domain-route") as HTMLButtonElement,
+  openSetup: () => { if (store.view !== "routing") navigate("routing"); },
   isBlocked: () => runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching,
   contextKey: () => [runtimeMutationRevision, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, store.activeProfile?.profile.routingMode, store.runtime?.phase, store.runtime?.pid].join('/'),
   busyChanged: busy => { domainRouteChanging = busy; renderHeader(); },

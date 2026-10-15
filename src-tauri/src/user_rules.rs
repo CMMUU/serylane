@@ -234,6 +234,23 @@ pub fn acquire_configuration(app: &AppHandle) -> AppResult<ConfigurationMutation
     app.state::<ConfigurationMutationGuard>().acquire()
 }
 
+pub(crate) async fn acquire_configuration_for_route(
+    app: &AppHandle,
+) -> AppResult<ConfigurationMutationPermit> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if let Ok(permit) = acquire_configuration(app) {
+            return Ok(permit);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(AppError::Conflict(
+                "其他配置正在保存，路由尚未提交；请稍后重试，编辑已保留".into(),
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 pub async fn acquire_configuration_for_task(
     app: &AppHandle,
     task: &crate::subscription_task::Task,
@@ -604,6 +621,13 @@ struct ActiveContext {
     fingerprint: String,
 }
 
+pub(crate) fn configuration_fingerprint(
+    app: &AppHandle,
+    storage: &AppStorage,
+) -> AppResult<String> {
+    Ok(capture_context(app, storage)?.fingerprint)
+}
+
 fn capture_context(app: &AppHandle, storage: &AppStorage) -> AppResult<ActiveContext> {
     let settings = storage.settings()?;
     let state = storage.state()?;
@@ -867,6 +891,28 @@ pub(crate) async fn apply_profile_config_with_task(
     _permit: &ConfigurationMutationPermit,
     task: Option<Arc<crate::subscription_task::Task>>,
 ) -> AppResult<()> {
+    apply_profile_config_inner(app, storage, candidate, commit, task, None).await
+}
+
+pub(crate) async fn apply_verified_route_config(
+    app: &AppHandle,
+    storage: &AppStorage,
+    candidate: &str,
+    commit: impl FnOnce() -> AppResult<()>,
+    _permit: &ConfigurationMutationPermit,
+    operation: Uuid,
+) -> AppResult<()> {
+    apply_profile_config_inner(app, storage, candidate, commit, None, Some(operation)).await
+}
+
+async fn apply_profile_config_inner(
+    app: &AppHandle,
+    storage: &AppStorage,
+    candidate: &str,
+    commit: impl FnOnce() -> AppResult<()>,
+    task: Option<Arc<crate::subscription_task::Task>>,
+    operation: Option<Uuid>,
+) -> AppResult<()> {
     crate::node_test::invalidate(app);
     let context = capture_context(app, storage)?;
     let previous = match effective_for(&context, &context.settings.user_rules) {
@@ -879,9 +925,23 @@ pub(crate) async fn apply_profile_config_with_task(
         }
         Err(error) => return Err(error),
     };
-    validate_config_with_task(app, candidate, task.clone()).await?;
+    if let Some(id) = operation {
+        route_phase(id, "validate", "START");
+    }
+    if let Err(error) = validate_config_with_task(app, candidate, task.clone()).await {
+        if let Some(id) = operation {
+            route_phase(id, "validate", error.code());
+        }
+        return Err(error);
+    }
     let reloader = (context.active && context.running)
-        .then(|| MihomoApiClient::new(&context.settings))
+        .then(|| {
+            MihomoApiClient::new(&context.settings).map(|client| ProfileReloader {
+                client,
+                verify_routing: operation.is_some(),
+                operation,
+            })
+        })
         .transpose()?;
     if let Some(task) = &task {
         task.begin_commit()?;
@@ -920,8 +980,53 @@ pub(crate) async fn validate_config_with_task(
     .map_err(|_| AppError::Runtime("配置校验任务异常结束".into()))?
 }
 
-trait RuleReloader {
+fn route_phase(operation: Uuid, phase: &str, result: &str) {
+    crate::app_log::record(
+        if result == "OK" || result == "START" {
+            0
+        } else {
+            2
+        },
+        crate::app_log::Area::Routing,
+        &format!("domain_route operation={operation} phase={phase} result={result}"),
+    );
+}
+
+pub(crate) trait RuleReloader {
+    fn verifies_routes(&self) -> bool {
+        false
+    }
+    fn phase(&self, _phase: &str, _result: &str) {}
     async fn reload(&self, yaml: &str) -> AppResult<()>;
+    async fn verify(&self, _yaml: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+pub(crate) struct ProfileReloader {
+    pub(crate) client: MihomoApiClient,
+    pub(crate) verify_routing: bool,
+    pub(crate) operation: Option<Uuid>,
+}
+impl RuleReloader for ProfileReloader {
+    fn verifies_routes(&self) -> bool {
+        self.verify_routing
+    }
+    fn phase(&self, phase: &str, result: &str) {
+        if let Some(id) = self.operation {
+            route_phase(id, phase, result);
+        }
+    }
+    async fn reload(&self, yaml: &str) -> AppResult<()> {
+        self.client.reload_config(yaml).await
+    }
+    async fn verify(&self, yaml: &str) -> AppResult<()> {
+        if self.verify_routing {
+            self.client.verify_rule_config(yaml).await
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl RuleReloader for MihomoApiClient {
@@ -935,17 +1040,35 @@ async fn restore_after_failure(
     previous: &str,
     error: AppError,
 ) -> AppError {
-    match reloader.reload(previous).await {
-        Ok(()) => error,
-        Err(rollback) => AppError::Runtime(format!(
-            "规则保存失败，且核心回滚失败：{}；{}",
-            runtime::redact(&error.to_string()),
-            runtime::redact(&rollback.to_string())
-        )),
+    reloader.phase("rollback", "START");
+    let restore = async {
+        reloader.reload(previous).await?;
+        reloader.verify(previous).await
+    };
+    match restore.await {
+        Ok(()) => {
+            reloader.phase("rollback_verified", "OK");
+            if reloader.verifies_routes() {
+                AppError::Runtime(format!(
+                    "本次路由应用未完成；旧核心规则已恢复并核对。{}",
+                    runtime::redact(&error.to_string())
+                ))
+            } else {
+                error
+            }
+        }
+        Err(rollback) => {
+            reloader.phase("rollback", rollback.code());
+            AppError::Runtime(format!(
+                "规则保存失败，且核心回滚失败：{}；{}",
+                runtime::redact(&error.to_string()),
+                runtime::redact(&rollback.to_string())
+            ))
+        }
     }
 }
 
-async fn transact(
+pub(crate) async fn transact(
     reloader: Option<&impl RuleReloader>,
     candidate: &str,
     previous: &str,
@@ -954,12 +1077,22 @@ async fn transact(
 ) -> AppResult<()> {
     check_context()?;
     if let Some(reloader) = reloader {
+        reloader.phase("load", "START");
         if let Err(error) = reloader.reload(candidate).await {
+            reloader.phase("load", error.code());
             return Err(restore_after_failure(reloader, previous, error).await);
         }
+        reloader.phase("verify", "START");
+        if let Err(error) = reloader.verify(candidate).await {
+            reloader.phase("verify", error.code());
+            return Err(restore_after_failure(reloader, previous, error).await);
+        }
+        reloader.phase("verify", "OK");
         if let Err(error) = check_context().and_then(|()| commit()) {
+            reloader.phase("commit", error.code());
             return Err(restore_after_failure(reloader, previous, error).await);
         }
+        reloader.phase("commit", "OK");
     } else {
         check_context()?;
         commit()?;
@@ -1495,6 +1628,52 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    struct VerificationReloader {
+        inner: FakeReloader,
+        verify: Cell<usize>,
+        fail_restore: bool,
+    }
+    impl RuleReloader for VerificationReloader {
+        async fn reload(&self, yaml: &str) -> AppResult<()> {
+            self.inner.reload(yaml).await
+        }
+        async fn verify(&self, _yaml: &str) -> AppResult<()> {
+            self.verify.set(self.verify.get() + 1);
+            if self.verify.get() == 1 || self.fail_restore {
+                Err(AppError::Runtime("synthetic stale rules".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    #[tokio::test]
+    async fn routing_readback_failure_rolls_back_and_verifies_rollback_before_reporting() {
+        for fail_restore in [false, true] {
+            let reloader = VerificationReloader {
+                inner: FakeReloader::new(&[]),
+                verify: Cell::new(0),
+                fail_restore,
+            };
+            let committed = Cell::new(false);
+            let error = transact(
+                Some(&reloader),
+                "new",
+                "old",
+                || {
+                    committed.set(true);
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .await
+            .unwrap_err();
+            assert!(!committed.get());
+            assert_eq!(reloader.verify.get(), 2);
+            assert_eq!(*reloader.inner.calls.lock().unwrap(), ["new", "old"]);
+            assert_eq!(error.to_string().contains("核心回滚失败"), fail_restore);
         }
     }
 
