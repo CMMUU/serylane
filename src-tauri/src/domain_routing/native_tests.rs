@@ -14,11 +14,21 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-struct Core(Child);
+struct Core {
+    child: Child,
+    log: PathBuf,
+}
 impl Drop for Core {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if std::thread::panicking() {
+            // Synthetic loopback fixture only; never read the installed app's log.
+            eprintln!(
+                "isolated core: {}",
+                std::fs::read_to_string(&self.log).unwrap_or_default()
+            );
+        }
     }
 }
 fn binary() -> PathBuf {
@@ -44,19 +54,58 @@ fn start(binary: &std::path::Path, dir: &std::path::Path, config: &str) -> Core 
     let path = dir.join("isolated.yaml");
     std::fs::write(&path, config).unwrap();
     crate::runtime::validate_file(binary, dir, &path).unwrap();
-    Core(
-        Command::new(binary)
+    let log = dir.join("isolated-core.log");
+    let output = std::fs::File::create(&log).unwrap();
+    Core {
+        child: Command::new(binary)
             .arg("-d")
             .arg(dir)
             .arg("-f")
             .arg(path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(output.try_clone().unwrap()))
+            .stderr(Stdio::from(output))
             .spawn()
             .unwrap(),
-    )
+        log,
+    }
 }
-async fn request(mixed: u16, web: u16, host: &str) -> bool {
+async fn wait_proxy_ready(port: u16) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("isolated mixed proxy listener did not become ready");
+}
+async fn respond(mut socket: tokio::net::TcpStream) -> std::io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut header = Vec::new();
+        while !header.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+            let mut chunk = [0; 1024];
+            let size = socket.read(&mut chunk).await?;
+            if size == 0 || header.len() + size > 8192 {
+                return Err(std::io::Error::other(
+                    "incomplete or oversized fixture header",
+                ));
+            }
+            header.extend_from_slice(&chunk[..size]);
+        }
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await?;
+        socket.shutdown().await
+    })
+    .await
+    .map_err(|_| std::io::Error::other("fixture header deadline"))?
+}
+async fn request(mixed: u16, web: u16, host: &str) -> Result<u16, String> {
     reqwest::Client::builder()
         .no_proxy()
         .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{mixed}")).unwrap())
@@ -67,7 +116,40 @@ async fn request(mixed: u16, web: u16, host: &str) -> bool {
         .header("Connection", "close")
         .send()
         .await
-        .is_ok_and(|r| r.status() == 200)
+        .map(|r| r.status().as_u16())
+        .map_err(|error| format!("isolated request: {error:?}"))
+}
+
+#[tokio::test]
+async fn native_http_fixture_waits_for_complete_fragmented_headers() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (server, _) = listener.accept().await.unwrap();
+    let task = tokio::spawn(respond(server));
+    client
+        .write_all(b"GET /fixture HTTP/1.1\r\nHo")
+        .await
+        .unwrap();
+    let mut first = [0];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), client.read_exact(&mut first))
+            .await
+            .is_err()
+    );
+    client
+        .write_all(b"st: fixture\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with(b"\r\n\r\nok"));
+    task.await.unwrap().unwrap();
 }
 #[tokio::test]
 async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
@@ -83,15 +165,9 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     let web = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let web_port = web.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
-        while let Ok((mut s, _)) = web.accept().await {
+        while let Ok((s, _)) = web.accept().await {
             tokio::spawn(async move {
-                let mut b = [0; 4096];
-                let _ = s.read(&mut b).await;
-                let _ = s
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-                    )
-                    .await;
+                let _ = respond(s).await;
             });
         }
     });
@@ -120,9 +196,13 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     let mut core = start(&binary, dir.path(), &base);
     let api = MihomoApiClient::new(&settings).unwrap();
     api.wait_ready(Duration::from_secs(5)).await.unwrap();
+    wait_proxy_ready(settings.mixed_port).await;
     api.verify_rule_config(&base).await.unwrap();
     assert!(!Document::read(&storage).unwrap().enabled);
-    assert!(request(settings.mixed_port, web_port, "sub.route.example.test").await);
+    assert_eq!(
+        request(settings.mixed_port, web_port, "sub.route.example.test").await,
+        Ok(200)
+    );
     doc.bump(1).unwrap();
     doc.enabled = true;
     doc.applied = Some(doc.draft.clone());
@@ -151,13 +231,14 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
         "fixed.example.test",
     ] {
         assert!(
-            !request(settings.mixed_port, web_port, host).await,
+            request(settings.mixed_port, web_port, host).await != Ok(200),
             "matched {host}"
         );
     }
     for host in ["route.example.test", "notroute.example.test"] {
-        assert!(
+        assert_eq!(
             request(settings.mixed_port, web_port, host).await,
+            Ok(200),
             "unmatched {host}"
         );
     }
@@ -221,15 +302,22 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     .await
     .unwrap();
     assert!(!Document::read(&storage).unwrap().enabled);
-    assert!(request(settings.mixed_port, web_port, "sub.route.example.test").await);
+    assert_eq!(
+        request(settings.mixed_port, web_port, "sub.route.example.test").await,
+        Ok(200)
+    );
     // Persisted disabled state remains disabled after a genuine core restart.
-    core.0.kill().unwrap();
-    core.0.wait().unwrap();
+    core.child.kill().unwrap();
+    core.child.wait().unwrap();
     drop(core);
     let _restarted = start(&binary, dir.path(), &base);
     api.wait_ready(Duration::from_secs(5)).await.unwrap();
+    wait_proxy_ready(settings.mixed_port).await;
     api.verify_rule_config(&base).await.unwrap();
-    assert!(request(settings.mixed_port, web_port, "sub.route.example.test").await);
+    assert_eq!(
+        request(settings.mixed_port, web_port, "sub.route.example.test").await,
+        Ok(200)
+    );
     // Missing destination compiles to REJECT, not silent direct; changing the original document is unnecessary.
     settings.domain_routing.enabled = true;
     settings.domain_routing.applied.as_mut().unwrap().target = "missing".into();
@@ -239,7 +327,13 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     transact(Some(&reloader), &missing, &base, || Ok(()), || Ok(()))
         .await
         .unwrap();
-    assert!(!request(settings.mixed_port, web_port, "sub.route.example.test").await);
-    assert!(request(settings.mixed_port, web_port, "route.example.test").await);
+    assert_ne!(
+        request(settings.mixed_port, web_port, "sub.route.example.test").await,
+        Ok(200)
+    );
+    assert_eq!(
+        request(settings.mixed_port, web_port, "route.example.test").await,
+        Ok(200)
+    );
     server.abort();
 }
