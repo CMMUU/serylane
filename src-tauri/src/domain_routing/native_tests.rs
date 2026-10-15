@@ -5,20 +5,31 @@ use crate::{
     mihomo_api::MihomoApiClient,
     user_rules::{transact, ProfileReloader},
 };
+use rand::Rng;
 use std::{
     cell::Cell,
-    net::TcpListener,
+    net::{TcpListener, UdpSocket},
     path::PathBuf,
     process::{Child, Command, Stdio},
     time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-struct Core(Child);
+struct Core {
+    child: Child,
+    log: PathBuf,
+}
 impl Drop for Core {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if std::thread::panicking() {
+            // Synthetic loopback fixture only; never read the installed app's log.
+            eprintln!(
+                "isolated core: {}",
+                std::fs::read_to_string(&self.log).unwrap_or_default()
+            );
+        }
     }
 }
 fn binary() -> PathBuf {
@@ -37,26 +48,92 @@ fn binary() -> PathBuf {
         .join("binaries")
         .join(format!("mihomo-{target}{}", std::env::consts::EXE_SUFFIX))
 }
-fn port() -> TcpListener {
-    TcpListener::bind("127.0.0.1:0").unwrap()
+struct ReservedPort {
+    tcp: TcpListener,
+    _udp: UdpSocket,
+}
+impl ReservedPort {
+    fn number(&self) -> u16 {
+        self.tcp.local_addr().unwrap().port()
+    }
+}
+fn port() -> ReservedPort {
+    // The external core cannot inherit our listener. Avoid the OS ephemeral
+    // range, where parallel fixture clients may claim a just-released port.
+    // Reserve both protocols through validation; no retry after core launch.
+    for _ in 0..100 {
+        let number = rand::rng().random_range(20000..30000);
+        if let Ok(tcp) = TcpListener::bind(("127.0.0.1", number)) {
+            if let Ok(udp) = UdpSocket::bind(("127.0.0.1", number)) {
+                return ReservedPort { tcp, _udp: udp };
+            }
+        }
+    }
+    panic!("no isolated fixture port available");
 }
 fn start(binary: &std::path::Path, dir: &std::path::Path, config: &str) -> Core {
     let path = dir.join("isolated.yaml");
     std::fs::write(&path, config).unwrap();
-    crate::runtime::validate_file(binary, dir, &path).unwrap();
-    Core(
-        Command::new(binary)
+    let log = dir.join("isolated-core.log");
+    let output = std::fs::File::create(&log).unwrap();
+    Core {
+        child: Command::new(binary)
             .arg("-d")
             .arg(dir)
             .arg("-f")
             .arg(path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(output.try_clone().unwrap()))
+            .stderr(Stdio::from(output))
             .spawn()
             .unwrap(),
-    )
+        log,
+    }
 }
-async fn request(mixed: u16, web: u16, host: &str) -> bool {
+async fn wait_data_plane_ready(mixed: u16, web: u16) {
+    // Mihomo starts its API/listeners before ApplyConfig reaches OnRunning.
+    // Probe a literal loopback IP only, independent of tested domain rules.
+    // Domain/transaction assertions below are still single attempts.
+    let mut last = None;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let result = request(mixed, web, "127.0.0.1").await;
+            if result == Ok(200) {
+                break;
+            }
+            last = Some(result);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("isolated data plane did not become ready: {last:?}"));
+}
+async fn respond(mut socket: tokio::net::TcpStream, status: u16) -> std::io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut header = Vec::new();
+        while !header.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+            let mut chunk = [0; 1024];
+            let size = socket.read(&mut chunk).await?;
+            if size == 0 || header.len() + size > 8192 {
+                return Err(std::io::Error::other(
+                    "incomplete or oversized fixture header",
+                ));
+            }
+            header.extend_from_slice(&chunk[..size]);
+        }
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status} Fixture\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                )
+                .as_bytes(),
+            )
+            .await?;
+        socket.shutdown().await
+    })
+    .await
+    .map_err(|_| std::io::Error::other("fixture header deadline"))?
+}
+async fn request(mixed: u16, web: u16, host: &str) -> Result<u16, String> {
     reqwest::Client::builder()
         .no_proxy()
         .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{mixed}")).unwrap())
@@ -67,7 +144,55 @@ async fn request(mixed: u16, web: u16, host: &str) -> bool {
         .header("Connection", "close")
         .send()
         .await
-        .is_ok_and(|r| r.status() == 200)
+        .map(|r| r.status().as_u16())
+        .map_err(|error| format!("isolated request: {error:?}"))
+}
+
+#[tokio::test]
+async fn native_http_fixture_waits_for_complete_fragmented_headers() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (server, _) = listener.accept().await.unwrap();
+    let task = tokio::spawn(respond(server, 200));
+    client
+        .write_all(b"GET /fixture HTTP/1.1\r\nHo")
+        .await
+        .unwrap();
+    let mut first = [0];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), client.read_exact(&mut first))
+            .await
+            .is_err()
+    );
+    client
+        .write_all(b"st: fixture\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200 Fixture\r\n"));
+    assert!(response.ends_with(b"\r\n\r\nok"));
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn native_fixture_readiness_requires_http_not_only_open_listener() {
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = proxy.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        for status in [502, 200] {
+            let (client, _) = proxy.accept().await.unwrap();
+            respond(client, status).await.unwrap();
+        }
+    });
+    // The proxy is listening throughout, but cannot forward the first request.
+    wait_data_plane_ready(port, 1).await;
+    task.await.unwrap();
 }
 #[tokio::test]
 async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
@@ -83,24 +208,18 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     let web = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let web_port = web.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
-        while let Ok((mut s, _)) = web.accept().await {
+        while let Ok((s, _)) = web.accept().await {
             tokio::spawn(async move {
-                let mut b = [0; 4096];
-                let _ = s.read(&mut b).await;
-                let _ = s
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-                    )
-                    .await;
+                let _ = respond(s, 200).await;
             });
         }
     });
     let mut settings = crate::models::AppSettings {
-        mixed_port: mixed.local_addr().unwrap().port(),
-        controller_port: control.local_addr().unwrap().port(),
+        mixed_port: mixed.number(),
+        controller_port: control.number(),
         ..Default::default()
     };
-    let source="dns: {enable: false}\nlog-level: silent\nhosts: {route.example.test: 127.0.0.1, sub.route.example.test: 127.0.0.1, deep.sub.route.example.test: 127.0.0.1, fixed.example.test: 127.0.0.1, notroute.example.test: 127.0.0.1}\nproxies: []\nproxy-groups: [{name: Exit, type: select, proxies: [REJECT]}]\nrules: ['MATCH,DIRECT']";
+    let source="dns: {enable: false}\nlog-level: info\nhosts: {route.example.test: 127.0.0.1, sub.route.example.test: 127.0.0.1, deep.sub.route.example.test: 127.0.0.1, fixed.example.test: 127.0.0.1, notroute.example.test: 127.0.0.1}\nproxies: []\nproxy-groups: [{name: Exit, type: select, proxies: [REJECT]}]\nrules: ['MATCH,DIRECT']";
     let base = build_effective_config_with_policy(source, &settings, RoutingMode::Rule, None)
         .unwrap()
         .yaml;
@@ -115,14 +234,22 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     };
     doc.bump(0).unwrap();
     doc.write(&storage).unwrap();
+    let validation = dir.path().join("validated.yaml");
+    std::fs::write(&validation, &base).unwrap();
+    crate::runtime::validate_file(&binary, dir.path(), &validation).unwrap();
+    // Only relinquish ports immediately before the actual listener starts.
     drop(mixed);
     drop(control);
     let mut core = start(&binary, dir.path(), &base);
     let api = MihomoApiClient::new(&settings).unwrap();
     api.wait_ready(Duration::from_secs(5)).await.unwrap();
+    wait_data_plane_ready(settings.mixed_port, web_port).await;
     api.verify_rule_config(&base).await.unwrap();
     assert!(!Document::read(&storage).unwrap().enabled);
-    assert!(request(settings.mixed_port, web_port, "sub.route.example.test").await);
+    assert_eq!(
+        request(settings.mixed_port, web_port, "sub.route.example.test").await,
+        Ok(200)
+    );
     doc.bump(1).unwrap();
     doc.enabled = true;
     doc.applied = Some(doc.draft.clone());
@@ -151,13 +278,14 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
         "fixed.example.test",
     ] {
         assert!(
-            !request(settings.mixed_port, web_port, host).await,
+            request(settings.mixed_port, web_port, host).await != Ok(200),
             "matched {host}"
         );
     }
     for host in ["route.example.test", "notroute.example.test"] {
-        assert!(
+        assert_eq!(
             request(settings.mixed_port, web_port, host).await,
+            Ok(200),
             "unmatched {host}"
         );
     }
@@ -221,15 +349,22 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     .await
     .unwrap();
     assert!(!Document::read(&storage).unwrap().enabled);
-    assert!(request(settings.mixed_port, web_port, "sub.route.example.test").await);
+    assert_eq!(
+        request(settings.mixed_port, web_port, "sub.route.example.test").await,
+        Ok(200)
+    );
     // Persisted disabled state remains disabled after a genuine core restart.
-    core.0.kill().unwrap();
-    core.0.wait().unwrap();
+    core.child.kill().unwrap();
+    core.child.wait().unwrap();
     drop(core);
     let _restarted = start(&binary, dir.path(), &base);
     api.wait_ready(Duration::from_secs(5)).await.unwrap();
+    wait_data_plane_ready(settings.mixed_port, web_port).await;
     api.verify_rule_config(&base).await.unwrap();
-    assert!(request(settings.mixed_port, web_port, "sub.route.example.test").await);
+    assert_eq!(
+        request(settings.mixed_port, web_port, "sub.route.example.test").await,
+        Ok(200)
+    );
     // Missing destination compiles to REJECT, not silent direct; changing the original document is unnecessary.
     settings.domain_routing.enabled = true;
     settings.domain_routing.applied.as_mut().unwrap().target = "missing".into();
@@ -239,7 +374,13 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     transact(Some(&reloader), &missing, &base, || Ok(()), || Ok(()))
         .await
         .unwrap();
-    assert!(!request(settings.mixed_port, web_port, "sub.route.example.test").await);
-    assert!(request(settings.mixed_port, web_port, "route.example.test").await);
+    assert_ne!(
+        request(settings.mixed_port, web_port, "sub.route.example.test").await,
+        Ok(200)
+    );
+    assert_eq!(
+        request(settings.mixed_port, web_port, "route.example.test").await,
+        Ok(200)
+    );
     server.abort();
 }
