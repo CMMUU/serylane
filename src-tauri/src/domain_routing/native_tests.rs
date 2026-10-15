@@ -89,22 +89,25 @@ fn start(binary: &std::path::Path, dir: &std::path::Path, config: &str) -> Core 
         log,
     }
 }
-async fn wait_proxy_ready(port: u16) {
+async fn wait_data_plane_ready(mixed: u16, web: u16) {
+    // Mihomo starts its API/listeners before ApplyConfig reaches OnRunning.
+    // Probe a literal loopback IP only, independent of tested domain rules.
+    // Domain/transaction assertions below are still single attempts.
+    let mut last = None;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_ok()
-            {
+            let result = request(mixed, web, "127.0.0.1").await;
+            if result == Ok(200) {
                 break;
             }
+            last = Some(result);
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("isolated mixed proxy listener did not become ready");
+    .unwrap_or_else(|_| panic!("isolated data plane did not become ready: {last:?}"));
 }
-async fn respond(mut socket: tokio::net::TcpStream) -> std::io::Result<()> {
+async fn respond(mut socket: tokio::net::TcpStream, status: u16) -> std::io::Result<()> {
     tokio::time::timeout(Duration::from_secs(5), async {
         let mut header = Vec::new();
         while !header.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
@@ -118,7 +121,12 @@ async fn respond(mut socket: tokio::net::TcpStream) -> std::io::Result<()> {
             header.extend_from_slice(&chunk[..size]);
         }
         socket
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status} Fixture\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                )
+                .as_bytes(),
+            )
             .await?;
         socket.shutdown().await
     })
@@ -147,7 +155,7 @@ async fn native_http_fixture_waits_for_complete_fragmented_headers() {
         .await
         .unwrap();
     let (server, _) = listener.accept().await.unwrap();
-    let task = tokio::spawn(respond(server));
+    let task = tokio::spawn(respond(server, 200));
     client
         .write_all(b"GET /fixture HTTP/1.1\r\nHo")
         .await
@@ -167,9 +175,24 @@ async fn native_http_fixture_waits_for_complete_fragmented_headers() {
         .await
         .unwrap()
         .unwrap();
-    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 200 Fixture\r\n"));
     assert!(response.ends_with(b"\r\n\r\nok"));
     task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn native_fixture_readiness_requires_http_not_only_open_listener() {
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = proxy.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        for status in [502, 200] {
+            let (client, _) = proxy.accept().await.unwrap();
+            respond(client, status).await.unwrap();
+        }
+    });
+    // The proxy is listening throughout, but cannot forward the first request.
+    wait_data_plane_ready(port, 1).await;
+    task.await.unwrap();
 }
 #[tokio::test]
 async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
@@ -187,7 +210,7 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     let server = tokio::spawn(async move {
         while let Ok((s, _)) = web.accept().await {
             tokio::spawn(async move {
-                let _ = respond(s).await;
+                let _ = respond(s, 200).await;
             });
         }
     });
@@ -220,7 +243,7 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     let mut core = start(&binary, dir.path(), &base);
     let api = MihomoApiClient::new(&settings).unwrap();
     api.wait_ready(Duration::from_secs(5)).await.unwrap();
-    wait_proxy_ready(settings.mixed_port).await;
+    wait_data_plane_ready(settings.mixed_port, web_port).await;
     api.verify_rule_config(&base).await.unwrap();
     assert!(!Document::read(&storage).unwrap().enabled);
     assert_eq!(
@@ -336,7 +359,7 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     drop(core);
     let _restarted = start(&binary, dir.path(), &base);
     api.wait_ready(Duration::from_secs(5)).await.unwrap();
-    wait_proxy_ready(settings.mixed_port).await;
+    wait_data_plane_ready(settings.mixed_port, web_port).await;
     api.verify_rule_config(&base).await.unwrap();
     assert_eq!(
         request(settings.mixed_port, web_port, "sub.route.example.test").await,
