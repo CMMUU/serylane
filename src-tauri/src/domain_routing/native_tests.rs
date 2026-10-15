@@ -5,9 +5,10 @@ use crate::{
     mihomo_api::MihomoApiClient,
     user_rules::{transact, ProfileReloader},
 };
+use rand::Rng;
 use std::{
     cell::Cell,
-    net::TcpListener,
+    net::{TcpListener, UdpSocket},
     path::PathBuf,
     process::{Child, Command, Stdio},
     time::Duration,
@@ -47,13 +48,32 @@ fn binary() -> PathBuf {
         .join("binaries")
         .join(format!("mihomo-{target}{}", std::env::consts::EXE_SUFFIX))
 }
-fn port() -> TcpListener {
-    TcpListener::bind("127.0.0.1:0").unwrap()
+struct ReservedPort {
+    tcp: TcpListener,
+    _udp: UdpSocket,
+}
+impl ReservedPort {
+    fn number(&self) -> u16 {
+        self.tcp.local_addr().unwrap().port()
+    }
+}
+fn port() -> ReservedPort {
+    // The external core cannot inherit our listener. Avoid the OS ephemeral
+    // range, where parallel fixture clients may claim a just-released port.
+    // Reserve both protocols through validation; no retry after core launch.
+    for _ in 0..100 {
+        let number = rand::rng().random_range(20000..30000);
+        if let Ok(tcp) = TcpListener::bind(("127.0.0.1", number)) {
+            if let Ok(udp) = UdpSocket::bind(("127.0.0.1", number)) {
+                return ReservedPort { tcp, _udp: udp };
+            }
+        }
+    }
+    panic!("no isolated fixture port available");
 }
 fn start(binary: &std::path::Path, dir: &std::path::Path, config: &str) -> Core {
     let path = dir.join("isolated.yaml");
     std::fs::write(&path, config).unwrap();
-    crate::runtime::validate_file(binary, dir, &path).unwrap();
     let log = dir.join("isolated-core.log");
     let output = std::fs::File::create(&log).unwrap();
     Core {
@@ -172,11 +192,11 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
         }
     });
     let mut settings = crate::models::AppSettings {
-        mixed_port: mixed.local_addr().unwrap().port(),
-        controller_port: control.local_addr().unwrap().port(),
+        mixed_port: mixed.number(),
+        controller_port: control.number(),
         ..Default::default()
     };
-    let source="dns: {enable: false}\nlog-level: silent\nhosts: {route.example.test: 127.0.0.1, sub.route.example.test: 127.0.0.1, deep.sub.route.example.test: 127.0.0.1, fixed.example.test: 127.0.0.1, notroute.example.test: 127.0.0.1}\nproxies: []\nproxy-groups: [{name: Exit, type: select, proxies: [REJECT]}]\nrules: ['MATCH,DIRECT']";
+    let source="dns: {enable: false}\nlog-level: info\nhosts: {route.example.test: 127.0.0.1, sub.route.example.test: 127.0.0.1, deep.sub.route.example.test: 127.0.0.1, fixed.example.test: 127.0.0.1, notroute.example.test: 127.0.0.1}\nproxies: []\nproxy-groups: [{name: Exit, type: select, proxies: [REJECT]}]\nrules: ['MATCH,DIRECT']";
     let base = build_effective_config_with_policy(source, &settings, RoutingMode::Rule, None)
         .unwrap()
         .yaml;
@@ -191,6 +211,10 @@ async fn native_routing_transaction_load_verify_rollback_restart_and_match() {
     };
     doc.bump(0).unwrap();
     doc.write(&storage).unwrap();
+    let validation = dir.path().join("validated.yaml");
+    std::fs::write(&validation, &base).unwrap();
+    crate::runtime::validate_file(&binary, dir.path(), &validation).unwrap();
+    // Only relinquish ports immediately before the actual listener starts.
     drop(mixed);
     drop(control);
     let mut core = start(&binary, dir.path(), &base);
