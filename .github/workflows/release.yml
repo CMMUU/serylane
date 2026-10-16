@@ -276,10 +276,14 @@ jobs:
       - name: Verify macOS two recent baselines and regression baseline
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/test-macos-updater.sh src-tauri/target/release/bundle/macos/Serylane.app
       - name: Verify Linux two recent baselines and next isolated upgrade
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           archives=(src-tauri/target/release/bundle/appimage/*.AppImage)
           test "${#archives[@]}" = 1
@@ -287,6 +291,8 @@ jobs:
       - name: Verify Windows installers on disposable runner
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./scripts/test-windows-installers.ps1 -Architecture '${{ matrix.artifact == 'windows-arm64' && 'arm64' || 'x64' }}'
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && steps.signed_build.outcome == 'success' }}
