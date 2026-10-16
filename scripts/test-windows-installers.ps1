@@ -246,7 +246,11 @@ function Assert-Shortcuts([string]$executable) {
     }
     if (!$found.Count) { throw 'No Serylane shortcut points to the installed application.' }
 }
-$recentReleases = Invoke-RestMethod -Uri 'https://api.github.com/repos/CMMUU/serylane/releases?per_page=100' -TimeoutSec 60 -MaximumRetryCount 2
+# The shared runner IP can exhaust GitHub's anonymous API limit. Keep the
+# read-only job token scoped to this fixed API request, never package hosts.
+$releaseHeaders = @{ Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
+if ($env:GITHUB_TOKEN) { $releaseHeaders.Authorization = 'Bearer ' + $env:GITHUB_TOKEN }
+$recentReleases = Invoke-RestMethod -Uri 'https://api.github.com/repos/CMMUU/serylane/releases?per_page=100' -Headers $releaseHeaders -MaximumRedirection 0 -TimeoutSec 60 -MaximumRetryCount 2
 $recentVersions = @($recentReleases | Where-Object { !$_.draft -and !$_.prerelease -and $_.tag_name -match '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' } | ForEach-Object { $_.tag_name.Substring(1) } | Where-Object { [version]$_ -lt [version]$version } | Sort-Object -Property { [version]$_ } -Descending -Unique | Select-Object -First 2)
 if ($recentVersions.Count -ne 2) { throw 'Two recent published installer baselines are required.' }
 $base = 'https://github.com/CMMUU/serylane/releases/download/v0.7.6'

@@ -44,6 +44,17 @@ def run(*args, **kwargs):
 def download(url, output):
     run("curl", "--fail", "--location", "--retry", "2", "--connect-timeout", "15", "--max-time", "240", "--silent", "--show-error", url, "--output", output)
 
+def download_release_index(output):
+    # Only this fixed GitHub API request receives the read-only Actions token.
+    # Headers travel over stdin, never argv/logs; do not follow API redirects.
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if "\n" in token or "\r" in token:
+        raise ValueError("invalid GitHub API token format")
+    headers = "Accept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28\n"
+    if token:
+        headers += f"Authorization: Bearer {token}\n"
+    run("curl", "--fail", "--retry", "2", "--connect-timeout", "15", "--max-time", "60", "--silent", "--show-error", "--header", "@-", "https://api.github.com/repos/CMMUU/serylane/releases?per_page=100", "--output", output, input=headers, text=True)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("archive", type=Path)
@@ -59,7 +70,7 @@ def main():
     candidate_version = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text())["version"]
     with tempfile.TemporaryDirectory(prefix="serylane-baseline-list-") as temporary:
         index = Path(temporary) / "releases.json"
-        download("https://api.github.com/repos/CMMUU/serylane/releases?per_page=100", index)
+        download_release_index(index)
         baselines = select_baselines(json.loads(index.read_text()), candidate_version)
     for baseline_version in baselines:
         gate(candidate, key, os_name, baseline_version)
