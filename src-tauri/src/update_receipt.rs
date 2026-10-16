@@ -243,7 +243,7 @@ pub fn summary(app: &AppHandle) -> AppResult<Option<String>> {
         .map(|p| format!(" 备份位置：{p}。"))
         .unwrap_or_default();
     Ok(Some(format!(
-        "上次目标 v{} 尚未确认（{}）。当前为 v{}。{}",
+        "历史安装目标 v{} 的记录：{}。当前运行 v{}；此记录不代表本次下载结果。{}",
         receipt.target,
         detail,
         env!("CARGO_PKG_VERSION"),

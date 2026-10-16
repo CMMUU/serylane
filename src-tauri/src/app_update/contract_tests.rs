@@ -181,6 +181,7 @@ impl Fixture {
 
 pub(super) fn ready_session(candidate: &Candidate, bytes: Vec<u8>) -> Mutex<Session> {
     Mutex::new(Session {
+        source: UpdateSource::Auto,
         status: AppUpdateStatus {
             phase: "ready".into(),
             stage: "verified".into(),
@@ -515,8 +516,16 @@ fn updater_native_windows_installer_child() {
         .canonicalize()
         .unwrap()
         .starts_with(root.parent().unwrap()));
+    let current =
+        std::env::var("SERYLANE_UPDATE_BASELINE_VERSION").unwrap_or_else(|_| "0.7.6".into());
+    parse_version(&current).unwrap();
+    let executable = root.join(if current == "0.7.6" {
+        "routedeck.exe"
+    } else {
+        "serylane.exe"
+    });
     struct WindowsHost {
-        root: PathBuf,
+        executable: PathBuf,
         receipt: PathBuf,
     }
     impl InstallHost for WindowsHost {
@@ -525,7 +534,7 @@ fn updater_native_windows_installer_child() {
             crate::update_receipt::write_at(&self.receipt, target, stage)
         }
         fn preflight(&self, _: &Candidate) -> AppResult<()> {
-            assert!(self.root.join("routedeck.exe").is_file());
+            assert!(self.executable.is_file());
             Ok(())
         }
         fn stop(&self) -> AppResult<()> {
@@ -550,7 +559,7 @@ fn updater_native_windows_installer_child() {
     let f = Fixture::new(
         fs::read(archive).unwrap(),
         env!("CARGO_PKG_VERSION"),
-        &root.join("routedeck.exe"),
+        &executable,
         Some(installer),
     );
     let session = f.session();
@@ -562,9 +571,12 @@ fn updater_native_windows_installer_child() {
     let result = run_install(
         &session,
         &selected,
-        "0.7.6",
+        &current,
         &f.platform,
-        &WindowsHost { root, receipt },
+        &WindowsHost {
+            executable,
+            receipt,
+        },
     );
     panic!("installer did not transfer control: {result:?}");
 }

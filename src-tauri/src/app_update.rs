@@ -17,7 +17,10 @@ use url::Url;
 mod contract_tests;
 #[cfg(all(test, unix))]
 mod native_tests;
+#[cfg(test)]
+mod recovery_tests;
 mod transaction;
+mod transport;
 
 const HK_MANIFEST: &str = "https://downloads.cmmuu.com/api/releases/serylane/latest";
 const HK_RELEASES: &str = "https://files.cmmuu.com/releases/serylane";
@@ -129,11 +132,23 @@ pub struct AppUpdateInfo {
 pub struct UpdateAttempt {
     source: UpdateSource,
     result: String,
+    stage: String,
+    number: u8,
+    elapsed_ms: u64,
+    received_bytes: u64,
+    error_kind: Option<String>,
+    http_status: Option<u16>,
+    detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUpdateStatus {
+    pub task_id: String,
+    pub message: Option<String>,
+    pub attempt: u8,
+    pub max_attempts: u8,
+    pub error_kind: Option<String>,
     pub phase: String,
     pub stage: String,
     pub network_path: String,
@@ -149,6 +164,11 @@ pub struct AppUpdateStatus {
 impl Default for AppUpdateStatus {
     fn default() -> Self {
         Self {
+            task_id: String::new(),
+            message: None,
+            attempt: 0,
+            max_attempts: 2,
+            error_kind: None,
             phase: "idle".into(),
             stage: String::new(),
             network_path: "待确定".into(),
@@ -290,6 +310,7 @@ fn verify_download(candidate: &Candidate, bytes: &[u8]) -> AppResult<()> {
 
 #[derive(Default)]
 struct Session {
+    source: UpdateSource,
     status: AppUpdateStatus,
     candidates: Vec<Candidate>,
     // Only the native, signature-verified download path can populate this.
@@ -361,7 +382,13 @@ impl AppUpdateManager {
             crate::app_log::record(
                 2,
                 crate::app_log::Area::App,
-                &format!("软件更新失败 [{}]：{}", session.status.stage, error),
+                &format!(
+                    "软件更新失败 [{}] task={} kind={}：{}",
+                    session.status.stage,
+                    session.status.task_id,
+                    session.status.error_kind.as_deref().unwrap_or("operation"),
+                    error
+                ),
             );
         }
         error.dto()
@@ -452,6 +479,30 @@ struct ManifestLocation {
 }
 
 fn manifest_location(source: UpdateSource, tag: Option<&str>) -> AppResult<ManifestLocation> {
+    if let Some(tag) = tag {
+        official_release_url(source, tag)?;
+        let version = parse_version(&tag[1..])?;
+        let base = source.release_base()?;
+        let addresses = match source {
+            UpdateSource::Hk => vec![format!("{base}/{tag}/latest-serylane-hk.json")],
+            UpdateSource::Github => vec![
+                format!("{base}/download/{tag}/latest-serylane.json"),
+                format!("{base}/download/{tag}/latest.json"),
+            ],
+            UpdateSource::Gitee => vec![
+                format!("{base}/download/{tag}/latest-serylane-gitee.json"),
+                format!("{base}/download/{tag}/latest-gitee.json"),
+            ],
+            UpdateSource::Auto => return Err(failure("请指定实际发布渠道")),
+        };
+        return Ok(ManifestLocation {
+            endpoints: addresses
+                .iter()
+                .map(|s| Url::parse(s).map_err(|_| failure("更新清单地址无效")))
+                .collect::<AppResult<_>>()?,
+            expected_version: Some(version),
+        });
+    }
     let (addresses, expected_version) = match source {
         UpdateSource::Hk => (vec![HK_MANIFEST.to_owned()], None),
         UpdateSource::Github => (
@@ -489,8 +540,8 @@ async fn gitee_manifest(proxy: Option<&Url>) -> AppResult<ManifestLocation> {
     let mut builder = reqwest::Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(8));
+        .connect_timeout(transport::CONNECT_TIMEOUT)
+        .timeout(transport::METADATA_TIMEOUT);
     if let Some(proxy) = proxy {
         builder = builder
             .proxy(reqwest::Proxy::all(proxy.as_str()).map_err(|_| failure("更新代理无效"))?);
@@ -532,10 +583,11 @@ async fn gitee_manifest(proxy: Option<&Url>) -> AppResult<ManifestLocation> {
     manifest_location(UpdateSource::Gitee, Some(tag))
 }
 
-async fn check_source(
+async fn check_source_at(
     app: &AppHandle,
     source: UpdateSource,
     proxy: Option<&Url>,
+    tag: Option<&str>,
 ) -> AppResult<Candidate> {
     #[cfg(target_os = "linux")]
     if tauri::utils::platform::bundle_type() != Some(tauri::utils::config::BundleType::AppImage)
@@ -546,6 +598,7 @@ async fn check_source(
         ));
     }
     let manifest = match source {
+        _ if tag.is_some() => manifest_location(source, tag)?,
         UpdateSource::Github | UpdateSource::Hk => manifest_location(source, None)?,
         UpdateSource::Gitee => gitee_manifest(proxy).await?,
         UpdateSource::Auto => return Err(failure("请指定实际发布渠道")),
@@ -553,7 +606,7 @@ async fn check_source(
     let platform = UpdatePlatform::native()?;
     let mut builder = app
         .updater_builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(transport::METADATA_TIMEOUT)
         // Inspect equal/older versions to report unpublished local builds, but
         // keep installation strictly newer-only in the native command below.
         .version_comparator(|_, _| true)
@@ -564,26 +617,47 @@ async fn check_source(
         .configure_client(|client| {
             client
                 .https_only(true)
-                .connect_timeout(Duration::from_secs(3))
+                .connect_timeout(transport::CONNECT_TIMEOUT)
         });
     if let Some(proxy) = proxy {
         builder = builder.proxy(proxy.clone());
     }
-    let update = builder
+    let updater = builder
         .build()
-        .map_err(|_| failure("此安装方式不支持内置更新；Linux 请使用 AppImage"))?
-        .check()
+        .map_err(|_| failure("此安装方式不支持内置更新；Linux 请使用 AppImage"))?;
+    let update = tokio::time::timeout(Duration::from_secs(55), updater.check())
         .await
-        .map_err(|e| failure(format!("{} 更新清单不可用：{e}", source.label())))?
+        .map_err(|_| failure("读取更新清单超时，请稍后重试"))?
+        .map_err(|e| {
+            let detail = transport::TransportFailure::from_updater(e);
+            failure(format!(
+                "{} 更新清单读取或验证未完成：{}",
+                source.label(),
+                detail.detail
+            ))
+        })?
         .ok_or_else(|| failure("发布服务没有返回更新清单"))?;
     let candidate = Candidate::from_update(update, source, &platform)?;
     if manifest
         .expected_version
         .is_some_and(|expected| expected != candidate.version)
     {
-        return Err(failure("Gitee 发布标签与更新清单版本不一致"));
+        return Err(failure("所选发布标签与更新清单版本不一致"));
     }
     Ok(candidate)
+}
+
+async fn check_source(
+    app: &AppHandle,
+    source: UpdateSource,
+    proxy: Option<&Url>,
+) -> AppResult<Candidate> {
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        check_source_at(app, source, proxy, None),
+    )
+    .await
+    .map_err(|_| failure("检查更新等待时间已到"))?
 }
 
 fn same_build(a: &Candidate, b: &Candidate) -> bool {
@@ -665,9 +739,11 @@ pub async fn check_app_update(
         *session = Session::default();
         session.status.last_install = last_install;
         session.status.phase = "checking".into();
+        session.status.task_id = uuid::Uuid::new_v4().to_string();
     }
     let result = async {
         let source = AppStorage::from_app(&app)?.settings()?.update_source;
+        state.lock()?.source = source;
         let proxy = proxy_for_update(&app)?;
         let results = match source {
             UpdateSource::Auto => {
@@ -684,9 +760,22 @@ pub async fn check_app_update(
             }
             single => vec![(single, check_source(&app, single, proxy.as_ref()).await)],
         };
+        let task_id = state.lock()?.status.task_id.clone();
         let mut channels = Vec::new();
         let mut candidates = Vec::new();
         for (source, result) in results {
+            crate::app_log::record(
+                if result.is_ok() { 1 } else { 2 },
+                crate::app_log::Area::App,
+                &format!(
+                    "update task={task_id} source={source:?} phase=check result={}",
+                    match &result {
+                        Ok(c) =>
+                            format!("version={} platform={}", c.update.version, c.platform_key),
+                        Err(e) => crate::app_log::sanitize(&e.to_string()),
+                    }
+                ),
+            );
             match result {
                 Ok(candidate) => {
                     channels.push(UpdateChannelStatus {
@@ -768,50 +857,16 @@ pub async fn check_app_update(
     result.map_err(|e| state.finish_error(&e))
 }
 
-async fn download_candidate(candidate: &Candidate, state: &AppUpdateManager) -> AppResult<Vec<u8>> {
-    download_with_transport(candidate, &candidate.update, state).await
-}
-
-// Production always supplies candidate.update. Native tests replace only the
-// transport URL with a loopback server while preserving the signed identity.
+// Test transport injection retains the real plugin signature verification.
+#[cfg(test)]
 async fn download_with_transport(
     candidate: &Candidate,
     transport: &Update,
     state: &AppUpdateManager,
 ) -> AppResult<Vec<u8>> {
-    let oversized = AtomicBool::new(false);
-    let mut received = 0_u64;
-    let download = transport.download(
-        |length, total| {
-            received = received.saturating_add(length as u64);
-            if received > candidate.size || total.is_some_and(|size| size != candidate.size) {
-                oversized.store(true, Ordering::Release);
-            }
-            if let Ok(mut session) = state.lock() {
-                session.status.downloaded_bytes = received;
-            }
-        },
-        || {},
-    );
-    tokio::pin!(download);
-    let bytes = loop {
-        tokio::select! {
-            result = &mut download => break result.map_err(|e| failure(format!("下载或签名校验失败：{e}")))?,
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                if state.cancelled.load(Ordering::Acquire) { return Err(failure("下载已取消")); }
-                if oversized.load(Ordering::Acquire) { return Err(failure("更新包大小与发布清单不符")); }
-            }
-        }
-    };
-    if state.cancelled.load(Ordering::Acquire) {
-        return Err(failure("下载已取消"));
-    }
-    state.lock()?.status.stage = "verify".into();
-    if oversized.load(Ordering::Acquire) {
-        return Err(failure("更新包大小与发布清单不符，请重新下载"));
-    }
-    verify_download(candidate, &bytes)?;
-    Ok(bytes)
+    transport::download_once(candidate, transport, state, transport::Policy::default())
+        .await
+        .map_err(|e| failure(e.message))
 }
 
 #[tauri::command]
@@ -833,64 +888,38 @@ pub async fn download_app_update(
         }
         session.ready = None;
         session.status.retry_install = false;
+        session.status.task_id = uuid::Uuid::new_v4().to_string();
+        session.status.message = None;
+        session.status.error_kind = None;
         session.status.phase = "downloading".into();
         session.status.stage = "download".into();
         session.status.attempts.clear();
         session.status.error = None;
         session.candidates.clone()
     };
-    let mut errors = Vec::new();
-    // Resolve the network path at download time, not at the earlier check.
+    // Resolve once; do not silently change the user's proxy or bypass it.
     let proxy = proxy_for_update(&app).map_err(|e| state.finish_error(&e))?;
-    for mut candidate in candidates {
-        candidate.update.proxy = proxy.clone();
-        {
-            let mut session = state.lock().map_err(|e| e.dto())?;
-            session.status.stage = "download".into();
-            session.status.network_path = if proxy.is_some() {
-                "经 Serylane 当前代理"
-            } else {
-                "当前系统网络（可能受环境代理、VPN 或 TUN 影响）"
-            }
-            .into();
-            session.status.downloaded_bytes = 0;
-            session.status.total_bytes = candidate.size;
-            if let Some(info) = &mut session.status.info {
-                info.source = candidate.source;
-                info.release_url =
-                    official_release_url(candidate.source, &version_tag).map_err(|e| e.dto())?;
-            }
-        }
-        match download_candidate(&candidate, &state).await {
-            Ok(bytes) => {
-                let mut session = state.lock().map_err(|e| e.dto())?;
-                session.status.stage = "verified".into();
-                session.status.attempts.push(UpdateAttempt {
-                    source: candidate.source,
-                    result: "更新签名与 SHA-256 验证通过".into(),
-                });
-                session.status.phase = "ready".into();
-                session.ready = Some((candidate, bytes));
-                return Ok(session.status.clone());
-            }
-            Err(error) => {
-                state
-                    .lock()
-                    .map_err(|e| e.dto())?
-                    .status
-                    .attempts
-                    .push(UpdateAttempt {
-                        source: candidate.source,
-                        result: crate::app_log::sanitize(&error.to_string()),
-                    });
-                errors.push(format!("{}：{error}", candidate.source.label()));
-                if state.cancelled.load(Ordering::Acquire) {
-                    break;
-                }
-            }
-        }
+    let auto = state.lock().map_err(|e| e.dto())?.source == UpdateSource::Auto;
+    state.lock().map_err(|e| e.dto())?.status.network_path = if proxy.is_some() {
+        "经 Serylane 当前代理"
+    } else {
+        "当前系统网络（可能受环境代理、VPN 或 TUN 影响）"
     }
-    Err(state.finish_error(&failure(errors.join("；"))))
+    .into();
+    transport::recover(
+        &state,
+        candidates,
+        auto,
+        transport::Policy::default(),
+        |source| check_source_at(&app, source, proxy.as_ref(), Some(&version_tag)),
+        |candidate| {
+            let mut update = candidate.update.clone();
+            update.proxy = proxy.clone();
+            update
+        },
+    )
+    .await
+    .map_err(|e| state.finish_error(&e))
 }
 
 #[tauri::command]

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.30 - 2026-10-16
+
+- Bound update connection, idle and shared recovery budgets; retry transient failures and rediscover only the frozen version/build on missing mirror sources. Never silently change the user’s network path.
+- Keep certificate/signature/integrity failures closed, preserve structured sanitized attempt diagnostics, separate historical receipts and reject late UI polling.
+- Gate recent two published baselines plus the known regression baseline through isolated signed recovery and native transactions. Keep real GUI/TUN acceptance distinct.
+
 ## 0.7.28 - 2026-10-14
 
 - Bind updates to the validated platform/installer manifest key instead of comparing Tauri's OS-only target with OS-architecture. Revalidate identity, strict newer version and bytes before any disruption.
