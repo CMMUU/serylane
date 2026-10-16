@@ -1309,7 +1309,7 @@ mockIPC(async (command, payload) => {
     }
     const latestVersion = updateScenario === "ahead" ? "v0.1.0" : updateScenario === "current" ? `v${packageInfo.version}` : "v9.0.0";
     const source = updatePreferences.updateSource === "auto" ? "hk" : updatePreferences.updateSource;
-    fixtureUpdate = { phase: updateScenario === "ahead" ? "ahead" : updateScenario === "current" ? "current" : "available", downloadedBytes: 0, totalBytes: 0, error: null,
+    fixtureUpdate = { lastInstall: "历史安装目标 v0.7.27 未完成；与本次下载分开记录。", phase: updateScenario === "ahead" ? "ahead" : updateScenario === "current" ? "current" : "available", downloadedBytes: 0, totalBytes: 0, error: null,
       info: { currentVersion: packageInfo.version, latestVersion, available: !["ahead", "current"].includes(updateScenario), ahead: updateScenario === "ahead", notes: "合成更新说明：演示下载中心优先与确认安装。未访问真实发布服务。", publishedAt: stamp, source,
         releaseUrl: `https://github.com/CMMUU/serylane/releases/tag/${latestVersion}`,
         channels: updatePreferences.updateSource === "auto" ? [{ source: "hk", version: latestVersion, error: null }, { source: "gitee", version: latestVersion, error: null }, { source: "github", version: null, error: "合成 HTTP 403；已使用下载中心" }] : [{ source, version: latestVersion, error: null }],
@@ -1320,6 +1320,18 @@ mockIPC(async (command, payload) => {
     if (!fixtureUpdate.info?.available || fixtureUpdate.info.latestVersion !== args.versionTag) throw new Error("合成版本冲突");
     cancelUpdateDownload = false;
     fixtureUpdate = { ...fixtureUpdate, phase: "downloading", totalBytes: 20 * 1048576, downloadedBytes: 0, error: null };
+    if (["recovery", "cancel-recovery"].includes(updateScenario)) {
+      fixtureUpdate.taskId = "fixture-recovery";
+      fixtureUpdate.networkPath = "经 Serylane 当前代理";
+      fixtureUpdate.stage = "retrying"; fixtureUpdate.message = "连接超时，即将重试下载中心（2/2）";
+      fixtureUpdate.attempts = [{ source: "hk", result: "连接或传输超时", number: 1, stage: "download", elapsedMs: 15000, errorKind: "timeout" }];
+      await new Promise(resolve => window.setTimeout(resolve, 1400));
+      if (cancelUpdateDownload) { fixtureUpdate.phase = "cancelled"; fixtureUpdate.error = "合成下载已取消"; throw new Error(fixtureUpdate.error); }
+      fixtureUpdate.stage = "recovering"; fixtureUpdate.message = "正在重新确认 GitHub 的同版本备用包";
+      await new Promise(resolve => window.setTimeout(resolve, 1400));
+      if (cancelUpdateDownload) { fixtureUpdate.phase = "cancelled"; fixtureUpdate.error = "合成下载已取消"; throw new Error(fixtureUpdate.error); }
+      fixtureUpdate.info!.source = "github"; fixtureUpdate.info!.channels = [{ source: "github", version: fixtureUpdate.info!.latestVersion, error: null }]; fixtureUpdate.stage = "download"; fixtureUpdate.message = "正在从 GitHub 下载（第 1/2 次）";
+    }
     for (let step = 1; step <= 8; step++) {
       await new Promise((resolve) => window.setTimeout(resolve, 180));
       if (cancelUpdateDownload) { fixtureUpdate.phase = "cancelled"; fixtureUpdate.error = "合成下载已取消"; throw new Error(fixtureUpdate.error); }

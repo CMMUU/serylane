@@ -23,7 +23,7 @@ import { sessionResumePresentation, canStopSession, startupModeFromSettings, sta
 import { canStartRuntime, startRuntimeInMode, type RuntimeStartMode } from "./runtime-start";
 import { prepareTunForStart } from "./tun-preflight";
 import { api, errorMessage, revisionLabel } from "./api";
-import { describeAppUpdate, updateSourceLabel } from "./app-update";
+import { describeAppUpdate, updateSourceLabel, shouldAcceptUpdatePoll } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { mountRuleManager, ruleManagerMarkup } from "./rule-manager";
 import { mountDomainRouting, domainRoutingMarkup } from "./domain-routing";
@@ -1107,10 +1107,10 @@ function renderAppUpdate() {
   $("#app-update-network-path")!.textContent = appUpdateStatus.networkPath && appUpdateStatus.networkPath !== "待确定" ? `网络路径：${appUpdateStatus.networkPath}` : "";
   const lastInstall = $("#app-update-last-install")!;
   lastInstall.textContent = appUpdateStatus.lastInstall ?? "";
-  lastInstall.hidden = !lastInstall.textContent;
+  $("#app-update-history")!.hidden = !lastInstall.textContent;
   const attempts = $("#app-update-attempts")!;
   attempts.replaceChildren(...(appUpdateStatus.attempts ?? []).map(attempt => {
-    const item = document.createElement("li"); item.textContent = `${updateSourceLabel(attempt.source)}：${attempt.result}`; return item;
+    const item = document.createElement("li"); item.textContent = `${updateSourceLabel(attempt.source)}${attempt.number ? ` · 第 ${attempt.number} 次` : ""}：${attempt.result}${attempt.elapsedMs != null ? ` · ${(attempt.elapsedMs / 1000).toFixed(1)} 秒` : ""}`; return item;
   }));
   attempts.hidden = !attempts.childElementCount;
   $("#app-update-install")!.textContent = presentation.installLabel;
@@ -1210,7 +1210,7 @@ async function downloadAppUpdate() {
     try {
       const status = await api.appUpdateStatus();
       // A late polling reply must not overwrite a completed command response.
-      if (operationId === appUpdateOperationId && appUpdateActionBusy && appUpdateStatus.phase === "downloading" && status.phase === "downloading") acceptAppUpdate(status);
+      if (shouldAcceptUpdatePoll(appUpdateStatus, status, operationId, appUpdateOperationId, appUpdateActionBusy)) acceptAppUpdate(status);
     } catch { /* The command below reports the final native error. */ }
     finally { appUpdatePollBusy = false; }
   }, 400);

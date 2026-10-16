@@ -178,9 +178,31 @@ impl InstallHost for NativeFixtureHost {
 }
 fn execute(host: &NativeFixtureHost, bytes: Vec<u8>) -> AppResult<()> {
     let f = Fixture::new(bytes, &host.target, &executable(&host.root), None);
-    let session = f.session();
-    let selected = select_install(&mut session.lock().unwrap(), &format!("v{}", host.target))?;
-    run_install(&session, &selected, &host.current, &f.platform, host)
+    let manager = AppUpdateManager {
+        session: Arc::new(contract_tests::ready_session(&f.candidate, Vec::new())),
+        ..Default::default()
+    };
+    {
+        let mut session = manager.lock()?;
+        session.ready = None;
+        session.status.phase = "downloading".into();
+    }
+    tauri::async_runtime::block_on(transport::recover(
+        &manager,
+        vec![f.candidate.clone()],
+        false,
+        transport::Policy::default(),
+        |_| async { Err(failure("unexpected fixture discovery")) },
+        |_| f.transport.clone(),
+    ))?;
+    let selected = select_install(&mut *manager.lock()?, &format!("v{}", host.target))?;
+    run_install(
+        &manager.session,
+        &selected,
+        &host.current,
+        &f.platform,
+        host,
+    )
 }
 #[test]
 fn updater_native_product_chain_signed_download_replacement_confirmation_and_next_upgrade() {

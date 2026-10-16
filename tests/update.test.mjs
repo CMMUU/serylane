@@ -10,7 +10,7 @@ import { root, verifyVersions, setVersion, verifyReleaseReady } from "../scripts
 
 const source = readFileSync(new URL("../src/app-update.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { describeAppUpdate, updateSourceLabel } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const { describeAppUpdate, updateSourceLabel, shouldAcceptUpdatePoll } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 const status = (phase, available = true) => ({ phase, info: { available, source: "gitee", latestVersion: "v1.0.0" }, downloadedBytes: 50, totalBytes: 100, error: "HTTP 403" });
 
 test("installation only becomes available after native verification of a newer release", () => {
@@ -196,4 +196,23 @@ test("release gates execute the shared product coordinator and a new-process pro
   assert.match(native, /--serylane-update-probe/);
   assert.match(windows, /updater_native_windows_installer_child/);
   assert.match(workflow, /test-native-updater.py/);
+});
+
+
+test("download recovery distinguishes retries, sources and history without enabling install", () => {
+  for (const stage of ["retrying", "recovering"]) {
+    const view = describeAppUpdate({ ...status("downloading"), stage, message: "正在确认同版本备用包", networkPath: "经 Serylane 当前代理" });
+    assert.equal(view.label, "正在确认同版本备用包");
+    assert.match(view.detail, /经 Serylane 当前代理/);
+    assert.equal(view.canInstall, false); assert.equal(view.canDownload, false); assert.equal(view.busy, true);
+  }
+  const source = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
+  assert.match(source, /历史安装记录（与本次下载分开）/);
+  assert.match(source, /id="app-update-history" hidden/);
+});
+test("late download polling never reopens completed or cancelled update tasks", () => {
+  assert.equal(shouldAcceptUpdatePoll(status("downloading"), status("downloading"), 3, 3, true), true);
+  for (const phase of ["ready", "failed", "cancelled", "installing"]) assert.equal(shouldAcceptUpdatePoll(status(phase), status("downloading"), 3, 3, true), false);
+  assert.equal(shouldAcceptUpdatePoll(status("downloading"), status("downloading"), 2, 3, true), false);
+  assert.equal(shouldAcceptUpdatePoll(status("downloading"), status("downloading"), 3, 3, false), false);
 });

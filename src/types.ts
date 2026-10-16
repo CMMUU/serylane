@@ -404,10 +404,15 @@ export type AppUpdateInfo = {
 };
 
 export type AppUpdateStatus = {
+  taskId?: string;
+  message?: string | null;
+  attempt?: number;
+  maxAttempts?: number;
+  errorKind?: string | null;
   retryInstall?: boolean;
   stage?: string;
   networkPath?: string;
-  attempts?: Array<{source: Exclude<UpdateSource, "auto">; result: string}>;
+  attempts?: Array<{source: Exclude<UpdateSource, "auto">; result: string; stage?: string; number?: number; elapsedMs?: number; receivedBytes?: number; errorKind?: string | null; httpStatus?: number | null; detail?: string | null}>;
   lastInstall?: string | null;
   phase: "idle" | "checking" | "current" | "ahead" | "available" | "downloading" | "ready" | "installing" | "cancelled" | "failed";
   info: AppUpdateInfo | null;

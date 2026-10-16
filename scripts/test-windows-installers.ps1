@@ -246,6 +246,9 @@ function Assert-Shortcuts([string]$executable) {
     }
     if (!$found.Count) { throw 'No Serylane shortcut points to the installed application.' }
 }
+$recentReleases = Invoke-RestMethod -Uri 'https://api.github.com/repos/CMMUU/serylane/releases?per_page=100' -TimeoutSec 60 -MaximumRetryCount 2
+$recentVersions = @($recentReleases | Where-Object { !$_.draft -and !$_.prerelease -and $_.tag_name -match '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' } | ForEach-Object { $_.tag_name.Substring(1) } | Where-Object { [version]$_ -lt [version]$version } | Sort-Object -Property { [version]$_ } -Descending -Unique | Select-Object -First 2)
+if ($recentVersions.Count -ne 2) { throw 'Two recent published installer baselines are required.' }
 $base = 'https://github.com/CMMUU/serylane/releases/download/v0.7.6'
 $hashes = (Invoke-WebRequest -Uri "$base/SHA256SUMS.txt").Content
 if ($hashes -is [byte[]]) { $hashes = [Text.Encoding]::UTF8.GetString($hashes) }
@@ -260,7 +263,23 @@ foreach ($kind in @('nsis','msi')) {
     }
     $current = Join-Path $repo "src-tauri/target/release/bundle/$kind/Serylane_${version}_$suffix"
     if (!(Test-Path -LiteralPath $current)) { throw 'Expected signed build installer is missing.' }
-    foreach ($scenario in @('fresh','upgrade','upgrade-login','upgrade-login-disabled','upgrade-login-legacy-settings','upgrade-in-app')) {
+    $recentPackages = @{}
+    foreach ($recent in $recentVersions) {
+        $recentBase = "https://github.com/CMMUU/serylane/releases/download/v$recent"
+        $manifest = Invoke-RestMethod -Uri "$recentBase/latest-serylane.json" -TimeoutSec 60 -MaximumRetryCount 2
+        $platformArch = if ($Architecture -eq 'arm64') { 'aarch64' } else { 'x86_64' }
+        $entry = $manifest.platforms.PSObject.Properties["windows-$platformArch-$kind"].Value
+        $name = "Serylane_${recent}_$suffix"
+        if ($manifest.version -ne $recent -or $entry.url -ne "$recentBase/$name") { throw 'Recent installer identity mismatch.' }
+        $package = Join-Path $testRoot $name
+        Invoke-WebRequest -Uri $entry.url -OutFile $package -TimeoutSec 240 -MaximumRetryCount 2
+        if ((Get-Item -LiteralPath $package).Length -ne $entry.size -or (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash -ne $entry.sha256) { throw 'Recent installer size or digest mismatch.' }
+        [IO.File]::WriteAllText("$package.sig", $entry.signature)
+        & node (Join-Path $repo 'scripts/verify-update-signature.mjs') (Join-Path $repo 'src-tauri/tauri.conf.json') $package "$package.sig"
+        if ($LASTEXITCODE -ne 0) { throw 'Recent installer signature mismatch.' }
+        $recentPackages[$recent] = $package
+    }
+    foreach ($scenario in (@('fresh','upgrade','upgrade-login','upgrade-login-disabled','upgrade-login-legacy-settings','upgrade-in-app') + @($recentVersions | ForEach-Object { "recent-$_" }))) {
         Reset-FixtureInstallLocations
         $approval = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', $true)
         if ($approval) {
@@ -273,8 +292,16 @@ foreach ($kind in @('nsis','msi')) {
         Write-Fixture $login ($scenario -eq 'upgrade-login-legacy-settings')
         $settingsBefore = (Get-FileHash -LiteralPath (Join-Path $dataRoot 'settings.json')).Hash
         if ($scenario -ne 'fresh') {
-            Install-Package $legacy $directory
-            if (!(Test-Path -LiteralPath (Join-Path $directory 'routedeck.exe'))) { throw 'Baseline installation not found at requested directory.' }
+            $recent = if ($scenario.StartsWith('recent-')) { $scenario.Substring(7) } else { $null }
+            $baselinePackage = if ($recent) { $recentPackages[$recent] } else { $legacy }
+            Install-Package $baselinePackage $directory
+            $baselineName = if ($recent) { 'serylane.exe' } else { 'routedeck.exe' }
+            if (!(Test-Path -LiteralPath (Join-Path $directory $baselineName))) { throw 'Baseline installation not found at requested directory.' }
+            if ($recent) {
+                $oldProbe = Join-Path $testRoot "$kind-$recent-old.json"
+                $oldProcess = Start-Process -FilePath (Join-Path $directory 'serylane.exe') -ArgumentList '--serylane-update-probe' -RedirectStandardOutput $oldProbe -Wait -PassThru
+                if ($oldProcess.ExitCode -ne 0 -or (Get-Content -LiteralPath $oldProbe -Raw | ConvertFrom-Json).version -ne $recent) { throw 'Old published process identity mismatch.' }
+            }
             if ($login) {
                 if (!(Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey | Out-Null }
                 # Real auto-launch 0.5 legacy serialization: unquoted path, no args, trailing space.
@@ -286,7 +313,8 @@ foreach ($kind in @('nsis','msi')) {
                 }
             }
         }
-        if ($scenario -eq 'upgrade-in-app') {
+        if ($scenario -eq 'upgrade-in-app' -or $scenario.StartsWith('recent-')) {
+            $env:SERYLANE_UPDATE_BASELINE_VERSION = if ($scenario.StartsWith('recent-')) { $scenario.Substring(7) } else { '0.7.6' }
             $env:SERYLANE_UPDATE_INSTALL_DIR = $directory
             $env:SERYLANE_UPDATE_ARCHIVE = $current
             $env:SERYLANE_UPDATE_RECEIPT = Join-Path $testRoot "$kind-update-receipt.json"
@@ -315,7 +343,7 @@ foreach ($kind in @('nsis','msi')) {
                 if ($identity.version -ne $version -or $identity.identifier -ne 'com.cmmuu.mihomodesktop') { throw 'New process did not confirm the expected version.' }
                 Write-Host "PASS: product check/download/signature/preflight/installer/new-process $kind $Architecture."
             } finally {
-                Remove-Item Env:SERYLANE_UPDATE_INSTALL_DIR,Env:SERYLANE_UPDATE_ARCHIVE,Env:SERYLANE_UPDATE_RECEIPT -ErrorAction SilentlyContinue
+                Remove-Item Env:SERYLANE_UPDATE_INSTALL_DIR,Env:SERYLANE_UPDATE_ARCHIVE,Env:SERYLANE_UPDATE_RECEIPT,Env:SERYLANE_UPDATE_BASELINE_VERSION -ErrorAction SilentlyContinue
             }
         } else {
             Install-Package $current $directory
