@@ -356,34 +356,42 @@ pub fn restore_system_proxy(app: &AppHandle) -> AppResult<SystemProxyStatus> {
 }
 
 pub fn status(app: &AppHandle) -> SystemProxyStatus {
-    let path = snapshot_path(app).ok();
-    #[cfg(not(windows))]
-    let active = path.as_ref().is_some_and(|value| value.exists())
-        && (|| -> AppResult<bool> {
-            let port = crate::storage::AppStorage::from_app(app)?
-                .settings()?
-                .mixed_port;
-            Ok(proxy_matches_port(&capture_system_proxy()?, port))
-        })()
-        .unwrap_or(false);
-    #[cfg(windows)]
-    let active = (|| -> Option<bool> {
-        let saved: WindowsProxyLease =
-            serde_json::from_slice(&fs::read(path.as_ref()?).ok()?).ok()?;
-        let current = capture_system_proxy().ok()?;
-        let port = crate::storage::AppStorage::from_app(app)
-            .ok()?
-            .settings()
-            .ok()?
-            .mixed_port;
-        Some(saved.owns(&current, port))
-    })()
-    .unwrap_or(false);
-    SystemProxyStatus {
-        active,
-        snapshot_path: path.map(|value| value.display().to_string()),
+    checked_status(app).unwrap_or_else(|_| SystemProxyStatus {
+        active: false,
+        snapshot_path: snapshot_path(app).ok().map(|p| p.display().to_string()),
         platform: std::env::consts::OS.to_string(),
-    }
+    })
+}
+
+/// UI callers receive an error, never a fabricated "proxy off" snapshot.
+/// Ownership checks still read the OS directly, with no cached authorization.
+pub fn checked_status(app: &AppHandle) -> AppResult<SystemProxyStatus> {
+    let path = snapshot_path(app)?;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let _deadline = CommandDeadline::new(std::time::Duration::from_secs(2));
+    let active = if !path.exists() {
+        false
+    } else {
+        let port = crate::storage::AppStorage::from_app(app)?
+            .settings()?
+            .mixed_port;
+        let current = capture_system_proxy()?;
+        #[cfg(windows)]
+        {
+            let saved: WindowsProxyLease = serde_json::from_slice(&fs::read(&path)?)
+                .map_err(|e| AppError::Platform(e.to_string()))?;
+            saved.owns(&current, port)
+        }
+        #[cfg(not(windows))]
+        {
+            proxy_matches_port(&current, port)
+        }
+    };
+    Ok(SystemProxyStatus {
+        active,
+        snapshot_path: Some(path.display().to_string()),
+        platform: std::env::consts::OS.to_string(),
+    })
 }
 
 fn snapshot_path(app: &AppHandle) -> AppResult<PathBuf> {
@@ -1092,19 +1100,90 @@ fn windows_refresh_proxy() -> AppResult<()> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn run_command(program: &str, args: &[&str]) -> AppResult<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|error| AppError::Platform(format!("{program}: {error}")))?;
-    if !output.status.success() {
-        return Err(AppError::Platform(format!(
-            "{} {}",
-            program,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+thread_local! {
+    static COMMAND_DEADLINE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+struct CommandDeadline(Option<std::time::Instant>);
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl CommandDeadline {
+    fn new(budget: std::time::Duration) -> Self {
+        Self(COMMAND_DEADLINE.with(|d| d.replace(Some(std::time::Instant::now() + budget))))
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Drop for CommandDeadline {
+    fn drop(&mut self) {
+        COMMAND_DEADLINE.with(|d| d.set(self.0));
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn run_command(program: &str, args: &[&str]) -> AppResult<String> {
+    use std::io::{Read, Seek};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let deadline = COMMAND_DEADLINE
+        .with(|d| d.get())
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(10));
+    if Instant::now() >= deadline {
+        return Err(AppError::Platform("系统状态读取超时，请稍后刷新".into()));
+    }
+    // Files avoid pipe deadlock, including when an OS tool leaves a descendant
+    // holding stdout. Output returned to callers is capped and never logged.
+    let mut stdout = tempfile::tempfile()?;
+    let mut stderr = tempfile::tempfile()?;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?)
+        .spawn()
+        .map_err(|e| AppError::Platform(format!("{program}: {e}")))?;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Platform(match result {
+                    Err(error) => format!("{program}: {error}"),
+                    _ => "系统命令超时，已停止等待；请刷新核对当前状态".into(),
+                }));
+            }
+        }
+    };
+    stdout.rewind()?;
+    stderr.rewind()?;
+    let mut output = String::new();
+    if status.success() {
+        stdout.take(65536).read_to_string(&mut output)?;
+    } else {
+        stderr.take(4096).read_to_string(&mut output)?;
+        return Err(AppError::Platform(format!("{program} {}", output.trim())));
+    }
+    Ok(output)
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod command_deadline_tests {
+    use super::*;
+    #[test]
+    fn command_timeout_kills_and_reaps_child() {
+        let _deadline = CommandDeadline::new(std::time::Duration::from_millis(40));
+        let start = std::time::Instant::now();
+        assert!(run_command("/bin/sleep", &["5"]).is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+    #[test]
+    fn deadline_restored_and_success_output_preserved() {
+        {
+            let _deadline = CommandDeadline::new(std::time::Duration::ZERO);
+            assert!(run_command("/bin/echo", &["fixture"]).is_err());
+        }
+        assert_eq!(run_command("/bin/echo", &["fixture"]).unwrap(), "fixture\n");
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

@@ -141,7 +141,7 @@ export const ruleManagerMarkup = `
   </section>
   <section id="effective-rules-panel" class="rules-tab-panel is-hidden" role="tabpanel" aria-labelledby="effective-rules-tab" hidden>
     <div class="rule-effective-toolbar"><p class="hint">这里展示运行核心当前加载的规则；本地草稿需保存后才会进入该列表。</p><div class="toolbar"><input id="rule-search" aria-label="搜索生效规则" placeholder="搜索规则" /><button type="button" class="button button-quiet" id="rules-refresh">刷新生效规则</button></div></div>
-    <div class="table-wrap"><table><thead><tr><th>类型</th><th>内容</th><th>策略</th></tr></thead><tbody id="rules-body"><tr><td colspan="3">启动后加载规则</td></tr></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>内容</th><th>策略</th></tr></thead><tbody id="rules-body"><tr><td colspan="3">启动后加载规则</td></tr></tbody></table></div><button id="rules-more" type="button" class="button button-quiet" hidden>显示更多</button>
   </section>
   <div id="user-rules-validation" class="rule-validation is-hidden" role="status" aria-live="polite"></div>
   <div class="user-rules-actions"><div class="toolbar"><button type="button" class="button" id="user-rules-validate">校验草稿</button><button type="button" class="button button-primary" id="user-rules-save" disabled>保存并应用</button><button type="button" class="button button-quiet" id="user-rules-undo" disabled>撤销草稿</button></div><span id="user-rules-save-hint">校验通过后可保存</span></div>

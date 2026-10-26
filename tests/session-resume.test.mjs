@@ -123,17 +123,17 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
     }, {
       get: (target, key) => target[key] ?? (async () => null),
     }),
-    invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
+    invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
     renderSettings: noop, renderManualMode: noop, renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
   };
   const main = read("src/main.ts");
-  const code = main.slice(main.indexOf("async function refreshBase()"), main.indexOf("function renderHeader()"));
+  const code = main.slice(main.indexOf("async function performBaseRead()"), main.indexOf("function renderHeader()"));
   vm.createContext(context);
   vm.runInContext(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
-  const old = context.refreshBase();
+  const old = context.performBaseRead();
   // Simulate a background quota event while the older full-page read is pending.
   context.store.subscriptions = [subscription(newQuota)];
-  assert.equal(await context.refreshBase(), true);
+  assert.equal(await context.performBaseRead(), true);
   assert.equal(context.store.subscriptions[0].status, newQuota);
   finishFirst({ networkMode: "manual" });
   assert.equal(await old, false);

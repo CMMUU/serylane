@@ -53,6 +53,7 @@ function controllerFixture(names) {
   const context = {
     store: { view: "proxies", activeProfile: { profile }, runtime: { phase: "running", pid: 1 }, manualOutbound: {mode:"ai",revision:"m1"}, proxies: { proxies: map, modeRevision: "m1" }, openAiTask: null },
     manualModeSwitching: false, nodeSelectionBusy: false, proxyReadSequence: 0, runtimeMutationRevision: 0, overviewNodeDetails: {}, proxyReadError: "", OPENAI_GROUP_NAME: OPENAI_GROUP,
+    pageContext: () => "fixture",
     confirmAction: async () => true,
     api: {
       selectProxy: async (...args) => calls.push(["select", ...args]),
@@ -95,19 +96,19 @@ test("a profile switch during confirmation prevents writing to the new profile",
 });
 test("late node reads never revive stopped or switched-profile state", async () => {
   for (const mutation of [c => { c.store.runtime = { phase: "stopped", pid: null }; }, c => { c.store.activeProfile = { profile: { id: "other", activeRevisionId: "r2" } }; }]) {
-    const { context: c } = controllerFixture(["refreshProxies"]);
+    const { context: c } = controllerFixture(["performProxyRead"]);
     let finish;
     c.api.proxies = () => new Promise(resolve => { finish = resolve; });
-    const pending = c.refreshProxies(true);
+    const pending = c.performProxyRead(true, "fixture");
     mutation(c); c.store.proxies = null;
     finish({ profileId: "one", revisionId: "r1", modeRevision: "m1", proxies: map }); await pending;
     assert.equal(c.store.proxies, null);
   }
 });
 test("mismatched node snapshot context clears stale details and exposes the read failure", async () => {
-  const { context: c } = controllerFixture(["refreshProxies"]);
+  const { context: c } = controllerFixture(["performProxyRead"]);
   c.api.proxies = async () => ({ profileId: "one", revisionId: "old", modeRevision: "m1", proxies: map });
-  await c.refreshProxies(true);
+  await c.performProxyRead(true, "fixture");
   assert.equal(c.store.proxies, null); assert.match(c.proxyReadError, /不一致/);
   assert.equal(Object.keys(c.overviewNodeDetails).length, 0);
 });

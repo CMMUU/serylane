@@ -12,6 +12,7 @@ export function filterLogs(entries: Entry[], level: string, query: string) {
 
 export function mountLogs(root: HTMLElement, context: {
   api: { applicationLogs(): Promise<ApplicationLogSnapshot>; logs(limit: number): Promise<RuntimeLog[]>; clearApplicationLogs(): Promise<void>; clearLogs(): Promise<void> };
+  visible?: () => boolean;
   confirm(options: { title: string; message: string; confirmLabel?: string; returnFocus?: HTMLElement | null }): Promise<boolean>;
 }) {
   root.innerHTML = `<article class="panel application-logs-panel">
@@ -35,6 +36,7 @@ export function mountLogs(root: HTMLElement, context: {
   let warning = "";
   let retention: { hours: number; maxBytes: number } | null = null;
   const render = () => {
+    if (context.visible && !context.visible()) return;
     const filtered = filterLogs(entries, level.value, query.value);
     const fragment = document.createDocumentFragment();
     for (const entry of filtered.slice(0, limit)) {
@@ -63,6 +65,8 @@ export function mountLogs(root: HTMLElement, context: {
   };
   const refresh = async () => {
     if (busy) return;
+    const refreshButton = get<HTMLButtonElement>('#logs-refresh');
+    refreshButton.disabled = true; refreshButton.textContent = '正在刷新…';
     const requested = ++revision;
     const selected = source.value;
     busy = true;
@@ -75,7 +79,7 @@ export function mountLogs(root: HTMLElement, context: {
       render();
     } catch {
       if (requested === revision) { warning = "日志读取失败，请点击刷新重试；未更改代理状态。"; render(); }
-    } finally { if (requested === revision) busy = false; }
+    } finally { if (requested === revision) { busy = false; refreshButton.disabled = false; refreshButton.textContent = '刷新'; } }
   };
   source.addEventListener("change", () => {
     revision++; busy = false; entries = []; limit = 200; warning = ""; render(); void refresh();

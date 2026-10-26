@@ -18,7 +18,7 @@ export const manualOutboundMarkup = `<article class="panel manual-outbound-panel
   </fieldset>
 </article>`;
 
-export function nodeGridMarkup(group: string, map: ProxyMap, query: string, sort: string, busy: boolean, results: NodeTestResult[] = [], testing = false): string {
+export function nodeGridMarkup(group: string, map: ProxyMap, query: string, sort: string, busy: boolean, results: NodeTestResult[] = [], testing = false, limit = 200): string {
   const value = map[group] ?? {};
   const selectable = ['Selector', 'Fallback', 'URLTest'].includes(value.type ?? '');
   const measured = new Map(results.map(n => [n.name, n]));
@@ -27,17 +27,18 @@ export function nodeGridMarkup(group: string, map: ProxyMap, query: string, sort
   if (sort === 'name') nodes.sort((a,b) => a.localeCompare(b));
   if (sort === 'delay') nodes.sort((a,b) => (delay(a) ?? Infinity) - (delay(b) ?? Infinity));
   const label = (name: string) => { const n = measured.get(name); return n ? ({pending: '未测试', testing: '测试中…', passed: `${n.delayMs} ms`, timeout: '超时', failed: '测试失败', unavailable: '暂未测得'})[n.state] : delay(name) === null ? '测速' : `${delay(name)} ms`; };
-  return `<div class="manual-node-list" role="group" aria-label="${escape(group)} 节点">${nodes.map(name => `<div class="manual-node${value.now === name ? ' is-selected' : ''}"><button type="button" data-node-choice="${escape(name)}" data-node-group="${escape(group)}" aria-pressed="${value.now === name}" ${busy || !selectable ? 'disabled' : ''}><strong>${escape(name)}</strong><small>${escape(map[name]?.type ?? '节点')} · ${value.now === name ? '当前选中' : '候选'}</small></button><button type="button" class="proxy-delay node-latency" data-proxy="${escape(name)}" aria-label="测试 ${escape(name)} 延迟" ${busy || testing ? 'disabled' : ''}>${escape(label(name))}</button></div>`).join('') || '<p class="empty-state">没有匹配节点。</p>'}</div>`;
+  return `<div class="manual-node-list" role="group" aria-label="${escape(group)} 节点">${nodes.slice(0, limit).map(name => `<div data-render-key="${escape(name)}" class="manual-node${value.now === name ? ' is-selected' : ''}"><button type="button" data-node-choice="${escape(name)}" data-node-group="${escape(group)}" aria-pressed="${value.now === name}" ${busy || !selectable ? 'disabled' : ''}><strong>${escape(name)}</strong><small>${escape(map[name]?.type ?? '节点')} · ${value.now === name ? '当前选中' : '候选'}</small></button><button type="button" class="proxy-delay node-latency" data-proxy="${escape(name)}" aria-label="测试 ${escape(name)} 延迟" ${busy || testing ? 'disabled' : ''}>${escape(label(name))}</button></div>`).join('') || '<p class="empty-state">没有匹配节点。</p>'}</div>${nodes.length > limit ? `<button type="button" class="button button-quiet" data-node-more="${escape(group)}">显示更多（${limit}/${nodes.length}）</button>` : ''}`;
 }
 
 export function mountManualOutbound(root: HTMLElement, options: {
   read(): Promise<ManualOutboundState>;
+  refreshAll?: () => Promise<void>;
   write(mode: ProxyMode, expectedRevision: string): Promise<ManualOutboundState>;
   confirm(input: {title: string; message: string; confirmLabel: string}): Promise<boolean>;
   changed(state: ManualOutboundState): Promise<void>;
   error(error: unknown): string;
 }) {
-  let state: ManualOutboundState | null = null, busy = false, readVersion = 0;
+  let state: ManualOutboundState | null = null, busy = false, reading = false, readVersion = 0;
   const el = <T extends HTMLElement>(id: string) => root.querySelector<T>(`#${id}`)!;
   const message = (text: string) => { el('manual-result').textContent = text; };
   function accept(next: ManualOutboundState) {
@@ -46,11 +47,15 @@ export function mountManualOutbound(root: HTMLElement, options: {
     el<HTMLButtonElement>('manual-apply').disabled = busy || next.mode === 'manual' && !next.legacySelection;
     el<HTMLFieldSetElement>('manual-controls').disabled = busy || next.mode !== 'manual' || next.legacySelection;
   }
-  async function refresh() {
-    if (busy) return;
+  async function refresh(all = false) {
+    if (busy || reading) return;
+    reading = true;
+    const refreshButton = el<HTMLButtonElement>('manual-refresh');
+    refreshButton.disabled = true; refreshButton.textContent = '正在刷新…';
     const version = ++readVersion;
-    try { const next = await options.read(); if (version === readVersion && !busy) { accept(next); message(''); } }
+    try { const next = await options.read(); if (version === readVersion && !busy) { accept(next); message(''); } if (all) await options.refreshAll?.(); }
     catch (error) { if (version === readVersion) message(options.error(error)); }
+    finally { reading = false; refreshButton.disabled = busy; refreshButton.textContent = '刷新'; }
   }
   async function apply(mode: ProxyMode) {
     if (busy || !state) return;
@@ -66,7 +71,7 @@ export function mountManualOutbound(root: HTMLElement, options: {
     } catch (error) { message(options.error(error)); }
     finally { busy = false; el<HTMLButtonElement>('manual-refresh').disabled = false; if (state) accept(state); }
   }
-  el('manual-refresh').addEventListener('click', () => void refresh());
+  el('manual-refresh').addEventListener('click', () => void refresh(true));
   el('manual-apply').addEventListener('click', () => void apply('manual'));
   return { refresh, accept: (next: ManualOutboundState) => { if (!busy) accept(next); }, enableAi: () => apply('ai') };
 }
