@@ -408,6 +408,7 @@ pub struct SubscriptionObservation {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SubscriptionStatus {
+    pub legacy_last_error: Option<String>,
     // Legacy fields stay readable by previous clients; new clients use independent channels.
     pub config: Option<SubscriptionObservation>,
     pub quota: Option<SubscriptionObservation>,

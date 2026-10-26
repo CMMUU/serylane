@@ -293,3 +293,9 @@ test("quota failure is not labelled a failed configuration refresh; both can be 
   let html=subscriptionCardMarkup(record,null,now);assert.match(html,/用量信息暂未更新/);assert.doesNotMatch(html,/订阅配置更新未完成|刷新失败/);
   record.status.config={checkedAt:"2026-10-26T01:00:00Z",lastError:"配置更新超时"};html=subscriptionCardMarkup(record,null,now);assert.match(html,/用量信息暂未更新/);assert.match(html,/订阅配置更新未完成/);
 });
+
+test("legacy unclassified failure survives a quota success until a new config check",()=>{
+ const record=subscription();record.status.legacyLastError="旧记录超时";record.status.quota={checkedAt:"2026-10-26T00:00:00Z",lastError:null};
+ assert.match(subscriptionCardMarkup(record,null,now),/旧记录超时/);
+ record.status.config={checkedAt:"2026-10-26T00:01:00Z",lastError:null};assert.doesNotMatch(subscriptionCardMarkup(record,null,now),/旧记录超时/);
+});

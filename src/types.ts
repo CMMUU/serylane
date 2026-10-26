@@ -178,6 +178,7 @@ export type SubscriptionObservation = {
   lastError?: string | null; path?: string | null; attempts?: number; elapsedMs?: number; failurePhase?: string | null;
 };
 export type SubscriptionStatus = {
+  legacyLastError?: string | null;
   config?: SubscriptionObservation | null;
   quota?: SubscriptionObservation | null;
   requestStartedAt?: string | null;

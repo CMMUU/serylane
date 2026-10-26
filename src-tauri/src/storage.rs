@@ -328,6 +328,14 @@ impl AppStorage {
         }
         let mut status = self.subscription_status(profile_id).unwrap_or_default();
         let latest_legacy = status.request_started_at.or(status.checked_at);
+        // An old error has unknown provenance. A quota success is not evidence
+        // that its configuration refresh succeeded; retain it until a config check.
+        if status.config.is_none() && status.quota.is_none() {
+            status.legacy_last_error = status.legacy_last_error.or(status.last_error.clone());
+        }
+        if matches!(kind, crate::models::SubscriptionObservationKind::Config) {
+            status.legacy_last_error = None;
+        }
         let observation = match kind {
             crate::models::SubscriptionObservationKind::Config => &mut status.config,
             crate::models::SubscriptionObservationKind::Quota => &mut status.quota,
@@ -832,6 +840,48 @@ mod tests {
         std::env::temp_dir().join(format!("routedeck-storage-{}", Uuid::new_v4()))
     }
 
+    #[test]
+    fn old_ambiguous_failure_is_not_cleared_by_first_new_quota_success() {
+        use crate::models::SubscriptionObservationKind::{Config, Quota};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = AppStorage::from_root(dir.path().to_path_buf()).unwrap();
+        let p = storage
+            .create_profile(
+                "old".into(),
+                ProfileSource::RemoteSubscription {
+                    url: "https://example.invalid/sub".into(),
+                    user_agent: "clash.meta".into(),
+                },
+            )
+            .unwrap();
+        std::fs::write(
+            storage.profile_dir(p.id).join("subscription-status.json"),
+            r#"{"lastError":"旧版请求超时"}"#,
+        )
+        .unwrap();
+        let t = chrono::Utc::now();
+        storage
+            .record_subscription_observation(p.id, None, None, t, Quota, None)
+            .unwrap();
+        let s = storage.subscription_status(p.id).unwrap();
+        assert!(s.config.is_none());
+        assert_eq!(s.legacy_last_error.as_deref(), Some("旧版请求超时"));
+        storage
+            .record_subscription_observation(
+                p.id,
+                None,
+                None,
+                t + chrono::Duration::seconds(1),
+                Config,
+                None,
+            )
+            .unwrap();
+        assert!(storage
+            .subscription_status(p.id)
+            .unwrap()
+            .legacy_last_error
+            .is_none());
+    }
     #[test]
     fn independent_config_quota_observations_survive_restart_and_cross_channel_late_results() {
         use crate::models::SubscriptionObservationKind::{Config, Quota};

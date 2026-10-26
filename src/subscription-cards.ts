@@ -58,6 +58,7 @@ export function subscriptionAlerts(status: SubscriptionStatus | null | undefined
   if (!status) return '';
   const split = Boolean(status.config || status.quota);
   const config = status.config, quota = status.quota;
+  const legacyError = !config ? status.legacyLastError ?? (!split ? status.lastError : null) : null;
   const paths: Record<string, string> = {serylane: '经 Serylane 当前核心', direct: '直连', local_proxy: '经指定本地代理'};
   const detail = (observation: NonNullable<SubscriptionStatus['config']>) => {
     const parts = [paths[observation.path ?? '']];
@@ -67,7 +68,7 @@ export function subscriptionAlerts(status: SubscriptionStatus | null | undefined
   };
   return [config?.lastError ? `<p class="subscription-alert is-error">订阅配置更新未完成 · ${escape(config.lastError)}<br><small>${escape(detail(config))}</small></p>` : '',
     quota?.lastError ? `<p class="subscription-alert">用量信息暂未更新 · 保留上次记录。${escape(quota.lastError)}</p>` : '',
-    !split && status.lastError ? `<p class="subscription-alert">上次订阅检查未完成 · ${escape(status.lastError)}（旧版记录，未区分配置与用量）</p>` : '',
+    legacyError ? `<p class="subscription-alert">上次订阅检查未完成 · ${escape(legacyError)}（旧版记录，未区分配置与用量）</p>` : '',
   ].join('');
 }
 
