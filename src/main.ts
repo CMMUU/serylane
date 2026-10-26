@@ -1,3 +1,5 @@
+import { PageReads } from "./read-coordinator";
+import { stableMarkup } from "./stable-dom";
 import { createAiHealth, aiHealthMarkup } from "./ai-health";
 import { mountSubscriptionEditor } from "./subscription-editor";
 import { InteractionSession } from "./interaction-session";
@@ -131,6 +133,30 @@ const store: {
   networkSafety: null,
   globalTraffic: null,
 };
+
+const pageReads = new PageReads();
+let baseLoading = false;
+let connectionDisplayLimit = 200, ruleDisplayLimit = 200;
+let nodeListKey = "";
+const nodeLimits = new Map<string, number>();
+const closingConnections = new Set<string>();
+function dataContext(): string {
+  return [runtimeMutationRevision, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, store.manualOutbound?.revision, store.runtime?.phase, store.runtime?.pid].join('/');
+}
+function pageContext(): string { return `${viewNavigationRevision}/${dataContext()}`; }
+function pageRead(key: string, selector: string, operation: (current: () => boolean) => Promise<void>) {
+  const context = pageContext();
+  return pageReads.run(key, context, async () => {
+    const current = () => context === pageContext();
+    if (!current()) return;
+    const button = document.querySelector<HTMLButtonElement>(selector);
+    const label = button?.textContent ?? '';
+    if (button) { button.disabled = true; button.textContent = '正在刷新…'; button.setAttribute('aria-busy', 'true'); }
+    try { await operation(current); }
+    catch (error) { if (current()) toast(errorMessage(error), 'error'); }
+    finally { if (button) { button.disabled = false; button.textContent = label; button.removeAttribute('aria-busy'); } }
+  });
+}
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("#app not found");
@@ -403,7 +429,7 @@ app.innerHTML = `
         <article class="panel">
           <div class="panel-heading"><div><div class="section-label">CONNECTIONS</div><h2>活动连接</h2></div><button class="button button-quiet" id="connections-refresh">刷新</button></div>
           <div id="connection-totals" class="summary-strip"></div>
-          <div class="table-wrap"><table><thead><tr><th>目标</th><th>网络</th><th>规则</th><th>代理链</th><th>流量</th><th></th></tr></thead><tbody id="connections-body"><tr><td colspan="6">启动后加载连接</td></tr></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>目标</th><th>网络</th><th>规则</th><th>代理链</th><th>流量</th><th></th></tr></thead><tbody id="connections-body"><tr><td colspan="6">启动后加载连接</td></tr></tbody></table></div><button id="connections-more" class="button button-quiet" hidden>显示更多</button>
         </article>
       </section>
 
@@ -679,7 +705,16 @@ async function refreshConnectionFeedback() {
   catch { /* A transient status-read failure never changes a known runtime state. */ }
 }
 
-async function refreshBase() {
+function refreshBase(): Promise<boolean> {
+  const context = dataContext();
+  return pageReads.run('base', context, async () => {
+    if (context !== dataContext()) return false;
+    baseLoading = true; renderHeader();
+    try { return await performBaseRead(); }
+    finally { baseLoading = false; renderHeader(); }
+  });
+}
+async function performBaseRead() {
   const requestedBaseRead = ++baseReadSequence;
   const selectedProfileId = store.selectedProfile?.profile.id;
   const requestedThemeRevision = themeController.mutationRevision;
@@ -707,7 +742,7 @@ async function refreshBase() {
         api.binary(),
         api.runtime(),
         api.systemProxy(),
-        api.tunHelperStatus(),
+        Promise.resolve(store.tunHelper),
         api.profiles(),
         api.subscriptions(),
         api.activeProfile(),
@@ -725,6 +760,7 @@ async function refreshBase() {
     if (activeProfile?.profile.id !== store.activeProfile?.profile.id || activeProfile?.profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || runtime?.phase !== "running") {
       proxyReadSequence++;
       store.proxies = null;
+      store.rules = null; store.connections = null;
       overviewNodeDetails = {};
     }
     for (const subscription of subscriptions) {
@@ -762,6 +798,12 @@ async function refreshBase() {
   renderGlobalTraffic();
   void openAiCosts.refresh();
   void localRouting.refresh(true);
+  // Helper readiness is independent of menu/profile rendering. A slow service
+  // handshake must not hold the entire base snapshot behind Promise.all.
+  const helperRevision = runtimeMutationRevision;
+  void api.tunHelperStatus().then(helper => {
+    if (helperRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); }
+  }).catch(() => {});
   scheduleAutomaticUpdateCheck();
   void refreshSessionResume();
   void refreshProxies(true);
@@ -825,7 +867,8 @@ function renderHeader() {
   const mode = store.settings?.networkMode;
   const controlsBusy = networkModeSwitching || runtimeActionInFlight || domainRouteChanging;
   localRouting.render();
-  ($("#global-refresh") as HTMLButtonElement).disabled = controlsBusy;
+  ($("#global-refresh") as HTMLButtonElement).disabled = controlsBusy || baseLoading;
+  $("#global-refresh")!.textContent = baseLoading ? "正在刷新…" : "刷新";
   const systemProxyActive = Boolean(
     running && mode === "system_proxy" && store.systemProxy?.active,
   );
@@ -868,6 +911,7 @@ function renderHeader() {
 }
 
 function renderOverview() {
+  if (!['overview'].includes(store.view)) return;
   $("#overview-subscription-guide")!.hidden = !store.appInfo || Boolean(store.activeProfile);
   const runtime = store.runtime;
   const running = runtime?.phase === "running";
@@ -922,6 +966,7 @@ function profileSourceLabel(profile: ProfileRecord): string {
 }
 
 function renderSubscriptions() {
+  if (!['subscriptions'].includes(store.view)) return;
   const list = $("#subscription-manager-list");
   if (!list) return;
   const subscriptions = store.subscriptions;
@@ -968,7 +1013,7 @@ function renderSubscriptions() {
   list.className = "subscription-manager-list";
   const expanded = new Set(Array.from(list.querySelectorAll<HTMLDetailsElement>(".subscription-more[open]"))
     .map((details) => details.closest<HTMLElement>("[data-subscription-id]")?.dataset.subscriptionId));
-  list.innerHTML = subscriptions.map((subscription) => subscriptionCardMarkup({ ...subscription, active: subscription.profile.id === store.activeProfile?.profile.id }, store.openAiTask, Date.now(), subscriptionRefreshing.has(subscription.profile.id))).join("");
+  stableMarkup(list, subscriptions.map((subscription) => subscriptionCardMarkup({ ...subscription, active: subscription.profile.id === store.activeProfile?.profile.id }, store.openAiTask, Date.now(), subscriptionRefreshing.has(subscription.profile.id))).join(""));
   for (const details of list.querySelectorAll<HTMLDetailsElement>(".subscription-more")) {
     details.open = expanded.has(details.closest<HTMLElement>("[data-subscription-id]")?.dataset.subscriptionId);
   }
@@ -1005,6 +1050,7 @@ function closeSubscriptionForm(returnFocus = true) {
 }
 
 function renderProfiles() {
+  if (!['profiles'].includes(store.view)) return;
   const list = $("#profile-list");
   if (!list) return;
   if (!store.profiles.length) {
@@ -1074,6 +1120,7 @@ function renderProfileDetails() {
 }
 
 function renderSettings() {
+  if (!['settings'].includes(store.view)) return;
   syncProxyCompatibilityPlatform($("#proxy-compatibility-panel")!, store.appInfo?.targetOs, api.systemProxyCompatibility, errorMessage);
   if (!store.settings) return;
   themeController.sync(store.settings.theme);
@@ -1396,7 +1443,15 @@ document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((but
 });
 themeController.refresh();
 
-async function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
+function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
+  const context = `${dataContext()}/${allowDuringRuntimeAction}`;
+  return pageReads.run('runtime', context, async () => {
+    if (context !== `${dataContext()}/${allowDuringRuntimeAction}`) return;
+    try { await performRuntimeRead(allowDuringRuntimeAction); }
+    catch { /* Keep the last snapshot; explicit refresh reports native errors. */ }
+  });
+}
+async function performRuntimeRead(allowDuringRuntimeAction: boolean) {
   const requestedDuringWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching;
   if (requestedDuringWrite && !allowDuringRuntimeAction) return;
   const requestedRevision = runtimeMutationRevision;
@@ -1970,6 +2025,7 @@ function openAiTaskPhaseLabel(task: OpenAiPolicyTask): string {
 }
 
 function renderOpenAiPolicy() {
+  if (!['proxies'].includes(store.view)) return;
   const container = $("#openai-policy-card");
   if (!container) return;
   if (store.proxies && (nodeSelectionBusy || container.contains(document.activeElement) && document.activeElement?.tagName === "SELECT")) return;
@@ -2089,7 +2145,10 @@ async function cancelOpenAiGeneration() {
   renderSubscriptions();
 }
 
-async function refreshOpenAiTask() {
+function refreshOpenAiTask() {
+  return pageReads.run('ai-task', dataContext(), performOpenAiTaskRead);
+}
+async function performOpenAiTaskRead() {
   const previous = store.openAiTask;
   const task = await action("", () => api.openAiPolicyTask());
   if (!task) return;
@@ -2124,12 +2183,19 @@ async function refreshOpenAiTask() {
   }
 }
 
-async function refreshProxies(quiet = false) {
+function refreshProxies(quiet = false) {
+  const context = pageContext();
+  return pageReads.run('proxies', context, async () => {
+    if (context !== pageContext()) return;
+    await performProxyRead(quiet, context);
+  });
+}
+async function performProxyRead(quiet: boolean, context: string) {
   const profile = store.activeProfile?.profile;
   const sequence = ++proxyReadSequence;
   const runtimeRevision = runtimeMutationRevision;
   const runtimePid = store.runtime?.pid;
-  const contextCurrent = () => sequence === proxyReadSequence && runtimeRevision === runtimeMutationRevision && store.runtime?.pid === runtimePid
+  const contextCurrent = () => context === pageContext() && sequence === proxyReadSequence && runtimeRevision === runtimeMutationRevision && store.runtime?.pid === runtimePid
     && profile?.id === store.activeProfile?.profile.id && profile?.activeRevisionId === store.activeProfile?.profile.activeRevisionId;
   if (store.runtime?.phase !== "running" || !profile) {
     store.proxies = null;
@@ -2171,6 +2237,7 @@ async function refreshProxies(quiet = false) {
 }
 
 function renderOverviewNodes() {
+  if (!['overview'].includes(store.view)) return;
   const container = $("#overview-nodes-content");
   if (!container) return;
   const profile = store.activeProfile?.profile;
@@ -2187,7 +2254,7 @@ function renderOverviewNodes() {
     <div class="overview-node-grid">${overviewGroup ? currentNodeMarkup(profile.routingMode === "global" ? "全局代理" : "普通代理", overviewGroup, map, overviewNodeDetails[overviewGroup]) : '<p class="node-choice-help">当前配置没有可展示的普通代理组，请在「配置」检查节点与分流规则。</p>'}
     ${profile.routingMode === "rule" && store.manualOutbound?.mode === "ai" && profile.openaiPolicy.enabled && map[OPENAI_GROUP_NAME] ? currentNodeMarkup("OpenAI 专用出口", OPENAI_GROUP_NAME, map, overviewNodeDetails[OPENAI_GROUP_NAME]) : ""}</div>
     <p class="node-choice-help">${profile.routingMode === "global" ? "全局模式按 GLOBAL 组路由，不使用 OpenAI 专用分流规则。" : store.manualOutbound?.mode === "ai" && profile.openaiPolicy.enabled ? "OpenAI 专用出口仅用于命中对应规则的请求；用户自定义规则可能优先。" : "OpenAI 灾备未启用，普通代理选点可独立使用。"} 切换只影响后续新连接，不主动断开已有连接。</p>`;
-  if (!container.contains(document.activeElement) && container.innerHTML !== html) container.innerHTML = html;
+  stableMarkup(container, html);
 }
 
 async function changeNode(group: string, node: string | null, returnFocus?: HTMLElement) {
@@ -2219,6 +2286,7 @@ async function changeNode(group: string, node: string | null, returnFocus?: HTML
 
 function renderProxies() {
   renderOpenAiPolicy();
+  if (store.view !== "manual") return;
   const container = $("#proxy-groups")!;
   if (nodeSelectionBusy) return;
   const map = (store.runtime?.phase === "running" ? store.proxies?.proxies ?? {} : {}) as ProxyMap;
@@ -2233,15 +2301,17 @@ function renderProxies() {
   const firstRender = !Array.from(container.querySelectorAll<HTMLDetailsElement>('details')).some(el => groups.includes(el.dataset.group ?? ""));
   const query = ($("#manual-search") as HTMLInputElement).value;
   const sort = ($("#manual-sort") as HTMLSelectElement).value;
+  const listKey = [store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, query, sort].join('/');
+  if (listKey !== nodeListKey) { nodeListKey = listKey; nodeLimits.clear(); }
   const busy = store.manualOutbound?.mode !== "manual" || manualModeSwitching;
   container.className = "card-list manual-groups";
-  container.innerHTML = groups.map((name, index) => {
+  stableMarkup(container, groups.map((name, index) => {
     const value = map[name];
-    return `<details class="proxy-card manual-group" data-group="${escapeHtml(name)}" ${open.has(name) || firstRender && index === 0 || query ? 'open' : ''}>
+    return `<details class="proxy-card manual-group" data-render-key="${escapeHtml(name)}" data-group="${escapeHtml(name)}" ${open.has(name) || firstRender && index === 0 || query ? 'open' : ''}>
       <summary><strong>${escapeHtml(name)}</strong><span>${escapeHtml(value.now ?? '按组策略')} · ${value.all?.length ?? 0} 节点</span><small>${escapeHtml(value.type ?? '')}</small></summary>
       <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">当前出口详情</button>${value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-node-auto="${escapeHtml(name)}" ${busy ? 'disabled' : ''}>恢复自动</button>` : ''}</div>
-      ${nodeGridMarkup(name, map, query, sort, busy, nodeTests.results(), nodeTests.busy())}</details>`;
-  }).join('');
+      ${open.has(name) || firstRender && index === 0 || query ? nodeGridMarkup(name, map, query, sort, busy, nodeTests.results(), nodeTests.busy(), nodeLimits.get(name) ?? 200) : ""}</details>`;
+  }).join(''));
 }
 
 function preferredCurrentGroup(): string | null {
@@ -2362,62 +2432,75 @@ function focusNodeGroup(group: string) {
   (card?.querySelector("select, button") as HTMLElement | null)?.focus();
 }
 
-async function refreshRules() {
-  const result = await action("", () => api.rules());
-  if (!result) return;
-  store.rules = result;
-  renderRules();
+function refreshRules() {
+  return pageRead('rules', '#rules-refresh', async current => {
+    const result = await api.rules();
+    if (!current()) return;
+    store.rules = result;
+    renderRules();
+  });
 }
 
 function renderRules() {
+  if (store.view !== "rules") return;
   const query = ($("#rule-search") as HTMLInputElement)?.value.toLowerCase() ?? "";
   const rules = ((store.rules?.rules ?? []) as any[]).filter((rule) =>
-    JSON.stringify(rule).toLowerCase().includes(query),
+    !query || JSON.stringify(rule).toLowerCase().includes(query),
   );
   $("#rules-body")!.innerHTML =
-    rules
+    rules.slice(0, ruleDisplayLimit)
       .map(
         (rule) => `<tr><td>${escapeHtml(rule.type)}</td><td>${escapeHtml(rule.payload)}</td><td>${escapeHtml(rule.proxy)}</td></tr>`,
       )
       .join("") || '<tr><td colspan="3">没有匹配规则</td></tr>';
+  $("#rules-more")!.hidden = rules.length <= ruleDisplayLimit;
+  $("#rules-more")!.textContent = `显示更多（${Math.min(ruleDisplayLimit, rules.length)}/${rules.length}）`;
 }
 
-async function refreshConnections() {
-  const result = await action("", () => api.connections());
-  if (!result) return;
-  store.connections = result;
-  renderConnections();
+function refreshConnections() {
+  return pageRead('connections', '#connections-refresh', async current => {
+    const result = await api.connections();
+    if (!current()) return;
+    store.connections = result;
+    renderConnections();
+  });
 }
 
 function renderConnections() {
+  if (store.view !== "connections") return;
   const payload = store.connections ?? {};
   const connections = (payload.connections ?? []) as any[];
   $("#connection-totals")!.innerHTML = `<span>上传 <strong>${formatBytes(payload.uploadTotal)}</strong></span><span>下载 <strong>${formatBytes(payload.downloadTotal)}</strong></span><span>连接 <strong>${connections.length}</strong></span>`;
-  $("#connections-body")!.innerHTML =
-    connections
+  stableMarkup($("#connections-body")!,
+    connections.slice(0, connectionDisplayLimit)
       .map((connection) => {
         const metadata = connection.metadata ?? {};
         const target = metadata.host || metadata.destinationIP || "—";
         const chains = Array.isArray(connection.chains) ? connection.chains.join(" → ") : "—";
         return `
-          <tr>
+          <tr data-render-key="${escapeHtml(connection.id)}">
             <td><strong>${escapeHtml(target)}</strong><small>:${escapeHtml(metadata.destinationPort)}</small></td>
             <td>${escapeHtml(metadata.network ?? metadata.type)}</td>
             <td>${escapeHtml(connection.rule)} ${escapeHtml(connection.rulePayload)}</td>
             <td>${escapeHtml(chains)}</td>
             <td>↑ ${formatBytes(connection.upload)}<br>↓ ${formatBytes(connection.download)}</td>
-            <td><button class="button button-danger close-connection" data-connection-id="${escapeHtml(connection.id)}">关闭</button></td>
+            <td><button class="button button-danger close-connection" data-connection-id="${escapeHtml(connection.id)}" ${closingConnections.has(connection.id) ? 'disabled' : ''}>${closingConnections.has(connection.id) ? '正在关闭…' : '关闭'}</button></td>
           </tr>
         `;
       })
-      .join("") || '<tr><td colspan="6">暂无活动连接</td></tr>';
+      .join("") || '<tr><td colspan="6">暂无活动连接</td></tr>');
+  $("#connections-more")!.hidden = connections.length <= connectionDisplayLimit;
+  $("#connections-more")!.textContent = `显示更多（${Math.min(connectionDisplayLimit, connections.length)}/${connections.length}）`;
 }
 
 async function refreshLogs() {
   await logsView.refresh();
 }
 
-async function runDiagnostics() {
+function runDiagnostics() {
+  return pageRead('diagnostics', '#run-diagnostics', performDiagnostics);
+}
+async function performDiagnostics(current: () => boolean) {
   const checks: Array<{ label: string; status: string; detail: string }> = [];
   const binary = await action("", () => api.binary());
   checks.push({
@@ -2451,6 +2534,7 @@ async function runDiagnostics() {
       status: proxyResult ? "pass" : "fail",
       detail: proxyResult ? "控制接口可访问" : "控制接口请求失败",
     });
+    if (!current()) return;
     const networkChecks = await action("", () => api.diagnostics());
     for (const check of networkChecks ?? []) {
       checks.push({
@@ -2467,12 +2551,13 @@ async function runDiagnostics() {
       });
     }
   }
+  if (!current()) return;
   $("#diagnostic-list")!.innerHTML = checks
     .map((check) => `<div class="diagnostic-item status-${check.status}"><span class="diagnostic-icon">${check.status === "pass" ? "✓" : check.status === "warn" ? "!" : "×"}</span><div><strong>${escapeHtml(check.label)}</strong><p>${escapeHtml(check.detail)}</p></div></div>`)
     .join("");
 }
 
-const logsView = mountLogs($("#logs-view")!, { api, confirm: confirmAction });
+const logsView = mountLogs($("#logs-view")!, { api, confirm: confirmAction, visible: () => store.view === "logs" });
 const openAiCosts = mountOpenAiCosts({
   profile: () => store.activeProfile ? { id: store.activeProfile.profile.id, revision: store.activeProfile.profile.activeRevisionId } : null,
   read: api.openAiCosts, save: api.saveOpenAiCosts,
@@ -2536,6 +2621,7 @@ window.setInterval(() => { if (!document.hidden && store.view === 'manual') void
 
 const manualOutbound = mountManualOutbound($("#manual-view")!, {
   read: api.manualOutbound,
+  refreshAll: async () => { await refreshBase(); await refreshProxies(true); },
   write: async (mode, revision) => { runtimeMutationRevision++; manualModeSwitching = true; try { return await api.setManualOutbound(mode, revision); } catch (error) { toast(errorMessage(error), "error"); throw error; } finally { manualModeSwitching = false; runtimeMutationRevision++; } },
   confirm: confirmAction,
   error: errorMessage,
@@ -2565,6 +2651,7 @@ function renderManualMode() {
 function navigate(view: ViewName) {
   if (view === "programs") view = "overview";
   const previousView = store.view;
+  if (previousView === view) return;
   if (previousView !== view) { closeNodeDetails(); subscriptionEditor.close(); }
   if (previousView !== view) viewNavigationRevision++;
   const scroller = $("#page-scroll");
@@ -2583,6 +2670,9 @@ function navigate(view: ViewName) {
   $$(".view-stack").forEach((element) =>
     element.classList.toggle("is-hidden", element.id !== `${view}-view`),
   );
+  // Paint the cached view synchronously; fetch never controls navigation.
+  renderOverview(); renderProfiles(); renderSubscriptions(); renderSettings();
+  renderManualMode(); renderProxies(); renderOverviewNodes(); renderRules(); renderConnections();
   if (view === "proxies") {
     void openAiCosts.refresh();
     void refreshOpenAiTask();
@@ -2641,18 +2731,27 @@ $("#manual-profile")!.addEventListener('change', async event => {
   if (await confirmAction({title:'选用配置？', message:'将加载此配置的订阅策略组和分流规则，不自动开启系统代理或 TUN。',confirmLabel:'选用配置'})) await action('配置已选用', () => api.activateProfile(id));
   (event.target as HTMLElement).blur(); await refreshBase();
 });
+$("#proxy-groups")!.addEventListener('toggle', event => {
+  const group = event.target as HTMLDetailsElement;
+  if (group.open && !group.querySelector('.manual-node-list')) renderProxies();
+}, true);
+$("#proxy-groups")!.addEventListener('click', event => {
+  const button = (event.target as HTMLElement).closest<HTMLElement>('[data-node-more]');
+  if (button?.dataset.nodeMore) { const group = button.dataset.nodeMore; nodeLimits.set(group, (nodeLimits.get(group) ?? 200) + 200); renderProxies(); }
+});
 $("#manual-search")!.addEventListener('input', renderProxies);
 $("#manual-sort")!.addEventListener('change', renderProxies);
-$("#manual-refresh")!.addEventListener('click', () => { void refreshBase(); });
-$("#profiles-refresh")!.addEventListener("click", () => void refreshBase());
-$("#subscriptions-refresh-list")!.addEventListener("click", () => void refreshBase());
+$("#profiles-refresh")!.addEventListener("click", () => void pageRead("base-button", "#profiles-refresh", async () => { await refreshBase(); }));
+$("#subscriptions-refresh-list")!.addEventListener("click", () => void pageRead("base-button", "#subscriptions-refresh-list", async () => { await refreshBase(); }));
 $("#subscriptions-refresh-all")!.addEventListener("click", () => void refreshAllSubscriptions());
 $("#subscriptions-run-safety")!.addEventListener("click", () => void runNetworkSafetyCheck());
-$("#proxies-refresh")!.addEventListener("click", () => void refreshProxies());
+$("#proxies-refresh")!.addEventListener("click", () => void pageRead("proxy-button", "#proxies-refresh", async () => { await refreshProxies(); }));
 $("#proxies-current-node")!.addEventListener("click", () =>
   void openNodeDetails(preferredCurrentGroup()),
 );
 $("#rules-refresh")!.addEventListener("click", () => void refreshRules());
+$("#connections-more")!.addEventListener('click', () => { connectionDisplayLimit += 200; renderConnections(); });
+$("#rules-more")!.addEventListener('click', () => { ruleDisplayLimit += 200; renderRules(); });
 $("#connections-refresh")!.addEventListener("click", () => void refreshConnections());
 $("#run-diagnostics")!.addEventListener("click", () => void runDiagnostics());
 
@@ -2747,7 +2846,7 @@ document.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLElement>("[data-node-auto]");
   if (button) void changeNode(button.dataset.nodeAuto!, null, button);
 });
-$("#overview-nodes-refresh")!.addEventListener("click", () => void refreshProxies());
+$("#overview-nodes-refresh")!.addEventListener("click", () => void pageRead("proxy-button", "#overview-nodes-refresh", async () => { await refreshProxies(); }));
 $("#overview-nodes-content")!.addEventListener("change", event => {
   if ((event.target as HTMLElement).id !== "overview-node-group") return;
   overviewGroup = (event.target as HTMLSelectElement).value;
@@ -2876,11 +2975,17 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-$("#rule-search")!.addEventListener("input", renderRules);
+$("#rule-search")!.addEventListener("input", () => { ruleDisplayLimit = 200; renderRules(); });
 $("#connections-body")!.addEventListener("click", async (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>(".close-connection");
-  if (!button?.dataset.connectionId) return;
-  await action("连接已关闭", () => api.closeConnection(button.dataset.connectionId!));
+  if (!button?.dataset.connectionId || button.disabled) return;
+  const id = button.dataset.connectionId;
+  if (!(store.connections?.connections as {id: string}[] | undefined)?.some(c => c.id === id)) return;
+  if (closingConnections.has(id)) return;
+  closingConnections.add(id);
+  button.disabled = true; button.textContent = '正在关闭…';
+  try { await action("连接已关闭", () => api.closeConnection(id)); }
+  finally { closingConnections.delete(id); button.disabled = false; button.textContent = '关闭'; }
   await refreshConnections();
 });
 
@@ -3061,7 +3166,8 @@ $("#settings-form")!.addEventListener("submit", async (event) => {
 });
 
 window.setInterval(() => {
-  if (!document.hidden) void localRouting.refresh(true);
+  if (document.hidden) return;
+  void localRouting.refresh(true);
   if (sessionResumePresentation(sessionResumeStatus).busy) void refreshSessionResume();
   if (store.view === "logs") void refreshLogs();
   if (store.runtime?.phase === "running") {
@@ -3071,7 +3177,7 @@ window.setInterval(() => {
 }, 3_000);
 
 window.setInterval(() => {
-  if (store.openAiTask?.running) void refreshOpenAiTask();
+  if (!document.hidden && store.openAiTask?.running) void refreshOpenAiTask();
 }, 1_000);
 
 window.setInterval(() => {
@@ -3117,3 +3223,7 @@ void listen<string>("navigate-view", (event) => {
 });
 
 void refreshBase();
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { void refreshBase(); if (store.view === 'connections') void refreshConnections(); }
+});

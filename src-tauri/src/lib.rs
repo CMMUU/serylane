@@ -46,6 +46,7 @@ pub mod tun_service;
 mod update_probe;
 mod update_receipt;
 pub use update_probe::update_probe;
+mod ui_read;
 mod user_rules;
 #[cfg(all(test, windows, target_env = "msvc"))]
 mod windows_test_manifest;
@@ -132,16 +133,19 @@ fn app_info() -> AppInfo {
 }
 
 #[tauri::command]
-fn get_settings(app: AppHandle) -> Result<PublicAppSettings, AppErrorDto> {
-    AppStorage::from_app(&app)
-        .and_then(|storage| storage.settings())
-        .map(|settings| PublicAppSettings::from(&settings))
-        .map_err(dto)
+async fn get_settings(app: AppHandle) -> Result<PublicAppSettings, AppErrorDto> {
+    ui_read::run(move || {
+        AppStorage::from_app(&app)
+            .and_then(|storage| storage.settings())
+            .map(|settings| PublicAppSettings::from(&settings))
+            .map_err(dto)
+    })
+    .await
 }
 
 #[tauri::command]
-fn get_user_rules(app: AppHandle) -> Result<UserRulesState, AppErrorDto> {
-    user_rules::get(&app).map_err(dto)
+async fn get_user_rules(app: AppHandle) -> Result<UserRulesState, AppErrorDto> {
+    ui_read::run(move || user_rules::get(&app).map_err(dto)).await
 }
 
 #[tauri::command]
@@ -274,30 +278,36 @@ fn inspect_mihomo_yaml(source: String) -> Result<ProfileSummary, AppErrorDto> {
 }
 
 #[tauri::command]
-fn list_profiles(app: AppHandle) -> Result<Vec<PublicProfileRecord>, AppErrorDto> {
-    profile_service::list_profiles(&app).map_err(dto)
+async fn list_profiles(app: AppHandle) -> Result<Vec<PublicProfileRecord>, AppErrorDto> {
+    ui_read::run(move || profile_service::list_profiles(&app).map_err(dto)).await
 }
 
 #[tauri::command]
-fn list_subscriptions(app: AppHandle) -> Result<Vec<SubscriptionOverview>, AppErrorDto> {
-    profile_service::list_subscriptions(&app).map_err(dto)
+async fn list_subscriptions(app: AppHandle) -> Result<Vec<SubscriptionOverview>, AppErrorDto> {
+    ui_read::run(move || profile_service::list_subscriptions(&app).map_err(dto)).await
 }
 
 #[tauri::command]
-fn get_profile_details(app: AppHandle, profile_id: Uuid) -> Result<ProfileDetails, AppErrorDto> {
-    profile_service::profile_details(&app, profile_id).map_err(dto)
+async fn get_profile_details(
+    app: AppHandle,
+    profile_id: Uuid,
+) -> Result<ProfileDetails, AppErrorDto> {
+    ui_read::run(move || profile_service::profile_details(&app, profile_id).map_err(dto)).await
 }
 
 #[tauri::command]
-fn get_active_profile(app: AppHandle) -> Result<Option<ProfileDetails>, AppErrorDto> {
-    let storage = AppStorage::from_app(&app).map_err(dto)?;
-    storage
-        .state()
-        .map_err(dto)?
-        .active_profile_id
-        .map(|profile_id| profile_service::profile_details(&app, profile_id))
-        .transpose()
-        .map_err(dto)
+async fn get_active_profile(app: AppHandle) -> Result<Option<ProfileDetails>, AppErrorDto> {
+    ui_read::run(move || {
+        let storage = AppStorage::from_app(&app).map_err(dto)?;
+        storage
+            .state()
+            .map_err(dto)?
+            .active_profile_id
+            .map(|profile_id| profile_service::profile_details(&app, profile_id))
+            .transpose()
+            .map_err(dto)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -452,13 +462,13 @@ async fn delete_profile(
 }
 
 #[tauri::command]
-fn probe_mihomo(app: AppHandle) -> BinaryInfo {
-    runtime::probe_binary(Some(&app))
+async fn probe_mihomo(app: AppHandle) -> Result<BinaryInfo, AppErrorDto> {
+    ui_read::run(move || Ok(runtime::probe_binary(Some(&app)))).await
 }
 
 #[tauri::command]
-fn runtime_status(app: AppHandle, state: State<'_, MihomoRuntime>) -> RuntimeStatus {
-    state.status(Some(&app))
+async fn runtime_status(app: AppHandle) -> Result<RuntimeStatus, AppErrorDto> {
+    ui_read::run(move || Ok(app.state::<MihomoRuntime>().status(Some(&app)))).await
 }
 
 #[tauri::command]
@@ -918,8 +928,8 @@ fn runtime_logs(state: State<'_, MihomoRuntime>, limit: Option<usize>) -> Vec<Ru
 }
 
 #[tauri::command]
-fn application_logs() -> Result<app_log::Snapshot, AppErrorDto> {
-    app_log::snapshot().map_err(|error| error.dto())
+async fn application_logs() -> Result<app_log::Snapshot, AppErrorDto> {
+    ui_read::run(move || app_log::snapshot().map_err(|error| error.dto())).await
 }
 
 #[tauri::command]
@@ -933,8 +943,8 @@ fn clear_runtime_logs(state: State<'_, MihomoRuntime>) {
 }
 
 #[tauri::command]
-fn system_proxy_status(app: AppHandle) -> SystemProxyStatus {
-    platform::status(&app)
+async fn system_proxy_status(app: AppHandle) -> Result<SystemProxyStatus, AppErrorDto> {
+    ui_read::run(move || platform::checked_status(&app).map_err(dto)).await
 }
 
 #[tauri::command]
@@ -1058,8 +1068,11 @@ async fn get_proxies(app: AppHandle) -> Result<Value, AppErrorDto> {
 }
 
 #[tauri::command]
-fn get_manual_outbound(app: AppHandle) -> Result<manual_outbound::Snapshot, AppErrorDto> {
-    manual_outbound::snapshot(&AppStorage::from_app(&app).map_err(dto)?).map_err(dto)
+async fn get_manual_outbound(app: AppHandle) -> Result<manual_outbound::Snapshot, AppErrorDto> {
+    ui_read::run(move || {
+        manual_outbound::snapshot(&AppStorage::from_app(&app).map_err(dto)?).map_err(dto)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1191,8 +1204,8 @@ async fn start_node_test(
         .map_err(dto)
 }
 #[tauri::command]
-fn node_test_status(app: AppHandle) -> Option<node_test::Snapshot> {
-    node_test::status(&app)
+async fn node_test_status(app: AppHandle) -> Result<Option<node_test::Snapshot>, AppErrorDto> {
+    ui_read::run(move || Ok(node_test::status(&app))).await
 }
 #[tauri::command]
 fn cancel_node_test(

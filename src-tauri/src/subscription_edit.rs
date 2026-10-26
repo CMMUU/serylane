@@ -94,10 +94,13 @@ fn save(storage: &AppStorage, input: Edit) -> AppResult<Edit> {
     read(storage, profile.id)
 }
 #[tauri::command]
-pub fn read_subscription_edit(app: AppHandle, profile_id: Uuid) -> Result<Edit, AppErrorDto> {
-    AppStorage::from_app(&app)
-        .and_then(|s| read(&s, profile_id))
-        .map_err(|e| e.dto())
+pub async fn read_subscription_edit(app: AppHandle, profile_id: Uuid) -> Result<Edit, AppErrorDto> {
+    crate::ui_read::run(move || {
+        AppStorage::from_app(&app)
+            .and_then(|s| read(&s, profile_id))
+            .map_err(|e| e.dto())
+    })
+    .await
 }
 #[tauri::command]
 pub fn save_subscription_edit(

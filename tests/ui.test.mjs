@@ -197,13 +197,13 @@ test("refreshBase rejects a delayed pre-start snapshot after a network mutation"
     store: { settings: { networkMode: "manual" }, runtime: staleRuntime },
     action: async (_label, operation) => operation(),
     api: new Proxy({ settings: () => settingsRead, runtime: async () => staleRuntime }, { get: (target, key) => target[key] ?? (async () => null) }),
-    invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop, renderSettings: noop,
+    invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop, renderSettings: noop,
     renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
   };
-  const source = main.slice(main.indexOf("async function refreshBase()"), main.indexOf("function renderHeader()"));
+  const source = main.slice(main.indexOf("async function performBaseRead()"), main.indexOf("function renderHeader()"));
   vm.createContext(environment);
   vm.runInContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, environment);
-  const pending = environment.refreshBase();
+  const pending = environment.performBaseRead();
   environment.runtimeMutationRevision++;
   environment.store.settings = { networkMode: "system_proxy" };
   environment.store.runtime = { phase: "running" };
@@ -214,7 +214,7 @@ test("refreshBase rejects a delayed pre-start snapshot after a network mutation"
   // A read requested during the write is stale even if the write has finished
   // by the time the response arrives and no newer write has begun.
   environment.runtimeActionInFlight = true;
-  const duringWrite = environment.refreshBase();
+  const duringWrite = environment.performBaseRead();
   environment.runtimeActionInFlight = false;
   await duringWrite;
   assert.equal(environment.store.settings.networkMode, "system_proxy");
@@ -235,9 +235,9 @@ function runtimeRefreshFixture() {
       systemProxy: async () => ({ active: activeRequest.proxyActive }),
       tunHelperStatus: async () => ({ state: "ready" }),
     },
-    renderTunHelper: noop, invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshConnectionFeedback: async () => {},
+    renderTunHelper: noop, invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshConnectionFeedback: async () => {},
   };
-  const source = main.slice(main.indexOf("async function refreshRuntimeOnly("), main.indexOf("async function startRuntime("));
+  const source = main.slice(main.indexOf("async function performRuntimeRead("), main.indexOf("async function startRuntime("));
   vm.createContext(environment);
   vm.runInContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, environment);
   return {
@@ -255,13 +255,13 @@ function runtimeRefreshFixture() {
 test("runtime refresh rejects pre-start late reads and skips timer reads during startup", async () => {
   const f = runtimeRefreshFixture();
   const completeOldRead = f.queue("stopped", false);
-  const beforeStart = f.environment.refreshRuntimeOnly();
+  const beforeStart = f.environment.performRuntimeRead();
   f.environment.runtimeActionInFlight = true;
   f.environment.runtimeMutationRevision++;
-  await f.environment.refreshRuntimeOnly();
+  await f.environment.performRuntimeRead();
   assert.equal(f.reads(), 1, "busy timer does not dispatch a stale runtime request");
   const completeFinalRead = f.queue("running", true);
-  const finalRead = f.environment.refreshRuntimeOnly(true);
+  const finalRead = f.environment.performRuntimeRead(true);
   completeFinalRead();
   await finalRead;
   f.environment.runtimeActionInFlight = false;
@@ -276,16 +276,16 @@ test("latest runtime read wins and a late in-action read cannot cross busy relea
   const f = runtimeRefreshFixture();
   f.environment.runtimeActionInFlight = true;
   const completeEarlierRead = f.queue("crashed", false);
-  const earlier = f.environment.refreshRuntimeOnly(true);
+  const earlier = f.environment.performRuntimeRead(true);
   const completeFinalRead = f.queue("running", true);
-  const final = f.environment.refreshRuntimeOnly(true);
+  const final = f.environment.performRuntimeRead(true);
   completeFinalRead();
   await final;
   completeEarlierRead();
   await earlier;
   assert.equal(f.environment.store.runtime.phase, "running");
   const completeLateRead = f.queue("stopped", false);
-  const late = f.environment.refreshRuntimeOnly(true);
+  const late = f.environment.performRuntimeRead(true);
   f.environment.runtimeActionInFlight = false;
   f.environment.runtimeMutationRevision++;
   completeLateRead();

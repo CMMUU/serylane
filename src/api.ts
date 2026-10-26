@@ -2,7 +2,8 @@ import type { SubscriptionEdit } from "./subscription-editor";
 import type { DomainSelection, DomainRouteState } from "./domain-routing";
 import type { NodeTestScope, NodeTestSnapshot } from "./node-test";
 import type { DownloadOptions, SubscriptionTask } from "./subscription-task";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as nativeInvoke, type InvokeArgs } from "@tauri-apps/api/core";
+import { ReadCoordinator } from "./read-coordinator";
 import type { ProxyMode, ManualOutboundState } from "./manual-outbound";
 import type { CostSnapshot, CostInput } from "./openai-costs";
 import type { ThemePreference } from "./theme";
@@ -45,6 +46,16 @@ import type {
   UserRulesState,
   UserRulesValidation,
 } from "./types";
+
+const reads = new ReadCoordinator();
+const readCommands = new Set(["read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
+function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
+  if (readCommands.has(command)) return reads.read(`${command}:${JSON.stringify(args ?? {})}`, () => nativeInvoke<T>(command, args));
+  // Never coalesce writes or replay them on timeout. Invalidate both sides of
+  // a mutation, including a failed/partially applied native transaction.
+  reads.invalidate();
+  return nativeInvoke<T>(command, args).finally(() => reads.invalidate());
+}
 
 export const api = {
   readSubscriptionEdit: (profileId: string) => invoke<SubscriptionEdit>("read_subscription_edit", {profileId}),

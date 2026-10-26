@@ -346,8 +346,8 @@ fn classify(report: &NetworkSafetyReport) -> Health {
     }
 }
 #[tauri::command]
-pub fn connection_feedback(app: AppHandle) -> Snapshot {
-    app.state::<ConnectionFeedback>().inspect_current(&app)
+pub async fn connection_feedback(app: AppHandle) -> Result<Snapshot, AppErrorDto> {
+    crate::ui_read::run(move || Ok(app.state::<ConnectionFeedback>().inspect_current(&app))).await
 }
 #[tauri::command]
 pub async fn recheck_connection(app: AppHandle) -> Result<Snapshot, AppErrorDto> {

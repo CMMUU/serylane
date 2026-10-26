@@ -200,10 +200,16 @@ fn snapshot(storage: &AppStorage, id: Uuid) -> AppResult<CostSnapshot> {
 }
 
 #[tauri::command]
-pub fn get_openai_costs(app: AppHandle, profile_id: Uuid) -> Result<CostSnapshot, AppErrorDto> {
-    AppStorage::from_app(&app)
-        .and_then(|s| snapshot(&s, profile_id))
-        .map_err(|e| e.dto())
+pub async fn get_openai_costs(
+    app: AppHandle,
+    profile_id: Uuid,
+) -> Result<CostSnapshot, AppErrorDto> {
+    crate::ui_read::run(move || {
+        AppStorage::from_app(&app)
+            .and_then(|s| snapshot(&s, profile_id))
+            .map_err(|e| e.dto())
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

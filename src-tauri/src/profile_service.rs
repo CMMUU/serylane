@@ -139,6 +139,31 @@ pub fn list_profiles(app: &AppHandle) -> AppResult<Vec<PublicProfileRecord>> {
         .collect())
 }
 
+/// Content-addressed, bounded summary cache. A new revision or external edit
+/// changes the hash; no account URLs, node credentials or YAML are retained.
+fn cached_profile_summary(source: &str) -> Result<ProfileSummary, String> {
+    use sha2::{Digest, Sha256};
+    use std::collections::VecDeque;
+    use std::sync::{Mutex, OnceLock};
+    type Entries = VecDeque<([u8; 32], ProfileSummary)>;
+    static CACHE: OnceLock<Mutex<Entries>> = OnceLock::new();
+    let key: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
+    if let Ok(entries) = cache.lock() {
+        if let Some((_, summary)) = entries.iter().find(|(digest, _)| *digest == key) {
+            return Ok(summary.clone());
+        }
+    }
+    let summary = inspect_profile(source)?;
+    if let Ok(mut entries) = cache.lock() {
+        if entries.len() >= 64 {
+            entries.pop_front();
+        }
+        entries.push_back((key, summary.clone()));
+    }
+    Ok(summary)
+}
+
 pub fn list_subscriptions(app: &AppHandle) -> AppResult<Vec<SubscriptionOverview>> {
     let storage = AppStorage::from_app(app)?;
     let active_profile_id = storage.state()?.active_profile_id;
@@ -153,7 +178,7 @@ pub fn list_subscriptions(app: &AppHandle) -> AppResult<Vec<SubscriptionOverview
                 Some(revision_id) => storage
                     .load_revision_source(profile.id, revision_id)
                     .ok()
-                    .and_then(|source| inspect_profile(&source).ok()),
+                    .and_then(|source| cached_profile_summary(&source).ok()),
                 None => None,
             };
             Ok(SubscriptionOverview {
@@ -177,7 +202,7 @@ pub fn profile_details(app: &AppHandle, profile_id: Uuid) -> AppResult<ProfileDe
     let summary = match profile.active_revision_id {
         Some(revision_id) => {
             let source = storage.load_revision_source(profile_id, revision_id)?;
-            Some(inspect_profile(&source).map_err(AppError::Config)?)
+            Some(cached_profile_summary(&source).map_err(AppError::Config)?)
         }
         None => None,
     };
@@ -1659,5 +1684,19 @@ mod tests {
         assert!(result.is_err());
         assert!(storage.list_profiles().unwrap().is_empty());
         assert_eq!(state_snapshot(&storage), before);
+    }
+}
+
+#[cfg(test)]
+mod summary_cache_tests {
+    use super::cached_profile_summary;
+    #[test]
+    fn cache_is_content_addressed_and_never_hides_an_invalid_edit() {
+        let one = "proxies: [{name: one, type: socks5, server: localhost, port: 1080}]";
+        let two = "proxies: [{name: one, type: socks5, server: localhost, port: 1080}, {name: two, type: socks5, server: localhost, port: 1081}]";
+        assert_eq!(cached_profile_summary(one).unwrap().node_count, 1);
+        assert_eq!(cached_profile_summary(two).unwrap().node_count, 2);
+        assert!(cached_profile_summary("proxies: [").is_err());
+        assert_eq!(cached_profile_summary(one).unwrap().node_count, 1);
     }
 }
