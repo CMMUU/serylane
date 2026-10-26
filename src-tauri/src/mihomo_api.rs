@@ -209,19 +209,35 @@ impl MihomoApiClient {
         &self,
         proxy: &str,
     ) -> (crate::node_test::NodeState, Option<u64>) {
+        self.measured_probe(proxy, "https://www.gstatic.com/generate_204", "204", 5000)
+            .await
+    }
+
+    pub async fn ai_health_probe(&self, proxy: &str) -> (crate::node_test::NodeState, Option<u64>) {
+        self.measured_probe(proxy, "https://api.openai.com/v1/models", "401", 8000)
+            .await
+    }
+
+    async fn measured_probe(
+        &self,
+        proxy: &str,
+        target: &str,
+        expected: &str,
+        timeout_ms: u64,
+    ) -> (crate::node_test::NodeState, Option<u64>) {
         use crate::node_test::NodeState;
         let Ok(mut url) = self.path_url(&["proxies", proxy, "delay"]) else {
             return (NodeState::Unavailable, None);
         };
         url.query_pairs_mut()
-            .append_pair("url", "https://www.gstatic.com/generate_204")
-            .append_pair("timeout", "5000")
-            .append_pair("expected", "204");
+            .append_pair("url", target)
+            .append_pair("timeout", &timeout_ms.to_string())
+            .append_pair("expected", expected);
         let response = self
             .client
             .get(url)
             .bearer_auth(&self.secret)
-            .timeout(Duration::from_secs(6))
+            .timeout(Duration::from_millis(timeout_ms + 1000))
             .send()
             .await;
         match response {
@@ -231,7 +247,7 @@ impl MihomoApiClient {
                     .await
                     .ok()
                     .and_then(|v| v["delay"].as_u64())
-                    .filter(|d| *d > 0 && *d <= 5000)
+                    .filter(|d| *d > 0 && *d <= timeout_ms)
                 {
                     Some(delay) => (NodeState::Passed, Some(delay)),
                     _ => (NodeState::Unavailable, None),
@@ -437,6 +453,36 @@ mod node_latency_tests {
     use super::*;
     use crate::node_test::NodeState;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn ai_health_uses_expected_401_not_controller_auth_status() {
+        for (status, body, want) in [
+            (200, r#"{"delay":75}"#, (NodeState::Passed, Some(75))),
+            (200, r#"{"delay":0}"#, (NodeState::Unavailable, None)),
+            (200, r#"{"delay":8001}"#, (NodeState::Unavailable, None)),
+            (401, "{}", (NodeState::Unavailable, None)),
+            (503, "{}", (NodeState::Failed, None)),
+            (504, "{}", (NodeState::Timeout, None)),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let client = MihomoApiClient::from_endpoint(
+                listener.local_addr().unwrap().port(),
+                "fixture".into(),
+            )
+            .unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut data = vec![0; 8192];
+                let count = socket.read(&mut data).await.unwrap();
+                let request = String::from_utf8_lossy(&data[..count]);
+                assert!(request.starts_with("GET /proxies/A/delay?"));
+                assert!(request.contains("timeout=8000") && request.contains("expected=401"));
+                assert!(request.contains("api.openai.com"));
+                socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            });
+            assert_eq!(client.ai_health_probe("A").await, want);
+            server.await.unwrap();
+        }
+    }
     #[tokio::test]
     async fn latency_protocol_keeps_unknown_distinct_and_uses_only_encoded_get() {
         for (status, body, want) in [

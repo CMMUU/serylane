@@ -386,9 +386,31 @@ pub struct SubscriptionUsage {
     pub expires_at: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum SubscriptionObservationKind {
+    Config,
+    Quota,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SubscriptionObservation {
+    pub request_started_at: Option<DateTime<Utc>>,
+    pub checked_at: Option<DateTime<Utc>>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub path: Option<String>,
+    pub attempts: u8,
+    pub elapsed_ms: u64,
+    pub failure_phase: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SubscriptionStatus {
+    // Legacy fields stay readable by previous clients; new clients use independent channels.
+    pub config: Option<SubscriptionObservation>,
+    pub quota: Option<SubscriptionObservation>,
     pub request_started_at: Option<DateTime<Utc>>,
     pub checked_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,

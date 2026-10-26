@@ -16,7 +16,8 @@ const SUBSCRIPTION_ACCEPT: &str =
     "application/yaml, text/yaml, text/plain, application/octet-stream;q=0.9, */*;q=0.5";
 const COMPATIBLE_USER_AGENTS: [&str; 2] =
     [DEFAULT_SUBSCRIPTION_USER_AGENT, "ClashforWindows/0.20.39"];
-const TOTAL_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const TOTAL_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Keep only recognized numeric fields. Never persist/log the raw header, which
 /// is untrusted and can contain account information or unexpected text.
@@ -115,6 +116,7 @@ enum TransportFailure {
     Timeout,
     Dns,
     Tls,
+    TlsHandshake,
     Connection,
     Interrupted,
     Request,
@@ -124,6 +126,7 @@ impl TransportFailure {
     fn classify(error: &reqwest::Error) -> Self {
         // Inspect causes only for classification. Never expose cause text or URLs.
         let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        let mut handshake = false;
         let mut dns = false;
         let mut interrupted = false;
         while let Some(value) = cause {
@@ -137,9 +140,10 @@ impl TransportFailure {
                 )
             });
             let text = value.to_string().to_ascii_lowercase();
-            if text.contains("certificate") || text.contains("tls handshake") {
+            if text.contains("certificate") {
                 return Self::Tls;
             }
+            handshake |= text.contains("tls handshake");
             dns |= text.contains("dns error") || text.contains("failed to lookup address");
             interrupted |= text.contains("connection closed before message completed")
                 || text.contains("connection reset")
@@ -148,6 +152,8 @@ impl TransportFailure {
         }
         if error.is_timeout() {
             Self::Timeout
+        } else if handshake {
+            Self::TlsHandshake
         } else if dns {
             Self::Dns
         } else if error.is_connect() {
@@ -162,7 +168,7 @@ impl TransportFailure {
     fn retryable(self) -> bool {
         matches!(
             self,
-            Self::Timeout | Self::Dns | Self::Connection | Self::Interrupted
+            Self::Timeout | Self::Dns | Self::Connection | Self::Interrupted | Self::TlsHandshake
         )
     }
 
@@ -171,6 +177,7 @@ impl TransportFailure {
             Self::Timeout => "订阅请求超时",
             Self::Dns => "订阅域名解析失败",
             Self::Tls => "订阅安全连接校验失败",
+            Self::TlsHandshake => "订阅安全连接握手中断",
             Self::Connection => "订阅服务器连接失败",
             Self::Interrupted => "订阅连接意外中断",
             Self::Request => "订阅请求发送或读取失败",
@@ -209,7 +216,7 @@ pub(crate) fn subscription_user_message(
     } else if message.starts_with("HTTP 5") {
         ("订阅服务暂时异常", "服务商暂未返回可用结果，请稍后重试。")
     } else if message.contains("超时") {
-        ("获取订阅超时", "服务商未在等待时间内完成响应。请重试；如其他客户端可用，请检查当前网络路径和客户端标识。")
+        ("获取订阅超时", "当前下载路径未在等待时间内取得完整响应。原有配置和节点已保留；可重试或在「订阅下载路径」中选择其他路径。")
     } else if message == "订阅域名解析失败" {
         ("订阅域名解析失败", "请检查 DNS 与当前网络连接后重试。")
     } else if message == "订阅安全连接校验失败" {
@@ -217,7 +224,10 @@ pub(crate) fn subscription_user_message(
             "订阅安全连接未通过校验",
             "请检查系统时间，或联系服务商检查 HTTPS 证书。",
         )
-    } else if message == "订阅服务器连接失败" || message == "订阅连接意外中断" {
+    } else if message == "订阅服务器连接失败"
+        || message == "订阅连接意外中断"
+        || message == "订阅安全连接握手中断"
+    {
         (
             "连接订阅服务未成功",
             "连接失败或中途断开，请检查当前网络路径后重试。原有配置未受影响。",
@@ -237,7 +247,7 @@ pub(crate) fn subscription_user_message(
 }
 
 fn subscription_timeout_error() -> AppError {
-    AppError::Subscription("订阅请求超时（兼容重试总计不超过 30 秒）".to_string())
+    AppError::Subscription("订阅请求超时（兼容重试总计不超过 60 秒）".to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -253,6 +263,7 @@ pub struct SubscriptionFetcher {
     task: Option<Arc<Task>>,
     client: reqwest::Client,
     total_timeout: std::time::Duration,
+    body_idle_timeout: std::time::Duration,
 }
 
 impl SubscriptionFetcher {
@@ -430,8 +441,8 @@ impl SubscriptionFetcher {
         }
         let client = builder
             .referer(false)
-            .connect_timeout(std::time::Duration::from_secs(8))
-            .timeout(std::time::Duration::from_secs(20))
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {
                     return attempt.stop();
@@ -451,6 +462,7 @@ impl SubscriptionFetcher {
             client,
             task: None,
             total_timeout: TOTAL_FETCH_TIMEOUT,
+            body_idle_timeout: BODY_IDLE_TIMEOUT,
         })
     }
 
@@ -587,8 +599,13 @@ impl SubscriptionFetcher {
                 };
                 match result {
                     Err(AppError::Subscription(ref text))
-                        if ["订阅请求超时", "订阅连接意外中断", "订阅服务器连接失败"]
-                            .contains(&text.as_str()) =>
+                        if [
+                            "订阅请求超时",
+                            "订阅正文读取超时",
+                            "订阅连接意外中断",
+                            "订阅服务器连接失败",
+                        ]
+                        .contains(&text.as_str()) =>
                     {
                         if self
                             .retry(
@@ -628,9 +645,16 @@ impl SubscriptionFetcher {
             if remaining.is_zero() {
                 return Err(subscription_timeout_error());
             }
-            let Some(chunk) = tokio::time::timeout(remaining, stream.next())
-                .await
-                .map_err(|_| subscription_timeout_error())?
+            let Some(chunk) =
+                tokio::time::timeout(remaining.min(self.body_idle_timeout), stream.next())
+                    .await
+                    .map_err(|_| {
+                        if tokio::time::Instant::now() >= deadline {
+                            subscription_timeout_error()
+                        } else {
+                            AppError::Subscription("订阅正文读取超时".into())
+                        }
+                    })?
             else {
                 break;
             };
@@ -638,7 +662,13 @@ impl SubscriptionFetcher {
             if bytes.len() + chunk.len() > MAX_SUBSCRIPTION_BYTES {
                 return Err(AppError::Subscription("订阅内容超过 4 MiB 限制".into()));
             }
+            let previous_blocks = bytes.len() / (64 * 1024);
             bytes.extend_from_slice(&chunk);
+            if bytes.len() / (64 * 1024) > previous_blocks {
+                if let Some(task) = &self.task {
+                    task.bytes(bytes.len());
+                }
+            }
         }
         if bytes.is_empty() {
             return Err(AppError::Subscription("订阅内容为空".into()));
@@ -1154,6 +1184,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_body_is_discarded_then_retried_as_a_complete_document() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 2048];
+            assert!(first.read(&mut buf).await.unwrap() > 0);
+            first
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 999\r\nConnection: close\r\n\r\nbroken",
+                )
+                .await
+                .unwrap();
+            let (mut second, _) = listener.accept().await.unwrap();
+            assert!(second.read(&mut buf).await.unwrap() > 0);
+            let body = "proxies: []\nrules: []\n";
+            second.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/yaml\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        });
+        let mut fetcher = SubscriptionFetcher::new().unwrap();
+        fetcher.body_idle_timeout = std::time::Duration::from_millis(30);
+        fetcher.total_timeout = std::time::Duration::from_secs(2);
+        let result = fetcher
+            .fetch(&format!("http://{address}/sub"), "clash.meta", None, None)
+            .await
+            .unwrap();
+        assert_eq!(result.content.as_deref(), Some("proxies: []\nrules: []\n"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn total_deadline_also_bounds_a_slow_response_body() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1185,7 +1246,7 @@ mod tests {
             )
             .await
             .expect_err("body must respect the total deadline");
-        assert!(error.to_string().contains("总计不超过 30 秒"));
+        assert!(error.to_string().contains("总计不超过 60 秒"));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
         server.await.expect("server");
     }

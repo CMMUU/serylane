@@ -300,7 +300,7 @@ fn apply_openai_policy(
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
     for node in &policy.selected_nodes {
-        if selected.len() >= usize::from(policy.max_nodes.clamp(2, 10)) {
+        if selected.len() >= usize::from(policy.max_nodes.clamp(1, 10)) {
             break;
         }
         if available_nodes.contains(&node.name)
@@ -327,10 +327,10 @@ fn apply_openai_policy(
             );
         }
     }
-    let insufficient = selected.len() < 2;
+    let insufficient = selected.is_empty();
     if insufficient {
         summary.warnings.push(
-            "OpenAI 符合地区与预算限制的有效节点少于 2 个；托管路径拒绝新请求，请重新生成灾备"
+            "OpenAI 符合地区与预算限制的有效节点为 0 个；托管路径拒绝新请求，请重新生成灾备"
                 .to_string(),
         );
         selected.clear();
@@ -753,13 +753,13 @@ rules:
         let doc: Value = serde_yaml::from_str(&result.yaml).unwrap();
         assert_eq!(
             doc["proxy-groups"][0]["proxies"].as_sequence().unwrap(),
-            &vec![Value::String("REJECT".into())]
+            &vec![Value::String("JP 1x".into())]
         );
-        assert!(!result.summary.warnings.is_empty());
+        assert_eq!(doc["proxy-groups"][0]["type"], "fallback");
     }
     #[test]
     fn small_ai_pools_survive_policy_roundtrip_and_native_validation() {
-        for count in [2usize, 3, 10] {
+        for count in [1usize, 2, 3, 10] {
             let mut source = "proxies:\n".to_string();
             for i in 0..count {
                 source.push_str(&format!(
@@ -807,10 +807,10 @@ rules:
     }
 
     #[test]
-    fn rejects_new_requests_when_fewer_than_two_eligible_nodes_still_exist() {
+    fn rejects_new_requests_when_no_eligible_nodes_still_exist() {
         let policy = OpenAiPolicy {
             enabled: true,
-            selected_nodes: vec![node("sample", 90.0), node("removed", 80.0)],
+            selected_nodes: vec![node("removed", 80.0)],
             ..Default::default()
         };
         let effective = build_effective_config_with_policy(
@@ -827,7 +827,7 @@ rules:
             .summary
             .warnings
             .iter()
-            .any(|warning| warning.contains("少于 2 个")));
+            .any(|warning| warning.contains("为 0 个")));
         assert!(effective.yaml.contains(OPENAI_GROUP_NAME));
         let doc: Value = serde_yaml::from_str(&effective.yaml).unwrap();
         assert_eq!(

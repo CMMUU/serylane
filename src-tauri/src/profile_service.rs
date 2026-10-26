@@ -443,7 +443,14 @@ pub async fn refresh_profile(
     {
         Ok((result, usage)) => {
             if storage
-                .record_subscription_check_since(profile_id, usage.as_ref(), None, request_started)
+                .record_subscription_observation(
+                    profile_id,
+                    usage.as_ref(),
+                    None,
+                    request_started,
+                    crate::models::SubscriptionObservationKind::Config,
+                    Some(&task.snapshot()),
+                )
                 .is_err()
             {
                 crate::app_log::record(
@@ -456,11 +463,13 @@ pub async fn refresh_profile(
         }
         Err(error) => {
             if !task.cancelled() {
-                let _ = storage.record_subscription_check_since(
+                let _ = storage.record_subscription_observation(
                     profile_id,
                     None,
                     Some(&error),
                     request_started,
+                    crate::models::SubscriptionObservationKind::Config,
+                    Some(&task.snapshot()),
                 );
             }
             Err(error)

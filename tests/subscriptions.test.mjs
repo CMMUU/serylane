@@ -75,7 +75,7 @@ test("host/name/id and error content are escaped; no remote thumbnails or fake s
   record.profile.source.host = '<script>bad</script>'; record.status.lastError = '<b>HTTP 403</b>';
   const card = subscriptionCardMarkup(record, null, now);
   assert.doesNotMatch(card, /<img|<script| onclick="|https:\/\/|token=/);
-  assert.match(card, /&lt;img/); assert.match(card, /刷新失败 · &lt;b&gt;HTTP 403/);
+  assert.match(card, /&lt;img/); assert.match(card, /上次订阅检查未完成 · &lt;b&gt;HTTP 403/);
 });
 test("all real subscription actions remain available and selecting an active profile is disabled", () => {
   const card = subscriptionCardMarkup(subscription(), null, now);
@@ -256,7 +256,7 @@ test("normal card folds secondary facts but retains visible failure and expiry",
   assert.doesNotMatch(compact, /每 5 分钟|上传|下载|配置校验通过|最近检查/);
   assert.match(more, /每 5 分钟|上传|配置校验通过/);
   const record = subscription(); record.status.lastError = "连接失败";
-  assert.match(subscriptionCardMarkup(record, null, now).split('<details')[0], /刷新失败/);
+  assert.match(subscriptionCardMarkup(record, null, now).split('<details')[0], /上次订阅检查未完成/);
 });
 
 test("configuration remote records follow subscriptions while local YAML remains separate", () => {
@@ -277,4 +277,19 @@ test('only actual selected card is current, independent of order or import focus
  assert.doesNotMatch(read('main.ts'),/highlightedSubscriptionId|is-imported/);
  assert.match(read('main.ts'),/active: subscription.profile.id === store.activeProfile\?\.profile.id/);
  assert.match(read('subscription-cards.css'),/\.subscription-tile\.is-active/);
+});
+
+
+test("configuration failure survives later quota success and stale full-list snapshots", () => {
+  const record=subscription();
+  record.status={...record.status,config:{requestStartedAt:"2026-10-26T01:00:00Z",checkedAt:"2026-10-26T01:00:15Z",lastError:"订阅请求超时",path:"serylane",attempts:2,elapsedMs:14662},quota:{checkedAt:"2026-10-26T01:05:00Z",lastError:null}};
+  const html=subscriptionCardMarkup(record,null,now);
+  assert.match(html,/订阅配置更新未完成/);assert.match(html,/经 Serylane 当前核心/);assert.match(html,/已请求 2 次/);assert.match(html,/14.7 秒/);assert.doesNotMatch(html,/用量信息暂未更新/);
+  const merged=newestSubscriptionStatus(record.status,{...record.status,config:{checkedAt:"2026-10-26T00:00:00Z",lastError:null},quota:{checkedAt:"2026-10-26T01:06:00Z",lastError:"用量超时"}});
+  assert.equal(merged.config.lastError,"订阅请求超时");assert.equal(merged.quota.lastError,"用量超时");
+});
+test("quota failure is not labelled a failed configuration refresh; both can be shown", () => {
+  const record=subscription(); record.status.quota={checkedAt:"2026-10-26T01:00:00Z",lastError:"超时"};
+  let html=subscriptionCardMarkup(record,null,now);assert.match(html,/用量信息暂未更新/);assert.doesNotMatch(html,/订阅配置更新未完成|刷新失败/);
+  record.status.config={checkedAt:"2026-10-26T01:00:00Z",lastError:"配置更新超时"};html=subscriptionCardMarkup(record,null,now);assert.match(html,/用量信息暂未更新/);assert.match(html,/订阅配置更新未完成/);
 });

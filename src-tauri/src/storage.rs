@@ -297,6 +297,25 @@ impl AppStorage {
         error: Option<&AppError>,
         request_started: chrono::DateTime<Utc>,
     ) -> AppResult<()> {
+        self.record_subscription_observation(
+            profile_id,
+            usage,
+            error,
+            request_started,
+            crate::models::SubscriptionObservationKind::Config,
+            None,
+        )
+    }
+
+    pub fn record_subscription_observation(
+        &self,
+        profile_id: Uuid,
+        usage: Option<&SubscriptionUsage>,
+        error: Option<&AppError>,
+        request_started: chrono::DateTime<Utc>,
+        kind: crate::models::SubscriptionObservationKind,
+        task: Option<&crate::subscription_task::Snapshot>,
+    ) -> AppResult<()> {
         let _permit = OBSERVATION_WRITE
             .lock()
             .map_err(|_| AppError::Io("订阅检查记录暂时无法保存".into()))?;
@@ -308,21 +327,42 @@ impl AppStorage {
             return Ok(());
         }
         let mut status = self.subscription_status(profile_id).unwrap_or_default();
-        if status
-            .request_started_at
-            .or(status.checked_at)
+        let latest_legacy = status.request_started_at.or(status.checked_at);
+        let observation = match kind {
+            crate::models::SubscriptionObservationKind::Config => &mut status.config,
+            crate::models::SubscriptionObservationKind::Quota => &mut status.quota,
+        };
+        if observation
+            .as_ref()
+            .and_then(|o| o.request_started_at.or(o.checked_at))
             .is_some_and(|started| started > request_started)
         {
             return Ok(());
         }
         let now = Utc::now();
-        status.checked_at = Some(now);
-        status.request_started_at = Some(request_started);
-        status.last_error = error.map(crate::subscription::safe_subscription_error);
+        let current = observation.get_or_insert_with(Default::default);
+        current.checked_at = Some(now);
+        current.request_started_at = Some(request_started);
+        current.last_error = error.map(crate::subscription::safe_subscription_error);
         if error.is_none() {
-            if let Some(usage) = usage {
-                status.usage = Some(usage.clone());
-                status.usage_updated_at = Some(now);
+            current.last_success_at = Some(now);
+        }
+        current.path = task.map(|s| s.path.to_string());
+        current.attempts = task.map_or(0, |s| s.attempt);
+        current.elapsed_ms = task.map_or(0, |s| s.elapsed_ms);
+        current.failure_phase =
+            error.and_then(|_| task.map(|s| format!("{:?}", s.failure_phase.unwrap_or(s.phase))));
+        // Independent history is retained even if the other channel started later.
+        // Legacy summary and shared usage still reject late writes.
+        if latest_legacy.is_none_or(|started| started <= request_started) {
+            status.checked_at = Some(now);
+            status.request_started_at = Some(request_started);
+            status.last_error = error.map(crate::subscription::safe_subscription_error);
+            if error.is_none() {
+                if let Some(usage) = usage {
+                    status.usage = Some(usage.clone());
+                    status.usage_updated_at = Some(now);
+                }
             }
         }
         // Separate from immutable revisions, active selection and runtime YAML:
@@ -792,6 +832,62 @@ mod tests {
         std::env::temp_dir().join(format!("routedeck-storage-{}", Uuid::new_v4()))
     }
 
+    #[test]
+    fn independent_config_quota_observations_survive_restart_and_cross_channel_late_results() {
+        use crate::models::SubscriptionObservationKind::{Config, Quota};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = AppStorage::from_root(dir.path().to_path_buf()).unwrap();
+        let profile = storage
+            .create_profile(
+                "fixture".into(),
+                ProfileSource::RemoteSubscription {
+                    url: "https://example.invalid/sub".into(),
+                    user_agent: "clash.meta".into(),
+                },
+            )
+            .unwrap();
+        let t = chrono::Utc::now();
+        let timeout = AppError::Subscription("订阅请求超时".into());
+        storage
+            .record_subscription_observation(profile.id, None, Some(&timeout), t, Config, None)
+            .unwrap();
+        storage
+            .record_subscription_observation(
+                profile.id,
+                None,
+                None,
+                t + chrono::Duration::seconds(1),
+                Quota,
+                None,
+            )
+            .unwrap();
+        let s = storage.subscription_status(profile.id).unwrap();
+        assert!(s.config.unwrap().last_error.is_some());
+        assert!(s.quota.unwrap().last_error.is_none());
+        // A late config response can update config history, but not newer quota/legacy usage.
+        storage
+            .record_subscription_observation(
+                profile.id,
+                None,
+                None,
+                t + chrono::Duration::milliseconds(500),
+                Config,
+                None,
+            )
+            .unwrap();
+        storage
+            .record_subscription_observation(profile.id, None, Some(&timeout), t, Config, None)
+            .unwrap();
+        let reopened = AppStorage::from_root(dir.path().to_path_buf()).unwrap();
+        let s = reopened.subscription_status(profile.id).unwrap();
+        assert!(s.config.unwrap().last_error.is_none());
+        assert!(s.quota.unwrap().last_error.is_none());
+        assert_eq!(s.request_started_at, Some(t + chrono::Duration::seconds(1)));
+        let legacy: crate::models::SubscriptionStatus =
+            serde_json::from_str(r#"{"lastError":"old timeout","checkedAt":null}"#).unwrap();
+        assert!(legacy.config.is_none() && legacy.quota.is_none());
+        assert_eq!(legacy.last_error.as_deref(), Some("old timeout"));
+    }
     #[test]
     fn cleanup_preserves_running_intent_but_explicit_stop_clears_it() {
         let directory = tempfile::tempdir().expect("isolated storage");

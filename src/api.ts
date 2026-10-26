@@ -52,6 +52,7 @@ export const api = {
   domainRouteStatus: () => invoke<DomainRouteState>("domain_route_status"),
   saveDomainRoute: (policy: DomainSelection, expectedRevision: number) => invoke<DomainRouteState>("save_domain_route", {policy, expectedRevision}),
   applyDomainRoute: (enabled: boolean, state: DomainRouteState) => invoke<DomainRouteState>("apply_domain_route", {enabled, expectedRevision: state.document.revision, profileId: state.profileId, profileRevision: state.profileRevision, confirmed: true}),
+  startAiHealthCheck: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_ai_health_check", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision }),
   startNodeTest: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_node_test", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision }),
   nodeTestStatus: () => invoke<NodeTestSnapshot | null>("node_test_status"),
   cancelNodeTest: (taskId: string) => invoke<NodeTestSnapshot>("cancel_node_test", { taskId }),

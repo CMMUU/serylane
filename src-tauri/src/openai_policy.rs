@@ -30,7 +30,7 @@ const BENCHMARK_GROUP_NAME: &str = "__MIHOMO_DESKTOP_OPENAI_BENCHMARK__";
 const MAX_CANDIDATES: usize = 300;
 const BANDWIDTH_CANDIDATES: usize = 15;
 const SELECTED_NODES: usize = 10;
-const MIN_HEALTHY_NODES: usize = 2;
+const MIN_HEALTHY_NODES: usize = 1;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -207,7 +207,9 @@ impl OpenAiPolicyTaskManager {
             snapshot.phase = OpenAiTaskPhase::Completed;
             snapshot.completed = selected;
             snapshot.total = selected;
-            snapshot.message = if selected == 2 {
+            snapshot.message = if selected == 1 {
+                "已生成 1 个合格节点 · 单节点运行，暂无备用".into()
+            } else if selected == 2 {
                 "已生成 2 个可用节点 · 一主一备".into()
             } else {
                 format!("已生成 {selected} 个节点，{healthy} 个候选通过检测")
@@ -352,7 +354,7 @@ async fn generate_and_apply(
         .take(MAX_CANDIDATES)
         .collect();
     if candidates.len() < MIN_HEALTHY_NODES {
-        return Err(AppError::Config(format!("可提取 {} 个节点，地区条件排除 {excluded_region} 个，成本条件排除 {excluded_cost} 个，剩余 {eligible} 个；AI 代理需要至少 2 个不同的合格节点。请检查节点名称地区和成本设置。", eligible + excluded_region + excluded_cost)));
+        return Err(AppError::Config(format!("可提取 {} 个节点，地区条件排除 {excluded_region} 个，成本条件排除 {excluded_cost} 个，剩余 {eligible} 个；AI 代理需要至少 1 个合格节点。请检查节点名称地区和成本设置。", eligible + excluded_region + excluded_cost)));
     }
     check_cancelled(app)?;
     update_progress(
@@ -554,7 +556,7 @@ async fn benchmark_nodes(
         .diagnostics(|d| d.reachable = Some(reachable.len()))?;
     if reachable.len() < MIN_HEALTHY_NODES {
         return Err(AppError::Runtime(format!(
-            "仅 {} 个节点通过 OpenAI 可达性检测，至少需要 2 个",
+            "仅 {} 个节点通过 OpenAI 可达性检测，至少需要 1 个",
             reachable.len()
         )));
     }
@@ -683,7 +685,7 @@ async fn benchmark_nodes(
     app.state::<OpenAiPolicyTaskManager>()
         .diagnostics(|d| d.selected = Some(selected_nodes.len()))?;
     if selected_nodes.len() < MIN_HEALTHY_NODES {
-        return Err(AppError::Runtime(format!("初次检测通过 {healthy_count} 个，复测及基础质量筛选后剩余 {} 个；至少需要 2 个。原有策略未替换，请检查失败节点或补充合格节点。", selected_nodes.len())));
+        return Err(AppError::Runtime(format!("初次检测通过 {healthy_count} 个，复测及基础质量筛选后剩余 {} 个；至少需要 1 个。原有策略未替换，请检查失败节点或补充合格节点。", selected_nodes.len())));
     }
     Ok(OpenAiPolicy {
         runtime_costs: Default::default(),

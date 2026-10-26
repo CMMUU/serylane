@@ -1162,6 +1162,24 @@ async fn disable_openai_policy(
 }
 
 #[tauri::command]
+async fn start_ai_health_check(
+    app: AppHandle,
+    profile_id: Uuid,
+    revision_id: Uuid,
+    mode_revision: Uuid,
+) -> Result<node_test::Snapshot, AppErrorDto> {
+    node_test::start_kind(
+        app,
+        profile_id,
+        revision_id,
+        mode_revision,
+        node_test::Kind::Ai,
+    )
+    .await
+    .map_err(dto)
+}
+
+#[tauri::command]
 async fn start_node_test(
     app: AppHandle,
     profile_id: Uuid,
@@ -1537,6 +1555,7 @@ pub fn run() {
             select_proxy,
             clear_proxy_selection,
             start_node_test,
+            start_ai_health_check,
             node_test_status,
             cancel_node_test,
             test_proxy_delay,

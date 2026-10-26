@@ -2,11 +2,18 @@ import type { OpenAiPolicyTask, SubscriptionOverview, SubscriptionUsage, Subscri
 
 // A delayed full-page read must not replace a newer background quota event.
 export function newestSubscriptionStatus(previous: SubscriptionStatus | null | undefined, incoming: SubscriptionStatus | null | undefined) {
-  const time = (status: SubscriptionStatus | null | undefined) => {
-    const value = Date.parse(status?.checkedAt ?? "");
+  if (!previous) return incoming;
+  if (!incoming) return previous;
+  const time = (status: { requestStartedAt?: string | null; checkedAt?: string | null } | null | undefined) => {
+    const value = Date.parse(status?.requestStartedAt ?? status?.checkedAt ?? "");
     return Number.isFinite(value) ? value : -Infinity;
   };
-  return time(previous) > time(incoming) ? previous : incoming;
+  const latest = time(previous) > time(incoming) ? previous : incoming;
+  if (!previous.config && !previous.quota && !incoming.config && !incoming.quota) return latest;
+  return { ...latest,
+    config: time(previous.config) > time(incoming.config) ? previous.config : incoming.config ?? previous.config,
+    quota: time(previous.quota) > time(incoming.quota) ? previous.quota : incoming.quota ?? previous.quota,
+  };
 }
 
 const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
@@ -47,6 +54,23 @@ export function describeSubscriptionUsage(usage: SubscriptionUsage | null | unde
   };
 }
 
+export function subscriptionAlerts(status: SubscriptionStatus | null | undefined): string {
+  if (!status) return '';
+  const split = Boolean(status.config || status.quota);
+  const config = status.config, quota = status.quota;
+  const paths: Record<string, string> = {serylane: '经 Serylane 当前核心', direct: '直连', local_proxy: '经指定本地代理'};
+  const detail = (observation: NonNullable<SubscriptionStatus['config']>) => {
+    const parts = [paths[observation.path ?? '']];
+    if (observation.attempts) parts.push(`已请求 ${observation.attempts} 次`);
+    if (observation.elapsedMs) parts.push(`耗时 ${(observation.elapsedMs / 1000).toFixed(1)} 秒`);
+    return parts.filter(Boolean).join(' · ');
+  };
+  return [config?.lastError ? `<p class="subscription-alert is-error">订阅配置更新未完成 · ${escape(config.lastError)}<br><small>${escape(detail(config))}</small></p>` : '',
+    quota?.lastError ? `<p class="subscription-alert">用量信息暂未更新 · 保留上次记录。${escape(quota.lastError)}</p>` : '',
+    !split && status.lastError ? `<p class="subscription-alert">上次订阅检查未完成 · ${escape(status.lastError)}（旧版记录，未区分配置与用量）</p>` : '',
+  ].join('');
+}
+
 export function subscriptionCardMarkup(subscription: SubscriptionOverview, task: OpenAiPolicyTask | null, now = Date.now(), refreshing = false): string {
   const { profile, summary, latestMetadata, latestValidation, status } = subscription;
   const usageData = status?.usage ?? latestMetadata?.usage;
@@ -75,7 +99,8 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
     </div>
     <section class="subscription-usage" aria-label="套餐流量"><div class="subscription-usage-label"><span>已用 <strong>${subscriptionBytes(usage.used)}</strong> / ${usage.quota === null ? "额度未提供" : subscriptionBytes(usage.quota)}</span><span>${usageData ? usage.state === "剩余流量" ? `剩余 ${subscriptionBytes(usage.remaining)}` : usage.state : "流量信息未提供"}</span></div>${progress}</section>
     <div class="subscription-compact-facts"><span class="${usage.expired ? "is-expired" : ""}">到期 ${usage.expires}${usage.expired ? " · 已到期" : ""}</span><span>更新 ${subscriptionDate(subscription.latestFetchedAt)}</span></div>
-    ${status?.lastError || noCurrentSample ? `<p class="subscription-alert${status?.lastError ? " is-error" : ""}">${status?.lastError ? `刷新失败 · ${escape(status.lastError)}` : "本次检查未获取新用量，保留上次采样。"}</p>` : ""}
+    ${subscriptionAlerts(status)}
+    ${!status?.quota?.lastError && !status?.lastError && noCurrentSample ? '<p class="subscription-alert">本次检查未获取新用量，保留上次采样。</p>' : ''}
     <details class="subscription-more"><summary aria-label="${escape(profile.displayName)} 详情与更多操作">更多<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="subscription-more-body"><p>${escape(host)} · 凭据已隐藏</p><div class="subscription-transfer"><span>上传 ${subscriptionBytes(usage.upload)}</span><span>下载 ${subscriptionBytes(usage.download)}</span><span>已用 ${subscriptionBytes(usage.used)}</span></div><p>${configuration}${summary ? ` · ${summary.nodeCount} 节点 · ${summary.proxyProviderCount} 提供器` : ""}</p><div class="subscription-observation"><p>${status?.checkedAt ? `最近检查 ${subscriptionDate(status.checkedAt)}` : "尚未检查用量"}</p><p>${usageNote}</p></div><dl><div><dt>用量采样</dt><dd>${sampleAt ? subscriptionDate(sampleAt) : "尚无采样"}</dd></div><div><dt>配置更新</dt><dd>${subscriptionDate(subscription.latestFetchedAt)}</dd></div><div><dt>配置文件</dt><dd>${subscriptionBytes(latestMetadata?.bytes)} · ${subscription.revisionCount} 个版本</dd></div></dl><p>${policyText}${failed ? `：${escape(task?.error ?? "请重试")}` : ""}</p><div class="toolbar">${button(generating ? "openai-cancel" : "openai-generate", generating ? `停止生成${taskProgress}` : profile.openaiPolicy.enabled ? "重新生成灾备" : "OpenAI 灾备", task?.running && !taskForProfile ? "disabled" : "")}${button("edit", "编辑信息")}${button("versions", "版本")}${button("delete", "删除")}</div></div></details>
   </article>`;
 }
