@@ -398,6 +398,8 @@ const policy = {
   lastBenchmarkedAt: stamp,
   benchmarkVersion: 1,
 };
+if (previewQuery.get('aiPool') === '1') { policy.selectedNodes = policy.selectedNodes.slice(0, 1); policy.healthyCount = 1; }
+
 const nodeScenario = previewQuery.get("nodeScenario");
 const fixtureMetadata = (index: number): NodeMetadata => ({regions: [index ? "SG" : "JP"], regionStatus: "supported", eligible: true, regionReason: "名称地区在 API 支持名单内", ruleVersion: "2026-09-20.1", checkedAt: "2026-09-20", ruleSource: "https://developers.openai.com/api/docs/supported-countries", nameMultiplier: null, multiplierSource: "manual"});
 const fixtureNodes: ProxyMap = {
@@ -702,7 +704,7 @@ const subscriptionSamples = new Map<string, {
 }>();
 const subscriptionStamp = "2026-09-07T08:00:00.000Z";
 const staleSubscriptionStamp = "2026-09-01T08:00:00.000Z";
-const fixtureSubscriptionError = "订阅请求失败：HTTP 403。订阅服务拒绝访问；请检查订阅是否有效或联系服务商。";
+const fixtureSubscriptionError = previewQuery.get("subscriptionFailure") === "timeout" ? "订阅请求超时；已保留原配置和用量记录" : "订阅请求失败：HTTP 403。订阅服务拒绝访问；请检查订阅是否有效或联系服务商。";
 
 function subscriptions(): SubscriptionOverview[] {
   return profiles.filter(profile => profile.source.type === "remote_subscription").map(profile => {
@@ -853,19 +855,19 @@ function fixtureManualState() {
 // Synthetic controller job: no real nodes, requests, profiles or runtime writes.
 let fixtureNodeJob: NodeTestSnapshot | null = null;
 let fixtureNodeJobStarted = 0, fixtureNodeJobCounter = 0, fixtureNodeJobFails = false;
-function fixtureNodeScope(): NodeTestScope | null {
+function fixtureNodeScope(kind: "manual" | "ai" = "manual"): NodeTestScope | null {
   const profile = profiles.find(p => p.id === activeProfileId);
-  if (!profile || fixtureProxyMode !== 'manual' || fixtureRuntimePhase !== 'running' || profile.routingMode === 'direct') return null;
-  return {profileId: profile.id, revisionId: profile.activeRevisionId!, modeRevision: fixtureModeRevision, runtimePid: null, runtimeStartedAt: stamp, routingMode: profile.routingMode};
+  if (!profile || fixtureProxyMode !== kind || fixtureRuntimePhase !== 'running' || profile.routingMode === 'direct') return null;
+  return {kind, profileId: profile.id, revisionId: profile.activeRevisionId!, modeRevision: fixtureModeRevision, runtimePid: null, runtimeStartedAt: stamp, routingMode: profile.routingMode};
 }
 function fixtureNodeStatus() {
   const job = fixtureNodeJob;
   if (!job) return null;
-  if (JSON.stringify(job.scope) !== JSON.stringify(fixtureNodeScope())) {job.valid = false; job.phase = 'cancelled';}
+  if (JSON.stringify(job.scope) !== JSON.stringify(fixtureNodeScope(job.scope.kind))) {job.valid = false; job.phase = 'cancelled';}
   if (job.phase === 'running') {
     const done = Math.min(job.nodes.length, Math.floor((Date.now() - fixtureNodeJobStarted) / 1200));
     job.nodes.forEach((node, i) => {node.state = i < done ? i === 0 ? 'passed' : 'timeout' : 'testing'; node.delayMs = node.state === 'passed' ? 48 : null;});
-    if (done === job.nodes.length) {job.phase = 'completed'; job.message = '合成测试完成；未发送真实请求';}
+    if (done === job.nodes.length) {job.phase = 'completed'; job.finishedAt = new Date().toISOString(); job.message = '合成测试完成；未发送真实请求';}
   }
   job.sequence++; return structuredClone(job);
 }
@@ -944,18 +946,19 @@ function payloadRecord(payload: InvokeArgs | undefined): Record<string, unknown>
 mockIPC(async (command, payload) => {
   const args = payloadRecord(payload);
   if (command === 'node_test_status') return fixtureNodeStatus();
-  if (command === 'start_node_test') {
+  if (command === 'start_node_test' || command === 'start_ai_health_check') {
     if (fixtureNodeJobFails) throw ruleError('STATE_CONFLICT', '合成核心读取失败，请刷新后重试');
-    const scope = fixtureNodeScope();
+    const scope = fixtureNodeScope(command === "start_ai_health_check" ? "ai" : "manual");
     if (!scope || scope.profileId !== args.profileId || scope.revisionId !== args.revisionId || scope.modeRevision !== args.modeRevision) throw ruleError('STATE_CONFLICT','配置已变化');
     if (fixtureNodeStatus()?.phase === 'running') return fixtureNodeStatus();
     fixtureNodeJobStarted = Date.now();
-    fixtureNodeJob = {id: `fixture-job-${++fixtureNodeJobCounter}`, scope, sequence: 0, valid: true, phase: 'running', message: '合成测试进行中', nodes: policy.selectedNodes.map(n => ({name: n.name, state: 'pending', delayMs: null}))};
+    document.documentElement.dataset.fixtureHealthStarts = String(fixtureNodeJobCounter + 1);
+    fixtureNodeJob = {startedAt: new Date().toISOString(), finishedAt: null, id: `fixture-job-${++fixtureNodeJobCounter}`, scope, sequence: 0, valid: true, phase: 'running', message: '合成测试进行中', nodes: policy.selectedNodes.map(n => ({name: n.name, state: 'pending', delayMs: null}))};
     return structuredClone(fixtureNodeJob);
   }
   if (command === 'cancel_node_test') {
     if (!fixtureNodeJob || fixtureNodeJob.id !== args.taskId) throw ruleError('STATE_CONFLICT', '测试任务已变化');
-    fixtureNodeStatus(); fixtureNodeJob.phase = 'cancelled'; fixtureNodeJob.sequence++; fixtureNodeJob.message = '已取消合成测试';
+    fixtureNodeStatus(); fixtureNodeJob.phase = 'cancelled'; fixtureNodeJob.finishedAt = new Date().toISOString(); fixtureNodeJob.sequence++; fixtureNodeJob.message = '已取消合成测试';
     fixtureNodeJob.nodes.forEach(n => {if(n.state === 'testing') n.state = 'pending';});
     return structuredClone(fixtureNodeJob);
   }
@@ -1135,8 +1138,16 @@ mockIPC(async (command, payload) => {
         fetchedAt: failed ? previous?.fetchedAt ?? stamp : checkedAt,
         status: {
           checkedAt, lastError: failed ? fixtureSubscriptionError : null, usage,
+          config: { checkedAt, requestStartedAt: checkedAt, lastError: failed ? fixtureSubscriptionError : null, path: 'serylane', attempts: failed ? 2 : 1, elapsedMs: failed ? 14662 : 120 },
+          quota: { checkedAt, lastError: null },
           usageUpdatedAt: usage ? failed ? previous?.status?.usageUpdatedAt ?? previous?.fetchedAt ?? stamp : checkedAt : null,
         },
+      });
+      if (typeof args.taskId === 'string') syntheticSubscriptionTasks.set(args.taskId, {
+        id: args.taskId, operation: 'refresh', profileId: profile.id, phase: failed ? 'failed' : 'completed',
+        path: 'serylane', sequence: 3, elapsedMs: failed ? 14662 : 120, attempt: failed ? 2 : 1,
+        httpStatus: failed ? null : 200, retryAfterSeconds: null, bytes: failed ? 0 : 120,
+        canCancel: false, message: failed ? fixtureSubscriptionError : '合成配置已检查', errorCode: failed ? 'SUBSCRIPTION_ERROR' : null,
       });
       reportSubscriptions();
       if (failed) throw { code: "SUBSCRIPTION_ERROR", stage: "fixture_subscription", message: fixtureSubscriptionError, retryable: false };

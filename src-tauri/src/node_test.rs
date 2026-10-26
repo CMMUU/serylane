@@ -26,9 +26,17 @@ const MAX_NODES: usize = 1000;
 const CONCURRENCY: usize = 4;
 const TOTAL_BUDGET: Duration = Duration::from_secs(15 * 60);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Manual,
+    Ai,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Scope {
+    pub kind: Kind,
     pub profile_id: Uuid,
     pub revision_id: Uuid,
     pub mode_revision: Uuid,
@@ -72,6 +80,8 @@ pub struct Snapshot {
     pub valid: bool,
     pub message: String,
     pub nodes: Vec<NodeResult>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
 }
 struct Task {
     state: Mutex<Snapshot>,
@@ -125,12 +135,23 @@ impl Drop for Worker {
             if s.phase == Phase::Failed && s.message == "正在测试延迟与连通性" {
                 s.message = "测试已中断，请重试".into();
             }
+            s.finished_at = Some(chrono::Utc::now().to_rfc3339());
             for n in &mut s.nodes {
                 if n.state == NodeState::Testing {
                     n.state = NodeState::Pending;
                 }
             }
         });
+        let result = self.0.snapshot();
+        if result.scope.kind == Kind::Ai {
+            crate::app_log::record(0, crate::app_log::Area::Stability, &format!(
+                "ai health task={} phase={:?} valid={} total={} passed={} timeout={} failed={} unknown={}",
+                result.id, result.phase, result.valid, result.nodes.len(),
+                result.nodes.iter().filter(|n| n.state == NodeState::Passed).count(),
+                result.nodes.iter().filter(|n| n.state == NodeState::Timeout).count(),
+                result.nodes.iter().filter(|n| n.state == NodeState::Failed).count(),
+                result.nodes.iter().filter(|n| n.state == NodeState::Unavailable).count()));
+        }
         self.0.active.store(false, Ordering::Release);
     }
 }
@@ -162,6 +183,8 @@ impl NodeTestManager {
                 phase: Phase::Running,
                 valid: true,
                 message: "正在测试延迟与连通性".into(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+                finished_at: None,
                 nodes: names
                     .into_iter()
                     .map(|name| NodeResult {
@@ -207,10 +230,18 @@ pub fn invalidate(app: &AppHandle) {
         manager.invalidate();
     }
 }
-fn scope(app: &AppHandle) -> AppResult<Scope> {
+fn scope(app: &AppHandle, kind: Kind) -> AppResult<Scope> {
     let storage = AppStorage::from_app(app)?;
     let settings = storage.settings()?;
-    manual_outbound::require_manual_mode(&settings)?;
+    match kind {
+        Kind::Manual => manual_outbound::require_manual_mode(&settings)?,
+        Kind::Ai if settings.proxy_mode != manual_outbound::ProxyMode::Ai => {
+            return Err(AppError::Conflict(
+                "请先切换到 AI 代理模式，再检查节点".into(),
+            ))
+        }
+        Kind::Ai => {}
+    }
     let state = storage.state()?;
     let runtime = app.state::<MihomoRuntime>().status(Some(app));
     if runtime.phase != RuntimePhase::Running {
@@ -222,13 +253,26 @@ fn scope(app: &AppHandle) -> AppResult<Scope> {
     else {
         return Err(AppError::Conflict("请先选用订阅或本地配置".into()));
     };
-    let routing_mode = storage.load_profile(profile_id)?.routing_mode;
+    let profile = storage.load_profile(profile_id)?;
+    if kind == Kind::Ai
+        && (!profile.openai_policy.enabled
+            || app
+                .state::<crate::openai_policy::OpenAiPolicyTaskManager>()
+                .snapshot()?
+                .running)
+    {
+        return Err(AppError::Conflict(
+            "请先完成 AI 策略生成，再进行健康检查".into(),
+        ));
+    }
+    let routing_mode = profile.routing_mode;
     if routing_mode == RoutingMode::Direct {
         return Err(AppError::Conflict(
             "直连模式不使用代理节点，请切回规则或全局模式后测试".into(),
         ));
     }
     Ok(Scope {
+        kind,
         profile_id,
         revision_id,
         mode_revision: settings.proxy_mode_revision,
@@ -240,7 +284,7 @@ fn scope(app: &AppHandle) -> AppResult<Scope> {
 pub fn status(app: &AppHandle) -> Option<Snapshot> {
     let manager = app.state::<NodeTestManager>();
     if let Some(old) = manager.snapshot().filter(|s| s.valid) {
-        if scope(app).ok().as_ref() != Some(&old.scope) {
+        if scope(app, old.scope.kind).ok().as_ref() != Some(&old.scope) {
             manager.invalidate();
         }
     }
@@ -250,6 +294,9 @@ pub fn status(app: &AppHandle) -> Option<Snapshot> {
 // Iterative traversal handles nested/cyclic groups and provider nodes already
 // present in the controller map. Never test groups or built-in pseudo-outbounds.
 fn collect_nodes(payload: &Value, mode: RoutingMode) -> AppResult<Vec<String>> {
+    collect_nodes_for(payload, mode, Kind::Manual)
+}
+fn collect_nodes_for(payload: &Value, mode: RoutingMode, kind: Kind) -> AppResult<Vec<String>> {
     let map = payload["proxies"]
         .as_object()
         .ok_or_else(|| AppError::Runtime("核心节点列表格式异常，请刷新后重试".into()))?;
@@ -261,7 +308,9 @@ fn collect_nodes(payload: &Value, mode: RoutingMode) -> AppResult<Vec<String>> {
     if mode == RoutingMode::Direct {
         return Ok(Vec::new());
     }
-    let mut queue: VecDeque<String> = if mode == RoutingMode::Global {
+    let mut queue: VecDeque<String> = if kind == Kind::Ai {
+        VecDeque::from([crate::openai_stability::GROUP.into()])
+    } else if mode == RoutingMode::Global {
         VecDeque::from(["GLOBAL".into()])
     } else {
         map.iter()
@@ -319,9 +368,10 @@ fn collect_nodes(payload: &Value, mode: RoutingMode) -> AppResult<Vec<String>> {
             continue;
         }
         nodes.insert(name);
-        if nodes.len() > MAX_NODES {
+        let limit = if kind == Kind::Ai { 10 } else { MAX_NODES };
+        if nodes.len() > limit {
             return Err(AppError::InvalidInput(format!(
-                "当前配置超过 {MAX_NODES} 个测试节点，请拆分配置后测试；本次未开始"
+                "当前配置超过 {limit} 个测试节点，请拆分配置后测试；本次未开始"
             )));
         }
     }
@@ -376,8 +426,18 @@ pub async fn start(
     revision_id: Uuid,
     mode_revision: Uuid,
 ) -> AppResult<Snapshot> {
+    start_kind(app, profile_id, revision_id, mode_revision, Kind::Manual).await
+}
+
+pub async fn start_kind(
+    app: AppHandle,
+    profile_id: Uuid,
+    revision_id: Uuid,
+    mode_revision: Uuid,
+    kind: Kind,
+) -> AppResult<Snapshot> {
     let _permit = crate::user_rules::acquire_configuration(&app)?;
-    let expected = scope(&app)?;
+    let expected = scope(&app, kind)?;
     if (
         expected.profile_id,
         expected.revision_id,
@@ -395,13 +455,17 @@ pub async fn start(
     }
     let api = MihomoApiClient::new(&AppStorage::from_app(&app)?.settings()?)?;
     let payload = api.proxies().await?;
-    let names = collect_nodes(&payload, expected.routing_mode)?;
+    let names = if kind == Kind::Manual {
+        collect_nodes(&payload, expected.routing_mode)?
+    } else {
+        collect_nodes_for(&payload, expected.routing_mode, kind)?
+    };
     if names.is_empty() {
         return Err(AppError::InvalidInput(
             "当前配置没有可测试的实际节点；请检查策略组及提供器是否已加载".into(),
         ));
     }
-    if scope(&app)? != expected {
+    if scope(&app, kind)? != expected {
         return Err(AppError::Conflict("核心状态已变化，请重新测试".into()));
     }
     let (task, fresh) = manager.begin(expected.clone(), names)?;
@@ -412,10 +476,20 @@ pub async fn start(
                 task,
                 |name| {
                     let api = api.clone();
-                    async move { api.node_latency_probe(&name).await }
+                    async move {
+                        if kind == Kind::Ai {
+                            api.ai_health_probe(&name).await
+                        } else {
+                            api.node_latency_probe(&name).await
+                        }
+                    }
                 },
-                || scope(&app).ok().as_ref() == Some(&expected),
-                TOTAL_BUDGET,
+                || scope(&app, kind).ok().as_ref() == Some(&expected),
+                if kind == Kind::Ai {
+                    Duration::from_secs(40)
+                } else {
+                    TOTAL_BUDGET
+                },
             )
             .await;
         });
@@ -431,6 +505,7 @@ mod tests {
 
     fn context() -> Scope {
         Scope {
+            kind: Kind::Manual,
             profile_id: Uuid::new_v4(),
             revision_id: Uuid::new_v4(),
             mode_revision: Uuid::new_v4(),
@@ -441,6 +516,32 @@ mod tests {
     }
     fn names(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("node-{i}")).collect()
+    }
+
+    #[test]
+    fn ai_health_only_visits_managed_group_and_supports_one_node() {
+        let payload = json!({"proxies": {
+            "🤖 OpenAI 自动灾备":{"all":["A","REJECT","A","missing"]},
+            "A":{"type":"Trojan"},"REJECT":{"type":"Reject"},
+            "ordinary":{"all":["B"]},"B":{"type":"Trojan"}
+        }});
+        assert_eq!(
+            collect_nodes_for(&payload, RoutingMode::Rule, Kind::Ai).unwrap(),
+            ["A"]
+        );
+        assert!(
+            collect_nodes_for(&json!({"proxies":{}}), RoutingMode::Rule, Kind::Ai)
+                .unwrap()
+                .is_empty()
+        );
+        let mut other = context();
+        other.kind = Kind::Ai;
+        let manager = NodeTestManager::default();
+        let (task, fresh) = manager.begin(other.clone(), names(1)).unwrap();
+        assert!(fresh);
+        assert!(!manager.begin(other, names(1)).unwrap().1);
+        assert!(manager.begin(context(), names(1)).is_err());
+        task.cancel(false, "stop");
     }
     #[test]
     fn graph_walk_is_cycle_safe_deduplicated_and_only_tests_real_loaded_members() {

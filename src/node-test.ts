@@ -1,12 +1,12 @@
 // Job identity is separate from a node name: late replies must not follow a
 // same-name node into a different subscription, mode or restarted core.
-export type NodeTestScope = { profileId: string; revisionId: string; modeRevision: string; runtimePid: number | null; runtimeStartedAt: string | null; routingMode: string };
+export type NodeTestScope = { kind?: "manual" | "ai"; profileId: string; revisionId: string; modeRevision: string; runtimePid: number | null; runtimeStartedAt: string | null; routingMode: string };
 export type NodeTestResult = { name: string; state: 'pending' | 'testing' | 'passed' | 'timeout' | 'failed' | 'unavailable'; delayMs: number | null };
-export type NodeTestSnapshot = { id: string; scope: NodeTestScope; sequence: number; valid: boolean; phase: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed'; message: string; nodes: NodeTestResult[] };
+export type NodeTestSnapshot = { startedAt?: string; finishedAt?: string | null; id: string; scope: NodeTestScope; sequence: number; valid: boolean; phase: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed'; message: string; nodes: NodeTestResult[] };
 export const nodeTestRunning = (s: NodeTestSnapshot | null) => Boolean(s && ['running', 'cancelling'].includes(s.phase));
 export function sameNodeTestScope(a: NodeTestScope | null, b: NodeTestScope | null): boolean {
   const timestamp = (v: string | null) => v === null ? null : Date.parse(v);
-  return Boolean(a && b && a.profileId === b.profileId && a.revisionId === b.revisionId && a.modeRevision === b.modeRevision && a.runtimePid === b.runtimePid && timestamp(a.runtimeStartedAt) === timestamp(b.runtimeStartedAt) && a.routingMode === b.routingMode);
+  return Boolean(a && b && (a.kind ?? "manual") === (b.kind ?? "manual") && a.profileId === b.profileId && a.revisionId === b.revisionId && a.modeRevision === b.modeRevision && a.runtimePid === b.runtimePid && timestamp(a.runtimeStartedAt) === timestamp(b.runtimeStartedAt) && a.routingMode === b.routingMode);
 }
 export function nodeTestSummary(s: NodeTestSnapshot): string {
   const count = (state: NodeTestResult['state']) => s.nodes.filter(n => n.state === state).length;

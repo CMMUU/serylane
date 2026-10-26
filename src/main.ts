@@ -1,3 +1,4 @@
+import { createAiHealth, aiHealthMarkup } from "./ai-health";
 import { mountSubscriptionEditor } from "./subscription-editor";
 import { InteractionSession } from "./interaction-session";
 import { mountNodeTest, sameNodeTestScope, type NodeTestScope } from "./node-test";
@@ -1672,6 +1673,7 @@ function renderSubscriptionTasks() {
     const name = store.subscriptions.find(s => s.profile.id === task.profileId)?.profile.displayName ?? "订阅";
     text.textContent = name + "：" + taskDescription(task);
     const cancel = row.querySelector("button")!;
+    cancel.hidden = ["completed", "failed", "cancelled"].includes(task.phase);
     cancel.textContent = subscriptionCancellationPending.has(task.id) ? "正在结束…" : "取消更新";
     cancel.disabled = !task.canCancel || subscriptionCancellationPending.has(task.id);
   }
@@ -1711,7 +1713,15 @@ async function runSubscriptionTask<T>(
   try { return await invoke(id, download); }
   finally {
     stop();
-    subscriptionTasks.delete(id);
+    const finalTask = await api.subscriptionTask(id).catch(() => null);
+    if (finalTask && operation === "refresh") {
+      for (const [oldId, old] of subscriptionTasks) if (oldId !== id && old.profileId === finalTask.profileId && ["completed", "failed", "cancelled"].includes(old.phase)) subscriptionTasks.delete(oldId);
+      subscriptionTasks.set(id, finalTask);
+      for (const [oldId, old] of subscriptionTasks) {
+        if (subscriptionTasks.size <= 12) break;
+        if (["completed", "failed", "cancelled"].includes(old.phase)) subscriptionTasks.delete(oldId);
+      }
+    } else subscriptionTasks.delete(id);
     subscriptionCancellationPending.delete(id);
     if (subscriptionImportTaskId === id) {
       subscriptionImportTaskId = null;
@@ -1963,8 +1973,10 @@ function renderOpenAiPolicy() {
   const container = $("#openai-policy-card");
   if (!container) return;
   if (store.proxies && (nodeSelectionBusy || container.contains(document.activeElement) && document.activeElement?.tagName === "SELECT")) return;
+  const health = aiHealth.view();
   const active = store.activeProfile;
   if (!active) {
+    openAiPolicyMarkup = "";
     container.innerHTML = `
       <div class="openai-policy-empty">
         <span class="openai-mark">AI</span>
@@ -1995,9 +2007,9 @@ function renderOpenAiPolicy() {
     : anotherTaskRunning
       ? `${runningProfileName} 正在生成 OpenAI 容灾`
     : policy.enabled
-      ? `${policy.selectedNodes.length} 个可用节点${policy.selectedNodes.length === 2 ? " · 一主一备" : ""} · ${policy.healthyCount}/${policy.candidateCount} 个候选通过`
+      ? `${policy.selectedNodes.length} 个可用节点${policy.selectedNodes.length === 1 ? " · 单节点运行，暂无备用" : policy.selectedNodes.length === 2 ? " · 一主一备" : ""} · ${policy.healthyCount}/${policy.candidateCount} 个候选通过`
       : "尚未创建托管策略";
-  container.innerHTML = `
+  const markup = `
     <div class="openai-policy-head">
       <div class="openai-policy-title">
         <span class="openai-mark">AI</span>
@@ -2010,7 +2022,7 @@ function renderOpenAiPolicy() {
         ${running
           ? '<button class="button button-danger" data-openai-action="cancel">停止检测</button>'
           : `<button class="button button-primary" data-openai-action="generate" ${anotherTaskRunning ? "disabled" : ""}>${anotherTaskRunning ? "其他订阅生成中" : policy.enabled ? "重新筛选节点" : "生成 AI 策略"}</button>`}
-        <button class="button button-quiet" data-openai-action="health" ${!policy.enabled || Boolean(task?.running) || store.runtime?.phase !== "running" ? "disabled" : ""}>立即健康检查</button>
+        <button class="button button-quiet" data-openai-action="health" ${!health.enabled || health.pending || health.running ? "disabled" : ""}>${health.pending || health.running ? "健康检查中…" : "立即健康检查"}</button>
         <button class="button button-quiet" data-openai-action="details" ${!policy.enabled || store.runtime?.phase !== "running" ? "disabled" : ""}>节点详情</button>
         ${policy.enabled && !task?.running ? '<button class="button button-danger" data-openai-action="disable">停用</button>' : ""}
       </div>
@@ -2021,7 +2033,8 @@ function renderOpenAiPolicy() {
       </div>
       <p class="openai-progress-copy">${escapeHtml(task!.message)}</p>
     ` : ""}
-    <p class="hint">支持 2–10 个合格节点；两个节点即可一主一备，不要求凑满 10 个。</p>
+    <p class="hint">至少 1 个合格节点即可使用，最多保留 10 个优选节点。单节点时无备用出口，2 个及以上支持自动故障切换。</p>
+    ${aiHealthMarkup(health)}
     ${taskForActive && task?.diagnostics ? `<p class="hint openai-selection-report">可提取 ${task.diagnostics.extracted} · 地区排除 ${task.diagnostics.excludedRegion} · 成本排除 ${task.diagnostics.excludedCost} · 符合条件 ${task.diagnostics.eligible} · 本轮检测 ${task.diagnostics.tested} · 初检通过 ${task.diagnostics.reachable ?? '待检测'} · 质量通过 ${task.diagnostics.qualityPassed ?? '待检测'} · 入选 ${task.diagnostics.selected ?? '待确定'}</p>` : ''}
     ${active.profile.routingMode !== "rule" ? '<p class="warning-box">当前为全局或直连模式，AI 专用分流规则暂不参与。需要 AI 分流时，请先在「自选节点」选择规则模式，再切回 AI 代理。</p>' : ""}
     ${taskForActive && task?.phase === "failed" && task.error ? `<div class="openai-error">${escapeHtml(task.error)}</div>` : ""}
@@ -2030,10 +2043,18 @@ function renderOpenAiPolicy() {
       <div><span>${runtimeGroup?.now ? "当前节点" : "候选首选（非运行状态）"}</span><strong>${escapeHtml(currentNode)}</strong></div>
       <div><span>自动维护</span><strong>${policy.autoMaintain ? "订阅更新后执行" : "仅手动执行"}</strong></div>
       <div><span>上次筛选</span><strong>${formatPolicyDate(policy.lastBenchmarkedAt)}</strong></div>
-      <div><span>故障策略</span><strong>${runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : "基础 Fallback · 可能自动回切"}</strong></div>
+      <div><span>故障策略</span><strong>${policy.selectedNodes.length === 1 ? "单节点运行 · 暂无备用" : runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : "基础 Fallback · 可能自动回切"}</strong></div>
     </div>
     <p class="hint">稳定优先可独立用于系统代理或 TUN，无需开启本地路由或接入 Codex。基础探测不是模型请求验证；已断开的流无法无缝续接。</p>
   `;
+  // Preserve focused controls and disclosure state during polling. Do not replace
+  // the card between pointer-down/up or every time an unchanged status is read.
+  if (!healthInteraction && openAiPolicyMarkup !== markup) {
+    const resultsOpen = container.querySelector('.ai-health-results details')?.hasAttribute('open');
+    container.innerHTML = markup;
+    openAiPolicyMarkup = markup;
+    if (resultsOpen) container.querySelector('.ai-health-results details')?.setAttribute('open', '');
+  }
 }
 
 async function startOpenAiGeneration(profileId?: string) {
@@ -2479,6 +2500,29 @@ const ruleManager = mountRuleManager($("#rules-view")!, {
   },
 });
 
+let healthInteraction = false;
+let openAiPolicyMarkup = "";
+$("#openai-policy-card")!.addEventListener('pointerdown', () => { healthInteraction = true; });
+$("#openai-policy-card")!.addEventListener('keydown', event => {
+  if (['Enter', ' '].includes(event.key) && (event.target as HTMLElement).closest('button, summary')) healthInteraction = true;
+});
+window.addEventListener('blur', () => { healthInteraction = false; });
+for (const event of ['pointerup', 'pointercancel', 'keyup']) document.addEventListener(event, () => {
+  if (!healthInteraction) return;
+  // Click is dispatched before the next task, so its original button remains mounted.
+  setTimeout(() => { healthInteraction = false; renderOpenAiPolicy(); }, 0);
+});
+function aiHealthContext(): NodeTestScope | null {
+  const profile = store.activeProfile?.profile, runtime = store.runtime, mode = store.manualOutbound;
+  if (!profile?.activeRevisionId || !profile.openaiPolicy.enabled || runtime?.phase !== 'running' || mode?.mode !== 'ai'
+      || profile.routingMode === 'direct' || store.openAiTask?.running || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return null;
+  return { kind: 'ai', profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision,
+    runtimePid: runtime.pid, runtimeStartedAt: runtime.startedAt, routingMode: profile.routingMode };
+}
+const aiHealth = createAiHealth({ context: aiHealthContext, start: api.startAiHealthCheck, status: api.nodeTestStatus,
+  cancel: api.cancelNodeTest, changed: () => { if (store.view === 'proxies') renderOpenAiPolicy(); }, error: errorMessage });
+window.setInterval(() => { if (!document.hidden && store.view === 'proxies') void aiHealth.refresh(); }, 800);
+
 function nodeTestContext(): NodeTestScope | null {
   const profile = store.activeProfile?.profile, runtime = store.runtime, mode = store.manualOutbound;
   if (!profile?.activeRevisionId || runtime?.phase !== 'running' || mode?.mode !== 'manual' || mode.legacySelection || profile.routingMode === 'direct' || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return null;
@@ -2750,24 +2794,13 @@ $("#openai-policy-card")!.addEventListener("click", async (event) => {
     "[data-openai-action]",
   );
   const actionName = button?.dataset.openaiAction;
-  if (!actionName || !store.activeProfile) return;
+  if (!actionName || !store.activeProfile || button?.disabled) return;
   if (actionName === "generate") {
     await startOpenAiGeneration();
   } else if (actionName === "cancel") {
     await cancelOpenAiGeneration();
-  } else if (actionName === "health") {
-    const result = await action("", () =>
-      api.testProxyGroup(
-        OPENAI_GROUP_NAME,
-        "https://api.openai.com/v1/models",
-        "401",
-        8_000,
-      ),
-    );
-    if (result) {
-      toast(`健康检查完成：${Object.keys(result).length} 个节点可达`, "success");
-      await refreshProxies();
-    }
+  } else if (actionName === "health" || actionName === "health-cancel") {
+    await aiHealth.run(actionName === "health-cancel");
   } else if (actionName === "details") {
     await openNodeDetails(OPENAI_GROUP_NAME);
   } else if (actionName === "disable") {

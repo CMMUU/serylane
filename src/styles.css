@@ -2015,3 +2015,12 @@ td small { color: var(--muted); }
 .domain-route-panel [hidden] { display: none !important; }
 @media (max-width: 1100px) { .domain-tools { grid-template-columns: minmax(0, 1fr); } .domain-editor-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
 @media (max-width: 600px) { .domain-route-panel { padding: 16px; } .domain-heading > .domain-actions { width: 100%; } .global-route-button { margin-inline-start: 0; } }
+
+.ai-health-results { margin: 12px 0; padding: 12px 16px; border: 1px solid var(--border, #cdd5e4); border-radius: 12px; }
+.ai-health-results p { margin: 4px 0 8px; }
+.ai-health-results progress { width: min(65%, 400px); margin-right: 12px; }
+.ai-health-results summary { cursor: pointer; }
+.ai-health-results ul { list-style: none; padding: 0; margin: 8px 0 0; }
+.ai-health-results li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; }
+.ai-health-results li span { overflow-wrap: anywhere; }
+.ai-health-results li strong { white-space: nowrap; }

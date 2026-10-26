@@ -86,11 +86,13 @@ pub fn start(app: AppHandle) {
                     return;
                 }
                 // A newer manual refresh wins even if this older request finishes last.
-                let recorded = storage.record_subscription_check_since(
+                let recorded = storage.record_subscription_observation(
                     profile.id,
                     result.as_ref().ok().and_then(Option::as_ref),
                     result.as_ref().err(),
                     started,
+                    crate::models::SubscriptionObservationKind::Quota,
+                    Some(&task.snapshot()),
                 );
                 if recorded.is_ok() {
                     if let Some(status) = storage.subscription_status(profile.id) {

@@ -173,7 +173,14 @@ export type SubscriptionUsage = {
   expiresAt: number | null;
 };
 
+export type SubscriptionObservation = {
+  requestStartedAt?: string | null; checkedAt?: string | null; lastSuccessAt?: string | null;
+  lastError?: string | null; path?: string | null; attempts?: number; elapsedMs?: number; failurePhase?: string | null;
+};
 export type SubscriptionStatus = {
+  legacyLastError?: string | null;
+  config?: SubscriptionObservation | null;
+  quota?: SubscriptionObservation | null;
   requestStartedAt?: string | null;
   checkedAt: string | null;
   lastError: string | null;

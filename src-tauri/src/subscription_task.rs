@@ -256,7 +256,20 @@ impl Task {
     pub fn error_dto(&self, error: &AppError) -> AppErrorDto {
         self.finish(Some(error));
         let mut dto = error.dto();
-        dto.message = self.snapshot().message.clone();
+        let snapshot = self.snapshot();
+        let path = match snapshot.path {
+            "serylane" => "经 Serylane 当前核心",
+            "direct" => "直连",
+            "local_proxy" => "经指定本地代理",
+            _ => "尚未确定下载路径",
+        };
+        dto.message = format!(
+            "{} 路径：{}；已请求 {} 次，耗时 {} 秒。",
+            snapshot.message,
+            path,
+            snapshot.attempt,
+            snapshot.elapsed_ms / 1000
+        );
         if let Some(seconds) = self.snapshot().retry_after_seconds {
             dto.message
                 .push_str(&format!(" 服务商建议等待 {seconds} 秒后再试。"));
@@ -300,6 +313,8 @@ fn failure_kind(error: &AppError) -> &'static str {
                 "timeout"
             } else if message.contains("域名解析") {
                 "dns"
+            } else if message.contains("握手中断") {
+                "tls_handshake"
             } else if message.contains("安全连接") {
                 "tls"
             } else if message.contains("连接意外中断") {
