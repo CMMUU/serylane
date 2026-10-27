@@ -187,7 +187,9 @@ impl SessionResumeManager {
             .runtime_transition
             .lock()
             .map_err(|_| AppError::Runtime("运行状态锁不可用".into()))?;
-        if self.shutting_down.load(Ordering::Acquire) {
+        if self.shutting_down.load(Ordering::Acquire)
+            || !crate::lifecycle::PROCESS_LIFECYCLE.admitting()
+        {
             return Err(AppError::Conflict(
                 "应用正在退出，未执行启动或代理切换".into(),
             ));
@@ -205,6 +207,29 @@ impl SessionResumeManager {
         }
         self.cancel();
         true
+    }
+
+    #[cfg(any(windows, test))]
+    pub fn cleanup_transition_until(
+        &self,
+        deadline: std::time::Instant,
+        operation: impl FnOnce(),
+    ) -> bool {
+        loop {
+            let guard = match self.runtime_transition.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(std::sync::TryLockError::Poisoned(error)) => Some(error.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => None,
+            };
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            if let Some(_guard) = guard {
+                operation();
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     pub fn cleanup_transition(&self, operation: impl FnOnce()) {
@@ -546,6 +571,19 @@ mod tests {
         )
         .await
         .is_err());
+    }
+
+    #[test]
+    fn shutdown_cleanup_deadline_does_not_wait_for_busy_transition() {
+        let manager = SessionResumeManager::default();
+        let _guard = manager.runtime_transition.lock().unwrap();
+        let start = std::time::Instant::now();
+        assert!(
+            !manager.cleanup_transition_until(start + Duration::from_millis(20), || panic!(
+                "busy cleanup ran"
+            ))
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

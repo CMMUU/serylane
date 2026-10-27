@@ -1,6 +1,7 @@
 //! Windows core processes belong to a private job from process creation onward.
 //! Closing its non-inheritable handle (including on application termination)
 //! kills the core and its descendants. No suspended, unassigned child can leak.
+use crate::lifecycle::{Purpose, PROCESS_LIFECYCLE};
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -22,7 +23,7 @@ use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     InitializeProcThreadAttributeList, UpdateProcThreadAttribute, WaitForSingleObject,
-    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
+    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
     LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_JOB_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
@@ -46,7 +47,7 @@ impl Child {
     }
 
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.wait_timeout(INFINITE)?
+        self.wait_timeout(2_000)?
             .ok_or_else(|| io::Error::other("process wait timed out"))
     }
 
@@ -79,7 +80,16 @@ impl Child {
 /// Spawn a native core executable using arguments/environment/cwd from Command.
 /// Stdin is always NUL; output is either two pipes or the supplied validation log.
 /// Command's stdio/creation flags are deliberately not used by this private API.
+#[cfg(test)]
 pub(super) fn spawn(command: &Command, log: Option<&File>) -> io::Result<Child> {
+    spawn_for(command, log, Purpose::Runtime)
+}
+
+pub(super) fn spawn_for(
+    command: &Command,
+    log: Option<&File>,
+    purpose: Purpose,
+) -> io::Result<Child> {
     let job = create_job()?;
     let stdin = inheritable_duplicate(&File::open("NUL")?)?;
     let (stdout, stdout_writer) = output_handle(log)?;
@@ -120,6 +130,7 @@ pub(super) fn spawn(command: &Command, log: Option<&File>) -> io::Result<Child> 
     // STARTUPINFOEX/attribute buffers remain valid through CreateProcessW. The
     // handle list explicitly includes only stdio; the job is never inherited.
     // JOB_LIST binds before the first instruction, unlike post-spawn assignment.
+    let admission = crate::lifecycle::admission(purpose)?;
     if unsafe {
         CreateProcessW(
             application.as_ptr(),
@@ -140,6 +151,16 @@ pub(super) fn spawn(command: &Command, log: Option<&File>) -> io::Result<Child> 
     {
         return Err(io::Error::last_os_error());
     }
+    drop(admission);
+    crate::app_log::record(
+        0,
+        crate::app_log::Area::Runtime,
+        &format!(
+            "core_process purpose={} action=spawn pid={}",
+            purpose.label(),
+            info.dwProcessId
+        ),
+    );
     // SAFETY: successful CreateProcessW returns new process and thread handles.
     let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
     let _thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
@@ -155,7 +176,7 @@ pub(super) fn spawn(command: &Command, log: Option<&File>) -> io::Result<Child> 
 /// Bounded version probe; it receives the same job protection as the core and
 /// configuration validator. Pipes are drained concurrently to avoid deadlocks.
 pub(super) fn output(command: &Command) -> io::Result<Output> {
-    let mut child = spawn(command, None)?;
+    let mut child = spawn_for(command, None, Purpose::Version)?;
     let read = |pipe: Option<File>| {
         std::thread::spawn(move || -> io::Result<Vec<u8>> {
             let mut bytes = Vec::new();
@@ -167,7 +188,16 @@ pub(super) fn output(command: &Command) -> io::Result<Output> {
     };
     let stdout = read(child.stdout.take());
     let stderr = read(child.stderr.take());
-    let status = child.wait_timeout(5_000)?;
+    let started = std::time::Instant::now();
+    let status = loop {
+        if !PROCESS_LIFECYCLE.admitting() || started.elapsed() >= std::time::Duration::from_secs(5)
+        {
+            break None;
+        }
+        if let Some(status) = child.wait_timeout(20)? {
+            break Some(status);
+        }
+    };
     // Terminate descendants too before joining readers: they may retain a pipe
     // after the probed executable has already exited.
     child.kill()?;
@@ -440,6 +470,20 @@ mod tests {
     #[test]
     fn process_fixture() {
         match std::env::var(FIXTURE_ENV).as_deref() {
+            Ok("gate") => {
+                let lifecycle = &crate::lifecycle::PROCESS_LIFECYCLE;
+                assert!(lifecycle.prepare());
+                for purpose in [Purpose::Runtime, Purpose::Version, Purpose::Validation] {
+                    assert!(spawn_for(&fixture_command("sleep"), None, purpose).is_err());
+                }
+                assert!(lifecycle.cancel());
+                drop(spawn_for(&fixture_command("sleep"), None, Purpose::Runtime).unwrap());
+                lifecycle.close();
+                for purpose in [Purpose::Runtime, Purpose::Version, Purpose::Validation] {
+                    assert!(spawn_for(&fixture_command("sleep"), None, purpose).is_err());
+                }
+                println!("admission-fixture-ok");
+            }
             Ok("sleep") => loop {
                 std::thread::sleep(Duration::from_secs(1));
             },
@@ -482,6 +526,17 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    #[test]
+    fn actual_windows_spawn_rejects_all_roles_during_session_end() {
+        let result = output(&fixture_command("gate")).unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains("admission-fixture-ok"));
     }
 
     #[test]

@@ -10,6 +10,10 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, AppErrorDto> + Send + 'static,
 {
+    let lifecycle = &crate::lifecycle::PROCESS_LIFECYCLE;
+    let ticket = lifecycle
+        .ticket()
+        .map_err(|e| AppError::Conflict(e.to_string()).dto())?;
     static READS: OnceLock<Arc<Semaphore>> = OnceLock::new();
     let slots = READS.get_or_init(|| Arc::new(Semaphore::new(4))).clone();
     let permit = tokio::time::timeout(Duration::from_secs(2), slots.acquire_owned())
@@ -18,7 +22,14 @@ where
         .map_err(|_| AppError::Runtime("状态读取已停止".into()).dto())?;
     let job = tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        work()
+        lifecycle
+            .check(ticket)
+            .map_err(|e| AppError::Conflict(e.to_string()).dto())?;
+        let result = work();
+        lifecycle
+            .check(ticket)
+            .map_err(|e| AppError::Conflict(e.to_string()).dto())?;
+        result
     });
     tokio::time::timeout(Duration::from_secs(10), job)
         .await

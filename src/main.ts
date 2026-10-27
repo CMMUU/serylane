@@ -1,3 +1,4 @@
+import { appLifecycle, type LifecycleSnapshot } from "./app-lifecycle";
 import { PageReads } from "./read-coordinator";
 import { stableMarkup } from "./stable-dom";
 import { createAiHealth, aiHealthMarkup } from "./ai-health";
@@ -1285,11 +1286,11 @@ function scheduleAutomaticUpdateCheck() {
   }
   automaticUpdateCheckScheduled = true;
   window.setTimeout(() => {
-    if (updateCheckAttemptedThisSession || !store.settings?.autoCheckUpdates) return;
+    if (appLifecycle.paused || updateCheckAttemptedThisSession || !store.settings?.autoCheckUpdates) return;
     void checkForAppUpdate(true);
   }, 18_000);
   window.setInterval(() => {
-    if (store.settings?.autoCheckUpdates) void checkForAppUpdate(true);
+    if (!appLifecycle.paused && store.settings?.autoCheckUpdates) void checkForAppUpdate(true);
   }, 6 * 60 * 60 * 1_000);
 }
 
@@ -2606,7 +2607,7 @@ function aiHealthContext(): NodeTestScope | null {
 }
 const aiHealth = createAiHealth({ context: aiHealthContext, start: api.startAiHealthCheck, status: api.nodeTestStatus,
   cancel: api.cancelNodeTest, changed: () => { if (store.view === 'proxies') renderOpenAiPolicy(); }, error: errorMessage });
-window.setInterval(() => { if (!document.hidden && store.view === 'proxies') void aiHealth.refresh(); }, 800);
+window.setInterval(() => { if (!appLifecycle.paused && !document.hidden && store.view === 'proxies') void aiHealth.refresh(); }, 800);
 
 function nodeTestContext(): NodeTestScope | null {
   const profile = store.activeProfile?.profile, runtime = store.runtime, mode = store.manualOutbound;
@@ -2617,7 +2618,7 @@ const nodeTests = mountNodeTest($("#manual-view")!, {
   context: nodeTestContext, start: api.startNodeTest, status: api.nodeTestStatus, cancel: api.cancelNodeTest,
   changed: () => { if (store.view === 'manual') renderProxies(); }, error: errorMessage,
 });
-window.setInterval(() => { if (!document.hidden && store.view === 'manual') void nodeTests.refresh(); }, 800);
+window.setInterval(() => { if (!appLifecycle.paused && !document.hidden && store.view === 'manual') void nodeTests.refresh(); }, 800);
 
 const manualOutbound = mountManualOutbound($("#manual-view")!, {
   read: api.manualOutbound,
@@ -3166,7 +3167,7 @@ $("#settings-form")!.addEventListener("submit", async (event) => {
 });
 
 window.setInterval(() => {
-  if (document.hidden) return;
+  if (document.hidden || appLifecycle.paused) return;
   void localRouting.refresh(true);
   if (sessionResumePresentation(sessionResumeStatus).busy) void refreshSessionResume();
   if (store.view === "logs") void refreshLogs();
@@ -3177,11 +3178,11 @@ window.setInterval(() => {
 }, 3_000);
 
 window.setInterval(() => {
-  if (!document.hidden && store.openAiTask?.running) void refreshOpenAiTask();
+  if (!appLifecycle.paused && !document.hidden && store.openAiTask?.running) void refreshOpenAiTask();
 }, 1_000);
 
 window.setInterval(() => {
-  if (proxyPolling || nodeSelectionBusy || document.hidden || !["overview", "proxies", "manual"].includes(store.view) || store.runtime?.phase !== "running") return;
+  if (appLifecycle.paused || proxyPolling || nodeSelectionBusy || document.hidden || !["overview", "proxies", "manual"].includes(store.view) || store.runtime?.phase !== "running") return;
   proxyPolling = true;
   void refreshProxies(true).finally(() => { proxyPolling = false; });
 }, 10_000);
@@ -3227,3 +3228,9 @@ void refreshBase();
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { void refreshBase(); if (store.view === 'connections') void refreshConnections(); }
 });
+
+// Subscribe before the snapshot read; generation ordering handles their race.
+void (async () => {
+  await listen<LifecycleSnapshot>("app-lifecycle", event => { appLifecycle.update(event.payload); });
+  appLifecycle.update(await api.lifecycle());
+})().catch(() => { /* Native admission remains authoritative if the WebView is closing. */ });

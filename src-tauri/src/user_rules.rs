@@ -628,6 +628,14 @@ pub(crate) fn configuration_fingerprint(
     Ok(capture_context(app, storage)?.fingerprint)
 }
 
+pub(crate) fn configuration_runtime(
+    app: &AppHandle,
+    storage: &AppStorage,
+) -> AppResult<(String, bool)> {
+    let context = capture_context(app, storage)?;
+    Ok((context.fingerprint, context.running))
+}
+
 fn capture_context(app: &AppHandle, storage: &AppStorage) -> AppResult<ActiveContext> {
     let settings = storage.settings()?;
     let state = storage.state()?;
