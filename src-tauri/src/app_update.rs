@@ -1047,6 +1047,35 @@ fn select_install(session: &mut Session, version_tag: &str) -> AppResult<Candida
     Ok(candidate)
 }
 
+// Restore the frontend as well as the native gate on every error/unwind path.
+struct InstallLifecyclePause {
+    pause: Option<crate::lifecycle::UpdatePause<'static>>,
+    app: AppHandle,
+}
+impl InstallLifecyclePause {
+    fn begin(app: &AppHandle) -> AppResult<Self> {
+        let pause = crate::lifecycle::PROCESS_LIFECYCLE.pause_update()?;
+        let guard = Self {
+            pause: Some(pause),
+            app: app.clone(),
+        };
+        let _ = app.emit(
+            "app-lifecycle",
+            crate::lifecycle::PROCESS_LIFECYCLE.snapshot(),
+        );
+        Ok(guard)
+    }
+}
+impl Drop for InstallLifecyclePause {
+    fn drop(&mut self) {
+        drop(self.pause.take());
+        let _ = self.app.emit(
+            "app-lifecycle",
+            crate::lifecycle::PROCESS_LIFECYCLE.snapshot(),
+        );
+    }
+}
+
 #[tauri::command]
 pub async fn install_app_update(
     app: AppHandle,
@@ -1060,6 +1089,10 @@ pub async fn install_app_update(
     let _operation = Arc::new(state.begin().map_err(|e| e.dto())?);
     let _configuration =
         Arc::new(crate::user_rules::acquire_configuration(&app).map_err(|e| e.dto())?);
+    let platform = UpdatePlatform::native().map_err(|e| e.dto())?;
+    // Reserve before marking installing: a competing shutdown must leave the
+    // verified package ready instead of stranding the UI in preflight.
+    let pause = InstallLifecyclePause::begin(&app).map_err(|e| e.dto())?;
     let candidate = {
         let mut session = state.lock().map_err(|e| e.dto())?;
         select_install(&mut session, &version_tag).map_err(|e| e.dto())?
@@ -1070,26 +1103,15 @@ pub async fn install_app_update(
     tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
         let _operation = worker_operation;
         let _configuration = worker_configuration;
-        let platform = UpdatePlatform::native()?;
-        let pause = crate::lifecycle::PROCESS_LIFECYCLE.pause_update()?;
-        let _ = app.emit(
-            "app-lifecycle",
-            crate::lifecycle::PROCESS_LIFECYCLE.snapshot(),
-        );
+        let _pause = pause;
         let host = transaction::NativeHost { app };
-        let result = transaction::run_install(
+        transaction::run_install(
             &worker_status,
             &candidate,
             env!("CARGO_PKG_VERSION"),
             &platform,
             &host,
-        );
-        drop(pause);
-        let _ = host.app.emit(
-            "app-lifecycle",
-            crate::lifecycle::PROCESS_LIFECYCLE.snapshot(),
-        );
-        result
+        )
     })
     .await
     .map_err(|_| failure("安装工作线程意外结束，请重新打开应用核对状态").dto())?

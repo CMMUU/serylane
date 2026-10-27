@@ -1346,15 +1346,15 @@ fn cleanup_resources(app: &AppHandle, deadline: std::time::Instant) {
         .shutdown(app);
     app.state::<GlobalTrafficMonitor>().stop();
     let _ = app.state::<OpenAiPolicyTaskManager>().cancel();
+    let succeeded = std::cell::Cell::new(false);
     let cleanup = || {
         let proxy = platform::restore_system_proxy(app);
         let stopped = app.state::<MihomoRuntime>().stop(Some(app));
         if let Ok(storage) = AppStorage::from_app(app) {
             // Shutdown/upgrade cleanup is not a user Stop command. Preserve
             // desired_running for the next launch, including clean shutdowns.
-            let _ = storage.mark_clean_shutdown(
-                proxy.is_ok() && stopped.is_ok() && std::time::Instant::now() < deadline,
-            );
+            let clean = proxy.is_ok() && stopped.is_ok() && std::time::Instant::now() < deadline;
+            succeeded.set(storage.mark_clean_shutdown(clean).is_ok() && clean);
         }
     };
     #[cfg(windows)]
@@ -1365,12 +1365,14 @@ fn cleanup_resources(app: &AppHandle, deadline: std::time::Instant) {
         true
     };
     app_log::record(
-        if completed { 0 } else { 1 },
+        if completed && succeeded.get() { 0 } else { 1 },
         app_log::Area::App,
-        if completed {
+        if completed && succeeded.get() {
             "lifecycle cleanup=completed"
-        } else {
+        } else if !completed || std::time::Instant::now() >= deadline {
             "lifecycle cleanup=deadline; recovery journal retained"
+        } else {
+            "lifecycle cleanup=incomplete; recovery journal retained"
         },
     );
 }

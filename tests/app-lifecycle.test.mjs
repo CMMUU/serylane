@@ -51,3 +51,11 @@ test('pending reads never commit across prepare and cancel; fresh reads resume',
  lifecycle.update({generation:5,phase:'open'});
  assert.equal(await lifecycle.read(async()=> 'resumed'),'resumed');
 });
+
+
+test('installation reserves the lifecycle before changing status and always releases via Drop',()=>{
+ const source=read('src-tauri/src/app_update.rs');
+ const command=source.slice(source.indexOf('pub async fn install_app_update('),source.indexOf('pub fn open_official_release('));
+ assert.ok(command.indexOf('InstallLifecyclePause::begin')<command.indexOf('select_install('));
+ assert.match(source,/impl Drop for InstallLifecyclePause[\s\S]*drop\(self.pause.take\(\)\)[\s\S]*app-lifecycle/);
+});

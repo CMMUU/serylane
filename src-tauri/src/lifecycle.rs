@@ -80,29 +80,31 @@ impl Lifecycle {
     }
 
     pub fn close(&self) {
-        let _ = self
-            .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
-                (old & CLOSING == 0).then_some((((old >> 3) + 1) << 3) | CLOSING | (old & MASK))
-            });
+        self.flag(CLOSING, true);
     }
 
     fn flag(&self, flag: u64, set: bool) -> bool {
-        self.state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
-                if old & CLOSING != 0 || (old & flag != 0) == set {
-                    return None;
-                }
-                Some(
-                    (((old >> 3) + 1) << 3)
-                        | if set {
-                            (old & MASK) | flag
-                        } else {
-                            (old & MASK) & !flag
-                        },
-                )
-            })
-            .is_ok()
+        // CAS keeps compatibility with the pinned local toolchain and current
+        // stable Rust without relying on the renamed fetch_update API.
+        let mut old = self.state.load(Ordering::Acquire);
+        loop {
+            if old & CLOSING != 0 || (old & flag != 0) == set {
+                return false;
+            }
+            let reasons = if set {
+                (old & MASK) | flag
+            } else {
+                (old & MASK) & !flag
+            };
+            let next = (((old >> 3) + 1) << 3) | reasons;
+            match self
+                .state
+                .compare_exchange_weak(old, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(actual) => old = actual,
+            }
+        }
     }
 
     pub fn pause_update(&self) -> io::Result<UpdatePause<'_>> {

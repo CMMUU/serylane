@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn native_session_messages_preserve_cancel_and_confirm() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "windows_lifecycle::tests::native_session_fixture",
@@ -115,8 +115,20 @@ mod tests {
             ])
             .env("SERYLANE_SESSION_FIXTURE", "1")
             .creation_flags(CREATE_NO_WINDOW)
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("private session window fixture exceeded 15 seconds");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
         assert!(
             output.status.success(),
             "{}",
