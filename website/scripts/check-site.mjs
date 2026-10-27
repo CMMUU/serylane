@@ -91,3 +91,7 @@ assert.equal(config.workers_dev, false);
 assert.deepEqual(config.assets.run_worker_first, ['/api/*', '/download/*']);
 assert.equal(config.assets.binding, 'ASSETS');
 console.log(`PASS: ${htmls.size} HTML pages, ${checkedLinks} local links/assets, canonical URLs, sitemap, JSON-LD, safety and deployment scope.`);
+
+assert.match(htmls.get("/docs/"), /id="windows-session-exit"/);
+assert.match(htmls.get("/docs/"), /取消后恢复操作/);
+assert.match(htmls.get("/"), /Windows 关机时出现 Mihomo 初始化报错/);

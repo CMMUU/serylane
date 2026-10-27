@@ -1,4 +1,5 @@
 use crate::error::{AppError, AppResult};
+use crate::lifecycle::{Purpose, PROCESS_LIFECYCLE};
 use crate::models::RuntimePhase;
 use crate::tun_service;
 use crate::tun_service::lifecycle::HeartbeatState;
@@ -151,7 +152,7 @@ impl MihomoRuntime {
             .stderr(Stdio::piped());
         // Timestamp the run before the core can emit any startup diagnostics.
         let started_at = Utc::now();
-        let mut child = spawn_core_command(&mut command, None)
+        let mut child = spawn_core_command(&mut command, None, Purpose::Runtime)
             .map_err(|error| AppError::Runtime(error.to_string()))?;
         if let Some(stdout) = child.stdout.take() {
             spawn_log_reader(self.logs.clone(), "stdout", stdout);
@@ -327,11 +328,15 @@ impl MihomoRuntime {
             BinaryInfo {
                 available: true,
                 path: Some(path.display().to_string()),
-                version: cached_version,
+                version: if pid.is_some() || tun_active {
+                    cached_version
+                } else {
+                    VERSION_CACHE.get().and_then(|cache| cache.version(&path))
+                },
                 message: "代理服务文件已就绪".into(),
             }
         } else {
-            probe_binary(app)
+            binary_snapshot(app)
         };
         let binary_path = self
             .binary_path
@@ -339,12 +344,7 @@ impl MihomoRuntime {
             .ok()
             .and_then(|value| value.as_ref().map(|path| path.display().to_string()))
             .or(binary_info.path.clone());
-        let version = self
-            .binary_version
-            .lock()
-            .ok()
-            .and_then(|value| value.clone())
-            .or(binary_info.version.clone());
+        let version = binary_info.version.clone();
         let config_path = self
             .config_path
             .lock()
@@ -542,6 +542,23 @@ impl MihomoRuntime {
     }
 }
 
+static VERSION_CACHE: OnceLock<crate::binary_probe::ProbeCache> = OnceLock::new();
+
+fn binary_snapshot(app: Option<&AppHandle>) -> BinaryInfo {
+    let path = resolve_binary(app);
+    BinaryInfo {
+        available: path.is_some(),
+        version: path.as_ref().and_then(|p| VERSION_CACHE.get()?.version(p)),
+        path: path.as_ref().map(|p| p.display().to_string()),
+        message: if path.is_some() {
+            "代理服务文件已就绪"
+        } else {
+            "未找到 Mihomo sidecar"
+        }
+        .into(),
+    }
+}
+
 pub fn probe_binary(app: Option<&AppHandle>) -> BinaryInfo {
     let Some(path) = resolve_binary(app) else {
         return BinaryInfo {
@@ -653,7 +670,7 @@ fn run_validation_command_cancellable(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log.try_clone()?));
-    let spawned = spawn_core_command(command, Some(&log));
+    let spawned = spawn_core_command(command, Some(&log), Purpose::Validation);
     // Release the Command's copies as well as the child's handles before the
     // cleanup guard removes its private file, including on Windows.
     command.stdout(Stdio::null()).stderr(Stdio::null());
@@ -689,6 +706,13 @@ fn wait_for_validation(
 ) -> AppResult<ExitStatus> {
     let started = Instant::now();
     loop {
+        if !PROCESS_LIFECYCLE.admitting() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Conflict(
+                "会话正在结束或安装更新，已停止核心检查".into(),
+            ));
+        }
         if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             let _ = child.kill();
             let _ = child.wait();
@@ -779,37 +803,77 @@ fn preflight_ports(source: &str) -> AppResult<()> {
 }
 
 fn binary_version(path: &Path) -> AppResult<String> {
-    #[cfg(not(windows))]
-    let output = Command::new(path)
-        .arg("-v")
-        .output()
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
-    #[cfg(windows)]
-    let output = windows_process::output(Command::new(path).arg("-v"))
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
-    if !output.status.success() {
-        return Err(AppError::Runtime(
-            first_non_empty_line(&output.stderr).unwrap_or_else(|| "Mihomo 无法执行".to_string()),
-        ));
-    }
-    first_non_empty_line(&output.stdout)
-        .or_else(|| first_non_empty_line(&output.stderr))
-        .ok_or_else(|| AppError::Runtime("Mihomo 未返回版本信息".to_string()))
+    VERSION_CACHE
+        .get_or_init(Default::default)
+        .probe(path, || {
+            binary_version_uncached(path).map_err(|e| e.to_string())
+        })
+        .map_err(AppError::Runtime)
 }
 
-fn spawn_core_command(command: &mut Command, log: Option<&fs::File>) -> std::io::Result<Child> {
+fn binary_version_uncached(path: &Path) -> AppResult<String> {
+    #[cfg(not(windows))]
+    let (status, stdout, stderr) = {
+        // File-backed output avoids reader threads held by inherited pipes and
+        // gives Unix probes the same bounded execution as Windows probes.
+        let mut log = tempfile::tempfile()?;
+        let mut command = Command::new(path);
+        command
+            .arg("-v")
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log.try_clone()?));
+        let mut child = spawn_core_command(&mut command, None, Purpose::Version)?;
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let status = wait_for_validation(&mut child, &log, Duration::from_secs(5), None)?;
+        log.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        log.take(32 * 1024).read_to_end(&mut bytes)?;
+        (status, bytes, Vec::new())
+    };
+    #[cfg(windows)]
+    let (status, stdout, stderr) = {
+        let output = windows_process::output(Command::new(path).arg("-v"))?;
+        (output.status, output.stdout, output.stderr)
+    };
+    crate::app_log::record(
+        if status.success() { 0 } else { 1 },
+        crate::app_log::Area::Runtime,
+        &format!("core_process purpose=version action=exit status={status}"),
+    );
+    if !status.success() {
+        return Err(AppError::Runtime(format!("核心版本检查未完成（{status}）")));
+    }
+    first_non_empty_line(&stdout)
+        .or_else(|| first_non_empty_line(&stderr))
+        .ok_or_else(|| AppError::Runtime("Mihomo 未返回版本信息".into()))
+}
+
+fn spawn_core_command(
+    command: &mut Command,
+    log: Option<&fs::File>,
+    purpose: Purpose,
+) -> std::io::Result<Child> {
     #[cfg(windows)]
     {
-        windows_process::spawn(command, log)
+        windows_process::spawn_for(command, log, purpose)
     }
     #[cfg(not(windows))]
     {
         let _ = log;
+        let _admission = crate::lifecycle::admission(purpose)?;
         command.spawn()
     }
 }
 
+#[cfg(test)]
+thread_local! { static TEST_BINARY: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
+
 pub(crate) fn resolve_binary(app: Option<&AppHandle>) -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_BINARY.with(|v| v.borrow().clone()) {
+        return Some(path);
+    }
     if let Ok(value) = env::var("MIHOMO_BIN") {
         let path = PathBuf::from(value);
         if is_executable_file(&path) {
@@ -973,14 +1037,41 @@ fn lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> AppResult<std::sync::MutexGu
 
 #[cfg(test)]
 mod tests {
+    use super::TEST_BINARY;
     use super::{
         preflight_ports, redact, run_validation_command, run_validation_command_cancellable,
         spawn_core_command, validation_diagnostic, MihomoRuntime,
     };
     use crate::error::{AppError, AppResult};
+    use crate::lifecycle::Purpose;
     use crate::models::RuntimePhase;
     use std::process::Command;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn idle_status_and_stop_never_execute_a_version_probe() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TEST_BINARY.with(|v| *v.borrow_mut() = None);
+            }
+        }
+        let _reset = Reset;
+        // libtest rejects -v, so the old executable-probing status path would
+        // return unavailable. The fixed path only observes the existing file.
+        let path = std::env::current_exe().unwrap();
+        TEST_BINARY.with(|v| *v.borrow_mut() = Some(path));
+        let runtime = MihomoRuntime::default();
+        for _ in 0..100 {
+            let status = runtime.status(None);
+            assert!(status.binary_available);
+            assert_eq!(status.version, None);
+            assert_eq!(status.phase, RuntimePhase::Stopped);
+            let status = runtime.stop(None).unwrap();
+            assert!(status.binary_available);
+            assert_eq!(status.version, None);
+        }
+    }
 
     #[test]
     fn redacts_urls_and_uuids() {
@@ -1032,7 +1123,7 @@ mod tests {
         assert!(!missing.exists());
         let result: AppResult<()> = runtime.start_attempt(|| {
             runtime.set_phase(RuntimePhase::Starting);
-            spawn_core_command(&mut Command::new(&missing), None)
+            spawn_core_command(&mut Command::new(&missing), None, Purpose::Runtime)
                 .map_err(|error| AppError::Runtime(error.to_string()))?;
             Ok(())
         });

@@ -2,6 +2,7 @@ mod app_binding;
 mod app_log;
 mod app_update;
 mod appearance;
+mod binary_probe;
 mod capabilities;
 mod config;
 mod connection_feedback;
@@ -9,6 +10,7 @@ mod diagnostics;
 mod domain_routing;
 mod effective;
 mod error;
+mod lifecycle;
 mod local_routing;
 #[cfg(target_os = "macos")]
 mod macos_service;
@@ -45,6 +47,8 @@ mod traffic_monitor;
 pub mod tun_service;
 mod update_probe;
 mod update_receipt;
+#[cfg(windows)]
+mod windows_lifecycle;
 pub use update_probe::update_probe;
 mod ui_read;
 mod user_rules;
@@ -459,6 +463,11 @@ async fn delete_profile(
         app.state::<ConnectionFeedback>().invalidate(&app);
     }
     Ok(())
+}
+
+#[tauri::command]
+fn app_lifecycle_status() -> lifecycle::Snapshot {
+    lifecycle::PROCESS_LIFECYCLE.snapshot()
 }
 
 #[tauri::command]
@@ -1293,10 +1302,37 @@ fn api_client(app: &AppHandle) -> Result<MihomoApiClient, AppErrorDto> {
 }
 
 fn cleanup_app(app: &AppHandle) {
+    lifecycle::PROCESS_LIFECYCLE.close();
     let resume = app.state::<session_resume::SessionResumeManager>();
     if !resume.begin_shutdown() {
         return;
     }
+    let snapshot = lifecycle::PROCESS_LIFECYCLE.snapshot();
+    let _ = app.emit("app-lifecycle", snapshot);
+    #[cfg(not(windows))]
+    cleanup_resources(app, std::time::Instant::now() + Duration::from_secs(30));
+    #[cfg(windows)]
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let worker = app.clone();
+        std::thread::spawn(move || {
+            cleanup_resources(&worker, deadline);
+            let _ = send.send(());
+        });
+        if receive
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .is_err()
+        {
+            // Leave clean_shutdown=false and the ownership journal for next launch.
+            // Windows Job Object ownership still reaps children when the app exits.
+            eprintln!("Serylane shutdown cleanup exceeded its 4s waiting budget");
+        }
+    }
+}
+
+fn cleanup_resources(app: &AppHandle, deadline: std::time::Instant) {
+    let resume = app.state::<session_resume::SessionResumeManager>();
     app.state::<ConnectionFeedback>().invalidate(app);
     app_log::record(
         0,
@@ -1310,15 +1346,33 @@ fn cleanup_app(app: &AppHandle) {
         .shutdown(app);
     app.state::<GlobalTrafficMonitor>().stop();
     let _ = app.state::<OpenAiPolicyTaskManager>().cancel();
-    resume.cleanup_transition(|| {
+    let cleanup = || {
         let proxy = platform::restore_system_proxy(app);
         let stopped = app.state::<MihomoRuntime>().stop(Some(app));
         if let Ok(storage) = AppStorage::from_app(app) {
             // Shutdown/upgrade cleanup is not a user Stop command. Preserve
             // desired_running for the next launch, including clean shutdowns.
-            let _ = storage.mark_clean_shutdown(proxy.is_ok() && stopped.is_ok());
+            let _ = storage.mark_clean_shutdown(
+                proxy.is_ok() && stopped.is_ok() && std::time::Instant::now() < deadline,
+            );
         }
-    });
+    };
+    #[cfg(windows)]
+    let completed = resume.cleanup_transition_until(deadline, cleanup);
+    #[cfg(not(windows))]
+    let completed = {
+        resume.cleanup_transition(cleanup);
+        true
+    };
+    app_log::record(
+        if completed { 0 } else { 1 },
+        app_log::Area::App,
+        if completed {
+            "lifecycle cleanup=completed"
+        } else {
+            "lifecycle cleanup=deadline; recovery journal retained"
+        },
+    );
 }
 
 fn show_home_window(app: &AppHandle) {
@@ -1384,6 +1438,8 @@ pub fn run() {
                     std::env::consts::ARCH
                 ),
             );
+            #[cfg(windows)]
+            windows_lifecycle::install(app.handle()).map_err(std::io::Error::other)?;
             #[cfg(target_os = "macos")]
             let upgrade_pending = macos_upgrade::bootstrap(app.handle().clone());
             #[cfg(not(target_os = "macos"))]
@@ -1494,6 +1550,7 @@ pub fn run() {
             startup::get_startup_status,
             startup::repair_startup_registration,
             startup::open_startup_settings,
+            app_lifecycle_status,
             domain_routing::domain_route_status,
             domain_routing::save_domain_route,
             domain_routing::apply_domain_route,

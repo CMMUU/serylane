@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -1069,14 +1070,26 @@ pub async fn install_app_update(
     tauri::async_runtime::spawn_blocking(move || -> AppResult<()> {
         let _operation = worker_operation;
         let _configuration = worker_configuration;
+        let platform = UpdatePlatform::native()?;
+        let pause = crate::lifecycle::PROCESS_LIFECYCLE.pause_update()?;
+        let _ = app.emit(
+            "app-lifecycle",
+            crate::lifecycle::PROCESS_LIFECYCLE.snapshot(),
+        );
         let host = transaction::NativeHost { app };
-        transaction::run_install(
+        let result = transaction::run_install(
             &worker_status,
             &candidate,
             env!("CARGO_PKG_VERSION"),
-            &UpdatePlatform::native()?,
+            &platform,
             &host,
-        )
+        );
+        drop(pause);
+        let _ = host.app.emit(
+            "app-lifecycle",
+            crate::lifecycle::PROCESS_LIFECYCLE.snapshot(),
+        );
+        result
     })
     .await
     .map_err(|_| failure("安装工作线程意外结束，请重新打开应用核对状态").dto())?

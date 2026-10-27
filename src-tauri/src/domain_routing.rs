@@ -249,6 +249,10 @@ pub struct Snapshot {
     pub user_rule_count: usize,
 }
 fn state(app: &AppHandle) -> AppResult<Snapshot> {
+    state_with_runtime(app, None)
+}
+
+fn state_with_runtime(app: &AppHandle, running: Option<bool>) -> AppResult<Snapshot> {
     let storage = AppStorage::from_app(app)?;
     let document = Document::read(&storage)?;
     let current = storage.state()?;
@@ -277,11 +281,12 @@ fn state(app: &AppHandle) -> AppResult<Snapshot> {
         .applied
         .as_ref()
         .is_some_and(|p| groups.contains(&p.target));
-    let running = app
-        .state::<crate::runtime::MihomoRuntime>()
-        .status(Some(app))
-        .phase
-        == RuntimePhase::Running;
+    let running = running.unwrap_or_else(|| {
+        app.state::<crate::runtime::MihomoRuntime>()
+            .status(Some(app))
+            .phase
+            == RuntimePhase::Running
+    });
     let readiness = if current.active_profile_id.is_none() {
         "no_profile"
     } else if document.draft.domains.is_empty() {
@@ -323,8 +328,10 @@ fn state(app: &AppHandle) -> AppResult<Snapshot> {
 }
 async fn verified_state(app: &AppHandle) -> AppResult<Snapshot> {
     let storage = AppStorage::from_app(app)?;
-    let marker = crate::user_rules::configuration_fingerprint(app, &storage)?;
-    let mut snapshot = state(app)?;
+    let ticket = crate::lifecycle::PROCESS_LIFECYCLE.ticket()?;
+    let (marker, running) = crate::user_rules::configuration_runtime(app, &storage)?;
+    crate::lifecycle::PROCESS_LIFECYCLE.check(ticket)?;
+    let mut snapshot = state_with_runtime(app, Some(running))?;
     if snapshot.verification != "pending" {
         return Ok(snapshot);
     }

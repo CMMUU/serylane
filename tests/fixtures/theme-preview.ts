@@ -943,7 +943,12 @@ function payloadRecord(payload: InvokeArgs | undefined): Record<string, unknown>
     : {};
 }
 
+window.addEventListener("serylane-fixture-lifecycle", ((event: CustomEvent<import("../../src/app-lifecycle").LifecycleSnapshot>) => {
+  void emit("app-lifecycle", event.detail);
+}) as EventListener);
+
 mockIPC(async (command, payload) => {
+  if (command === "app_lifecycle_status") return { generation: 0, phase: "open" };
   const args = payloadRecord(payload);
   if (command === 'node_test_status') return fixtureNodeStatus();
   if (command === 'start_node_test' || command === 'start_ai_health_check') {
