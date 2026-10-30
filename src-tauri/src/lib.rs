@@ -717,40 +717,21 @@ async fn finish_runtime_start(
         #[cfg(windows)]
         let require_ipv6 = {
             feedback.advance(app, operation, ConnectionPhase::TunInterface);
-            let config = tokio::time::timeout(Duration::from_secs(3), api.configs())
+            let local_deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+            let config = api
+                .wait_tun_config(effective::WINDOWS_TUN_DEVICE, local_deadline)
                 .await
-                .map_err(|_| {
-                    dto(AppError::TunStartup {
-                        stage: error::TunStage::Interface,
-                        detail: "核心 TUN 状态读取超时".into(),
-                        retryable: true,
-                    })
-                })?
-                .map_err(|_| {
-                    dto(AppError::TunStartup {
-                        stage: error::TunStage::Interface,
-                        detail: "无法读回核心 TUN 状态".into(),
-                        retryable: true,
-                    })
-                })?;
-            if config["tun"]["enable"].as_bool() != Some(true)
-                || config["tun"]["device"].as_str() != Some(effective::WINDOWS_TUN_DEVICE)
-            {
-                return Err(dto(AppError::TunStartup {
-                    stage: error::TunStage::Interface,
-                    detail: "核心未确认本次 Serylane TUN 网卡".into(),
-                    retryable: false,
-                }));
-            }
+                .map_err(dto)?;
             // The core removes IPv6 addresses when the OS cannot use IPv6.
             // Validate the actual active family, not a YAML default alone.
             let require_ipv6 = config["tun"]["inet6-address"]
                 .as_array()
                 .is_some_and(|v| !v.is_empty());
             let run = state.running_identity();
-            tun_readiness::wait_ready(
+            tun_readiness::wait_ready_until(
                 effective::WINDOWS_TUN_DEVICE,
                 require_ipv6,
+                local_deadline,
                 || {
                     app.state::<session_resume::SessionResumeManager>()
                         .is_shutting_down()

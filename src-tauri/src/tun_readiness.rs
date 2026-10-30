@@ -10,6 +10,7 @@ use tokio::{net::UdpSocket, time::Instant};
 #[cfg(windows)]
 mod windows;
 
+#[cfg(test)]
 const LOCAL_BUDGET: Duration = Duration::from_secs(12);
 #[cfg(windows)]
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -41,16 +42,18 @@ fn cancelled_error() -> AppError {
     )
 }
 
+/// The caller shares this deadline with controller configuration readback so
+/// control-plane initialization cannot silently double the local wait budget.
 /// This only proves the local Windows path. The caller must separately check
 /// external network health, and retain the same runtime identity throughout.
 #[cfg(windows)]
-pub async fn wait_ready(
+pub async fn wait_ready_until(
     device: &str,
     require_ipv6: bool,
+    deadline: Instant,
     cancelled: impl Fn() -> bool,
     progress: impl Fn(TunStage),
 ) -> AppResult<()> {
-    let deadline = Instant::now() + LOCAL_BUDGET;
     let mut last_error = failure(TunStage::Interface, "等待 TUN 网卡就绪", true);
     let mut current_stage = TunStage::Interface;
     progress(current_stage);

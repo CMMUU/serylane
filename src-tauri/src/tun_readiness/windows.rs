@@ -277,7 +277,7 @@ mod tests {
             }
         }
         drop(listener);
-        let mut core = Core(
+        let core = Core(
             Command::new(binary)
                 .arg("-d")
                 .arg(directory.path())
@@ -290,41 +290,21 @@ mod tests {
                 .spawn()
                 .expect("start isolated pinned core"),
         );
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(1))
-            .build()
-            .unwrap();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            assert!(
-                core.0.try_wait().unwrap().is_none(),
-                "core exited before readiness"
-            );
-            if let Ok(response) = client
-                .get(format!("http://127.0.0.1:{port}/configs"))
-                .bearer_auth(&secret)
-                .send()
-                .await
-            {
-                if response.status().is_success() {
-                    let actual: serde_json::Value = response.json().await.unwrap();
-                    assert_eq!(actual["tun"]["enable"], true);
-                    assert_eq!(actual["tun"]["device"], "Serylane");
-                    break;
-                }
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "controller readiness timed out"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        let deadline = tokio::time::Instant::now() + super::super::LOCAL_BUDGET;
+        let client =
+            crate::mihomo_api::MihomoApiClient::from_endpoint(port, secret.clone()).unwrap();
+        let result = async {
+            // Exercise the same control-plane and OS acceptance path as the app.
+            client.wait_tun_config("Serylane", deadline).await?;
+            super::super::wait_ready_until("Serylane", false, deadline, || false, |_| {}).await
         }
-        let result = super::super::wait_ready("Serylane", false, || false, |_| {}).await;
+        .await;
         if let Err(error) = result {
             panic!(
                 "native TUN acceptance failed: {error}; isolated core log: {}",
-                std::fs::read_to_string(&log_path).unwrap_or_default()
+                std::fs::read_to_string(&log_path)
+                    .unwrap_or_default()
+                    .replace(&secret, "[redacted]")
             );
         }
         super::super::verify_current_routes("Serylane", false).unwrap();
