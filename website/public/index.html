@@ -140,7 +140,7 @@
         <details open><summary>是否提供代理节点或订阅？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>没有。你需要自行准备订阅或本地配置。</p></details>
         <details><summary>遇到 502 或模型重连时，如何判断问题？</summary><p>基础可达不等于模型会话完成；节点切换不自动重发请求。本轮暂时停用增强稳定灾备，保留基础 Fallback 和倍率预算。<a href="/docs/routing#stability">查看当前能力与验证边界</a>，实际可用版本以下载区为准。</p></details>
         <details open><summary>安装后会自动接入 Codex 吗？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>不会。路由默认关闭，选工具、保存草稿、应用规则分别操作；不新增 Codex 接入。</p></details>
-        <details><summary>TUN 支持哪些平台，预检通过后会怎样？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>Windows 使用管理员会话，TUN 仍为实验性。macOS 有辅助服务实现，但当前兼容包缺少所需 Developer ID 与公证，TUN 未就绪；Linux 暂未提供 TUN。预检通过后还需完成启动与验收，失败会显示阶段和恢复结果，详见<a href="/docs/#tun-compatibility">平台与更新说明</a>。</p></details>
+        <details><summary>TUN 支持哪些平台，预检通过后会怎样？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>Windows 使用管理员会话，TUN 仍为实验性。macOS 有辅助服务实现，但当前兼容包缺少所需 Developer ID 与公证，TUN 未就绪；Linux 暂未提供 TUN。预检通过后还需完成接管与外网验收；v0.7.35 增加 Windows 接口、路由、DNS 检查及短暂握手中断的有限重试，失败显示具体阶段和恢复结果。实际版本以下载中心为准，详见<a href="/docs/#tun-compatibility">平台与更新说明</a>。</p></details>
         <details open><summary>Windows TUN 可以直接日常使用吗？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>目前为实验性功能，使用前请阅读<a href="/docs/#windows-tun">限制与恢复说明</a>。</p></details>
       </div></section>
     </main>

@@ -123,6 +123,11 @@ impl MihomoApiClient {
         self.get("proxies").await
     }
 
+    #[cfg(windows)]
+    pub(crate) async fn configs(&self) -> AppResult<Value> {
+        self.get("configs").await
+    }
+
     pub async fn proxy_providers(&self) -> AppResult<Value> {
         let url = self.path_url(&["providers", "proxies"])?;
         self.get_url(url).await

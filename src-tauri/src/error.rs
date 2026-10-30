@@ -5,6 +5,12 @@ pub type AppResult<T> = Result<T, AppError>;
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    #[error("TUN {stage}: {detail}")]
+    TunStartup {
+        stage: TunStage,
+        detail: String,
+        retryable: bool,
+    },
     #[error("{detail}")]
     Startup {
         reason: StartupReason,
@@ -36,6 +42,7 @@ pub enum AppError {
 impl AppError {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::TunStartup { .. } => "TUN_START_FAILED",
             Self::Startup { reason, .. } => match reason {
                 StartupReason::PortInUse | StartupReason::CoreNotReady => "CORE_ERROR",
                 StartupReason::ProxyChanged => "STATE_CONFLICT",
@@ -56,6 +63,7 @@ impl AppError {
 
     pub fn stage(&self) -> &'static str {
         match self {
+            Self::TunStartup { stage, .. } => stage.code(),
             Self::Startup { reason, .. } => match reason {
                 StartupReason::PortInUse | StartupReason::CoreNotReady => "runtime",
                 StartupReason::ProxyChanged | StartupReason::ProxyApply => "platform",
@@ -73,6 +81,9 @@ impl AppError {
     }
 
     pub fn retryable(&self) -> bool {
+        if let Self::TunStartup { retryable, .. } = self {
+            return *retryable;
+        }
         if let Self::NetworkPreflight { retryable, .. } = self {
             return *retryable;
         }
@@ -116,6 +127,38 @@ pub enum StartupReason {
     ProxyChanged,
     ProxyApply,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub enum TunStage {
+    Interface,
+    Route,
+    Dns,
+    Internet,
+    Cancelled,
+}
+impl TunStage {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Interface => "tun_interface",
+            Self::Route => "tun_route",
+            Self::Dns => "tun_dns",
+            Self::Internet => "tun_internet",
+            Self::Cancelled => "tun_cancelled",
+        }
+    }
+}
+impl std::fmt::Display for TunStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Interface => "网卡就绪检查",
+            Self::Route => "路由接管检查",
+            Self::Dns => "DNS 解析检查",
+            Self::Internet => "外网连通性检查",
+            Self::Cancelled => "启动已取消",
+        })
+    }
+}
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserMessage {
@@ -134,6 +177,33 @@ impl AppError {
     }
     pub fn user_message(&self) -> UserMessage {
         let (title, description, action) = match self {
+            Self::TunStartup { stage, .. } => match stage {
+                TunStage::Interface => (
+                    "TUN 网卡尚未就绪",
+                    "未完成网络接管，请查看详情中的网卡检查结果。",
+                    "diagnostics",
+                ),
+                TunStage::Route => (
+                    "TUN 路由接管未通过",
+                    "检测流量未进入本应用的 TUN 网卡，请查看详情。",
+                    "diagnostics",
+                ),
+                TunStage::Dns => (
+                    "TUN DNS 验收未通过",
+                    "网卡与路由检查已通过，但 DNS 查询未收到有效结果。",
+                    "diagnostics",
+                ),
+                TunStage::Internet => (
+                    "TUN 外网验收未通过",
+                    "TUN 启动后的外网检测仍未通过；详情包含检测与重试结果。",
+                    "diagnostics",
+                ),
+                TunStage::Cancelled => (
+                    "TUN 启动已取消",
+                    "应用退出或运行状态发生变化，已停止本次验收。",
+                    "refresh",
+                ),
+            },
             Self::Startup {
                 reason: StartupReason::PortInUse,
                 ..
@@ -234,5 +304,26 @@ mod friendly_tests {
         let dto = AppError::Conflict("a stale revision".into()).dto();
         assert_eq!(dto.user_message.action, "refresh");
         assert!(!dto.user_message.description.contains("其他代理"));
+    }
+
+    #[test]
+    fn tun_failure_keeps_the_failed_stage_without_claiming_recovery() {
+        for (stage, expected) in [
+            (TunStage::Interface, "网卡"),
+            (TunStage::Route, "路由"),
+            (TunStage::Dns, "DNS"),
+            (TunStage::Internet, "外网"),
+        ] {
+            let error = AppError::TunStartup {
+                stage,
+                detail: "fixture only".into(),
+                retryable: true,
+            }
+            .dto();
+            assert_eq!(error.stage, stage.code());
+            assert_eq!(error.code, "TUN_START_FAILED");
+            assert!(error.user_message.title.contains(expected));
+            assert!(!error.user_message.description.contains("已恢复"));
+        }
     }
 }

@@ -9,6 +9,7 @@ export function friendlyError(error: unknown): UserMessage {
   const known: Record<string, [string, string, string]> = {
     CONFIG_ERROR: ["代理配置需要检查", "请检查当前选用的配置，再重新开启代理。", "profiles"],
     NETWORK_CHECK_FAILED: ["连接检查暂未通过", "检测请求未收到预期响应，请查看诊断结果。", "diagnostics"],
+    TUN_START_FAILED: ["TUN 启动验收未完成", "请查看详情中的网卡、路由、DNS 或外网检测结果。", "diagnostics"],
     STATE_CONFLICT: ["当前操作暂未完成", "配置或运行状态可能正在变化，请刷新后重试。", "refresh"],
     CORE_ERROR: ["代理服务操作未完成", "请重试或查看应用日志。", "retry"],
     PLATFORM_ERROR: ["系统设置操作未完成", "请检查系统权限和当前网络设置。", "settings"],
@@ -20,8 +21,11 @@ export function feedbackPresentation(state: ConnectionFeedback | null, issue: Us
   if (issue) return { visible: true, title: issue.title, description: issue.description, tone: "error", busy: false, action: issue.action, details: issue.details };
   if (!state || state.phase === "idle") return { visible: false, title: "", description: "", tone: "neutral", busy: false, action: "", details: "" };
   if (state.issue && state.phase === "failed") return feedbackPresentation(null, state.issue);
-  const progress: Record<string, string> = { validating: "正在检查代理配置…", starting: "正在启动代理服务…", applying: "正在应用代理设置…" };
-  if (progress[state.phase]) return { visible: true, title: progress[state.phase], description: "完成后会更新状态，请稍候。", tone: "neutral", busy: true, action: "", details: "" };
+  const progress: Record<string, string> = { validating: "正在检查代理配置…", starting: "正在启动代理服务…", applying: "正在应用代理设置…",
+    tun_interface: "正在等待 TUN 网卡就绪…", tun_route: "正在验证 TUN 路由…", tun_dns: "正在验证 TUN DNS…", tun_internet: "正在检查 TUN 外网连接…" };
+  if (progress[state.phase]) return { visible: true, title: progress[state.phase], description: state.phase === "tun_internet"
+    ? state.retrying ? "连接暂时中断，正在有限重试；完成后更新状态。" : "正在检查基础联网；尚未验证模型会话。"
+    : "完成后会更新状态，请稍候。", tone: "neutral", busy: true, action: "", details: "" };
   const enabled = state.mode === "system_proxy" ? "系统代理已开启" : state.mode === "tun" ? "TUN 模式已开启" : "本地代理已开启";
   if (state.health === "checking") return { visible: true, title: enabled, description: state.retrying ? "连接检查用时较长，正在重试。" : "正在检查网络连接。", tone: "neutral", busy: true, action: "", details: "" };
   const checks = state.checks;
@@ -35,7 +39,7 @@ export function feedbackPresentation(state: ConnectionFeedback | null, issue: Us
   else if (state.health === "unavailable") {
     description = checks.some(c => c.failureKind === "certificate")
       ? "安全连接校验未通过。请确认系统日期和时间，并查看详情。"
-      : checks.some(c => c.failureKind === "tls")
+      : checks.some(c => c.failureKind === "tls" || c.failureKind === "tls_handshake_interrupted")
         ? "连接建立时中断。代理保持开启，可以重新检查。"
         : "连接检查暂未通过。代理保持开启，请重试或查看诊断。";
   }
@@ -86,7 +90,7 @@ export function mountConnectionFeedback(root: HTMLElement, action: (name: string
       // The same backend operation must not erase a newer local preflight or
       // recovery explanation. Only a new operation supersedes that issue.
       if (state && next.operation > state.operation
-        && ["failed", "validating", "starting", "applying", "enabled"].includes(next.phase)) issue = null;
+        && ["failed", "validating", "starting", "applying", "tun_interface", "tun_route", "tun_dns", "tun_internet", "enabled"].includes(next.phase)) issue = null;
       state = next; receivedAt = performance.now(); render();
     },
     showError(error: unknown) { issue = friendlyError(error); render(); },

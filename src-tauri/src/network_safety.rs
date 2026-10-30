@@ -57,6 +57,7 @@ pub enum TransportFailure {
     Timeout,
     Certificate,
     Tls,
+    TlsHandshakeInterrupted,
     Dns,
     Tunnel,
     Connect,
@@ -67,7 +68,11 @@ impl TransportFailure {
     fn transient(self) -> bool {
         matches!(
             self,
-            Self::Timeout | Self::Dns | Self::Tunnel | Self::Connect
+            Self::Timeout
+                | Self::Dns
+                | Self::Tunnel
+                | Self::Connect
+                | Self::TlsHandshakeInterrupted
         )
     }
 }
@@ -130,26 +135,7 @@ fn transport_error(error: &reqwest::Error) -> (TransportFailure, String) {
         source = cause.source();
     }
     let chain = causes.join(" → ");
-    let lower = chain.to_ascii_lowercase();
-    let (kind, category) = if lower.contains("certificate") || lower.contains("invalid peer") {
-        (TransportFailure::Certificate, "安全连接校验未通过")
-    } else if error.is_timeout() {
-        (TransportFailure::Timeout, "连接或响应超时")
-    } else if lower.contains("dns") || lower.contains("resolve") {
-        (TransportFailure::Dns, "DNS 解析失败")
-    } else if lower.contains("tunnel") {
-        (TransportFailure::Tunnel, "代理 CONNECT 隧道建立失败")
-    } else if lower.contains("tls") {
-        (TransportFailure::Tls, "连接建立时中断")
-    } else if error.is_connect()
-        || ["connection reset", "broken pipe", "unexpected eof"]
-            .iter()
-            .any(|term| lower.contains(term))
-    {
-        (TransportFailure::Connect, "TCP/代理连接失败")
-    } else {
-        (TransportFailure::Other, "网络传输失败")
-    };
+    let (kind, category) = classify_transport(&chain, error.is_timeout(), error.is_connect());
     let detail = if chain.is_empty() {
         category.to_string()
     } else {
@@ -158,17 +144,176 @@ fn transport_error(error: &reqwest::Error) -> (TransportFailure, String) {
     (kind, detail)
 }
 
+fn classify_transport(
+    chain: &str,
+    timeout: bool,
+    connect: bool,
+) -> (TransportFailure, &'static str) {
+    let lower = chain.to_ascii_lowercase();
+    // Certificate/peer validation always wins, even if a nested cause also says
+    // EOF. Never treat a security rejection as a transient handshake failure.
+    let interrupted = [
+        "eof",
+        "connection reset",
+        "connection aborted",
+        "broken pipe",
+        "connection closed before message completed",
+    ]
+    .iter()
+    .any(|term| lower.contains(term));
+    if lower.contains("certificate")
+        || lower.contains("invalid peer")
+        || lower.contains("certnotvalid")
+    {
+        (TransportFailure::Certificate, "安全连接校验未通过")
+    } else if timeout {
+        (TransportFailure::Timeout, "连接或响应超时")
+    } else if lower.contains("dns") || lower.contains("resolve") {
+        (TransportFailure::Dns, "DNS 解析失败")
+    } else if lower.contains("tunnel") {
+        (TransportFailure::Tunnel, "代理 CONNECT 隧道建立失败")
+    } else if (lower.contains("tls") || lower.contains("handshake")) && interrupted {
+        (
+            TransportFailure::TlsHandshakeInterrupted,
+            "TLS 握手期间连接中断",
+        )
+    } else if lower.contains("tls") || lower.contains("handshake") {
+        (TransportFailure::Tls, "TLS 协议协商未通过")
+    } else if connect || interrupted {
+        (TransportFailure::Connect, "TCP/代理连接失败")
+    } else {
+        (TransportFailure::Other, "网络传输失败")
+    }
+}
+
 pub async fn verify_tun_route() -> AppResult<NetworkSafetyReport> {
+    verify_tun_route_with_progress(|_, _| {}).await
+}
+
+/// Observe external health only after the caller has verified local TUN
+/// takeover. This function neither creates routes nor changes the selected node.
+/// Dropping the future cancels its probes and scheduled retries; no task escapes.
+pub async fn verify_tun_route_with_progress(
+    on_attempt: impl FnMut(u8, bool),
+) -> AppResult<NetworkSafetyReport> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(Duration::from_secs(6))
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(12))
         .redirect(reqwest::redirect::Policy::limited(3))
         .build()
         .map_err(|error| AppError::Runtime(error.to_string()))?;
+    inspect_tun_with_retry(
+        &client,
+        SAFETY_TARGETS,
+        TunRetryPolicy::default(),
+        on_attempt,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+struct TunRetryPolicy {
+    max_attempts: u8,
+    total: Duration,
+    retry_delay: Duration,
+}
+
+impl Default for TunRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            total: Duration::from_secs(30),
+            retry_delay: Duration::from_secs(1),
+        }
+    }
+}
+
+async fn inspect_tun_with_retry(
+    client: &reqwest::Client,
+    targets: [SafetyTarget<'_>; 3],
+    policy: TunRetryPolicy,
+    mut on_attempt: impl FnMut(u8, bool),
+) -> AppResult<NetworkSafetyReport> {
+    let deadline = tokio::time::Instant::now() + policy.total;
+    let mut checks: Vec<NetworkSafetyCheck> = Vec::new();
+    let mut attempts = 0;
+    for attempt in 1..=policy.max_attempts {
+        if attempt > 1 {
+            // The wait shares the same budget as every DNS/connect/TLS/HTTP
+            // probe. An idle timeout cannot reset the overall startup deadline.
+            if tokio::time::Instant::now() + policy.retry_delay >= deadline {
+                break;
+            }
+            tokio::time::sleep(policy.retry_delay).await;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        attempts = attempt;
+        on_attempt(attempt, attempt > 1);
+        crate::app_log::record(
+            0,
+            crate::app_log::Area::Network,
+            &format!(
+                "TUN 外网检查：第 {attempt}/{} 次；总时限 {} 秒",
+                policy.max_attempts,
+                policy.total.as_secs()
+            ),
+        );
+        let pending = targets
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(index, target)| {
+                attempt == 1
+                    || (target.purpose == CheckPurpose::Connectivity
+                        && checks.get(*index).is_some_and(|check| {
+                            !check.success
+                                && check.failure_kind.is_some_and(TransportFailure::transient)
+                        }))
+            });
+        let results = futures_util::future::join_all(pending.map(|(index, target)| async move {
+            let check = match tokio::time::timeout_at(deadline, check_target(client, target)).await
+            {
+                Ok(check) => check,
+                Err(_) => NetworkSafetyCheck {
+                    target: target.name.into(),
+                    url: target.url.into(),
+                    success: false,
+                    expected_status: target.expected_status,
+                    actual_status: None,
+                    latency_ms: policy.total.as_millis(),
+                    detail: "TUN 外网检查总时限已到；未继续重试".into(),
+                    failure_kind: Some(TransportFailure::Timeout),
+                },
+            };
+            (index, check)
+        }))
+        .await;
+        for (index, check) in results {
+            log_check(&check);
+            if index == checks.len() {
+                checks.push(check);
+            } else {
+                checks[index] = check;
+            }
+        }
+        let report = assemble_report("system-tun".into(), checks.clone(), targets);
+        if report.success {
+            return Ok(report);
+        }
+        if !should_retry(&report) {
+            break;
+        }
+    }
+    let report = assemble_report("system-tun".into(), checks, targets);
     require_connectivity(
-        run_checks(&client, "system-tun".to_string(), SAFETY_TARGETS).await,
-        "TUN 基础连通性验收失败",
+        report,
+        &format!(
+            "TUN 外网健康检查失败（已检查 {attempts} 次，最多 {} 秒）",
+            policy.total.as_secs()
+        ),
     )
 }
 
@@ -184,15 +329,27 @@ async fn run_checks(
     );
     let checks = vec![first, second, third];
     for check in &checks {
-        crate::app_log::record(
-            if check.success { 0 } else { 1 },
-            crate::app_log::Area::Network,
-            &format!(
-                "{}；{}；{} ms",
-                check.target, check.detail, check.latency_ms
-            ),
-        );
+        log_check(check);
     }
+    assemble_report(endpoint, checks, targets)
+}
+
+fn log_check(check: &NetworkSafetyCheck) {
+    crate::app_log::record(
+        if check.success { 0 } else { 1 },
+        crate::app_log::Area::Network,
+        &format!(
+            "{}；{}；{} ms",
+            check.target, check.detail, check.latency_ms
+        ),
+    );
+}
+
+fn assemble_report(
+    endpoint: String,
+    checks: Vec<NetworkSafetyCheck>,
+    targets: [SafetyTarget<'_>; 3],
+) -> NetworkSafetyReport {
     // OpenAI can reject an otherwise working route because of its own service
     // policy. Only the general connectivity targets decide whether it is usable.
     let success = checks
@@ -454,6 +611,8 @@ mod tests {
         assert!(should_retry(&report));
         report.checks[0].failure_kind = Some(TransportFailure::Tls);
         assert!(!should_retry(&report));
+        report.checks[0].failure_kind = Some(TransportFailure::TlsHandshakeInterrupted);
+        assert!(should_retry(&report));
         report.success = true;
         assert!(!should_retry(&report));
         let report = check_mock_statuses([204, 204, 401]).await;
@@ -492,5 +651,199 @@ mod tests {
         assert_eq!(serialized["checks"][2]["actualStatus"], 500);
         assert_eq!(serialized["warnings"].as_array().unwrap().len(), 1);
         assert!(require_connectivity(report, "TUN 基础连通性验收失败").is_ok());
+    }
+
+    #[test]
+    fn handshake_interruptions_are_retryable_but_certificate_and_protocol_errors_are_not() {
+        for chain in [
+            "client error (Connect) → tls handshake eof",
+            "TLS handshake: connection reset by peer",
+        ] {
+            let (kind, _) = classify_transport(chain, false, true);
+            assert_eq!(kind, TransportFailure::TlsHandshakeInterrupted);
+            assert!(kind.transient());
+        }
+        for chain in [
+            "invalid peer certificate: UnknownIssuer → tls handshake eof",
+            "TLS certificate expired: connection reset",
+            "CertNotValidForName",
+        ] {
+            let (kind, _) = classify_transport(chain, false, true);
+            assert_eq!(kind, TransportFailure::Certificate);
+            assert!(!kind.transient());
+        }
+        let (kind, _) = classify_transport("tls alert: ProtocolVersion", false, true);
+        assert_eq!(kind, TransportFailure::Tls);
+        assert!(!kind.transient());
+    }
+
+    fn loopback_targets<'a>(urls: &'a [String; 3]) -> [SafetyTarget<'a>; 3] {
+        std::array::from_fn(|index| SafetyTarget {
+            url: &urls[index],
+            ..SAFETY_TARGETS[index]
+        })
+    }
+
+    fn quick_policy() -> TunRetryPolicy {
+        TunRetryPolicy {
+            max_attempts: 3,
+            total: Duration::from_secs(3),
+            retry_delay: Duration::from_millis(10),
+        }
+    }
+
+    #[tokio::test]
+    async fn tun_recovers_on_second_attempt_and_does_not_repeat_http_rejection_or_openai() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut counts = [0; 3];
+            // Three initial requests, then only the interrupted general target.
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 2048];
+                let count = stream.read(&mut buffer).await.unwrap();
+                let request = String::from_utf8_lossy(&buffer[..count]);
+                assert!(request.starts_with("GET /"));
+                assert!(!request.to_ascii_lowercase().contains("authorization:"));
+                let index: usize = request
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .trim_start_matches('/')
+                    .parse()
+                    .unwrap();
+                counts[index] += 1;
+                if index == 0 && counts[index] == 1 {
+                    // The peer closes before sending HTTP response headers.
+                    stream.shutdown().await.unwrap();
+                    continue;
+                }
+                let status = [204, 403, 401][index];
+                stream.write_all(format!("HTTP/1.1 {status} Mock\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            }
+            counts
+        });
+        let urls = [0, 1, 2].map(|index| format!("http://{address}/{index}"));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut attempts = Vec::new();
+        let report = inspect_tun_with_retry(
+            &client,
+            loopback_targets(&urls),
+            quick_policy(),
+            |number, retry| attempts.push((number, retry)),
+        )
+        .await
+        .unwrap();
+        assert!(report.success);
+        assert_eq!(attempts, [(1, false), (2, true)]);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap(),
+            [2, 1, 1]
+        );
+        assert_eq!(report.checks[1].actual_status, Some(403));
+        assert_eq!(report.checks[2].actual_status, Some(401));
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_eof_is_observed_and_bounded_to_three_probe_rounds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            // Initial OpenAI diagnostic plus three rounds of two general probes.
+            for _ in 0..7 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                // ClientHello, not an HTTP model request or an authenticated API.
+                assert_eq!(buffer[0], 0x16);
+                stream.shutdown().await.unwrap();
+            }
+        });
+        let urls = [0, 1, 2].map(|index| format!("https://{address}/{index}"));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut attempts = Vec::new();
+        let error = inspect_tun_with_retry(
+            &client,
+            loopback_targets(&urls),
+            quick_policy(),
+            |number, retry| attempts.push((number, retry)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(attempts, [(1, false), (2, true), (3, true)]);
+        let dto = error.dto();
+        assert_eq!(dto.code, "NETWORK_CHECK_FAILED");
+        assert!(dto.retryable);
+        assert!(dto.message.contains("已检查 3 次"));
+        assert!(dto.message.contains("TLS 握手期间连接中断"));
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn tun_shared_deadline_bounds_slow_probes_without_resetting_on_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut streams = Vec::new();
+            for _ in 0..3 {
+                streams.push(listener.accept().await.unwrap().0);
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            streams
+        });
+        let urls = [0, 1, 2].map(|index| format!("http://{address}/{index}"));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut attempts = Vec::new();
+        let started = Instant::now();
+        let error = inspect_tun_with_retry(
+            &client,
+            loopback_targets(&urls),
+            TunRetryPolicy {
+                total: Duration::from_millis(150),
+                ..quick_policy()
+            },
+            |number, retry| attempts.push((number, retry)),
+        )
+        .await
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(attempts, [(1, false)]);
+        assert!(error.to_string().contains("总时限已到"));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn dropping_tun_verification_cancels_waiting_retries() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let urls = [0, 1, 2].map(|index| format!("http://{address}/{index}"));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut attempts = Vec::new();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            inspect_tun_with_retry(
+                &client,
+                loopback_targets(&urls),
+                TunRetryPolicy {
+                    retry_delay: Duration::from_secs(1),
+                    ..quick_policy()
+                },
+                |number, retry| attempts.push((number, retry)),
+            ),
+        )
+        .await;
+        assert!(result.is_err());
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(attempts, [(1, false)]);
     }
 }

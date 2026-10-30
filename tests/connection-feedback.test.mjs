@@ -17,12 +17,30 @@ test('local enablement is explicit while network health is pending or fails', ()
   assert.equal(present(state({ health: 'unavailable' })).action, 'recheck');
 });
 test('progress follows real phase and never guesses a percentage or completion time', () => {
-  for (const phase of ['validating', 'starting', 'applying']) {
+  for (const phase of ['validating', 'starting', 'applying', 'tun_interface', 'tun_route', 'tun_dns', 'tun_internet']) {
     const p = present(state({ phase }));
     assert.equal(p.busy, true);
     assert.doesNotMatch(p.title, /已开启|成功|\d+%|即将/);
     assert.equal(p.action, '', 'no decorative cancellation button');
   }
+});
+
+test('TUN retry remains startup progress and cannot claim model or network success', () => {
+  const p = present(state({ mode: 'tun', phase: 'tun_internet', retrying: true }));
+  assert.equal(p.busy, true);
+  assert.match(p.description, /有限重试/);
+  assert.doesNotMatch(p.title, /已开启|已通过/);
+  for (const [phase, label] of [['tun_interface', '网卡'], ['tun_route', '路由'], ['tun_dns', 'DNS']]) {
+    assert.match(present(state({ mode: 'tun', phase })).title, new RegExp(label));
+  }
+  const failure = friendlyError({ code: 'TUN_START_FAILED', userMessage: {
+    title: 'TUN DNS 验收未通过', description: '已恢复之前的网络模式与运行状态。',
+    action: 'diagnostics', details: 'DNS SERVFAIL',
+  }});
+  const failed = present(state({ mode: 'system_proxy', phase: 'enabled', health: 'healthy' }), failure);
+  assert.equal(failed.title, 'TUN DNS 验收未通过');
+  assert.match(failed.details, /SERVFAIL/);
+  assert.equal(failed.tone, 'error');
 });
 test('only successful basic probes permit the basic-network success message', () => {
   const p = present(state({ health: 'partial', checks: [check('google', true), check('cloudflare', true), check('openai', false)] }));
