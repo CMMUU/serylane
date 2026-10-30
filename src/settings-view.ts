@@ -59,21 +59,21 @@ export const preferencesMarkup = `
     <div class="preferences-heading"><h2 id="update-heading">软件更新</h2><span class="control-state-pill is-hidden" id="app-update-state">待检查</span></div>
     <div class="preference-row update-current-row"><span>当前版本</span><div><strong id="app-update-current">—</strong><button class="button button-accent" id="app-update-check" type="button">检查更新</button></div></div>
     <form id="update-preferences-form">
-      <label class="preference-row" for="settings-update-source"><span>更新渠道</span><span class="update-source-control"><select id="settings-update-source" aria-label="更新渠道"><option value="auto">自动（下载中心优先）</option><option value="hk">下载中心</option><option value="gitee">Gitee</option><option value="github">GitHub</option></select><span class="muted">自动：下载中心 → Gitee → GitHub</span></span></label>
+      <div class="preference-row"><span>更新来源</span><span>下载中心</span></div>
       <label class="preference-row" for="settings-auto-check-updates"><span title="启动后延迟检查，运行期间每 6 小时检查一次。">自动检查更新</span>${preferenceSwitch("settings-auto-check-updates")}</label>
       <label class="preference-row" for="settings-auto-download-updates"><span title="默认关闭；开启后会占用下载带宽，仍需确认安装。">自动下载更新</span>${preferenceSwitch("settings-auto-download-updates")}</label>
-      <div class="preference-actions update-preference-actions"><details class="preference-help"><summary>安装前会再次确认</summary><p>安装和重启会短暂中断代理连接。自动模式选用最高稳定版，同版本优先下载中心，失败时依次回退 Gitee、GitHub；下载中心或 Gitee 尚未同步新版时使用已核验的最新渠道。仅同版本、同摘要、同签名的包可跨渠道回退。连接波动时会有限重试，并重新确认同版本备用源；可随时取消下载，不停止当前代理。退出软件会清除尚未安装的下载缓存。Linux 内置更新适用于 AppImage。</p></details><button class="button button-quiet" id="app-update-save" type="submit">保存更新偏好</button></div>
+      <div class="preference-actions update-preference-actions"><details class="preference-help"><summary>安装前会再次确认</summary><p>仅使用下载中心。连接波动时有限重试；暂不可用或校验失败时显示原因，稍后可重新检查或下载。可随时取消下载，不停止当前代理。安装和重启会短暂中断代理连接，需要你确认。退出软件会清除尚未安装的下载缓存。Linux 内置更新适用于 AppImage。</p></details><button class="button button-quiet" id="app-update-save" type="submit">保存更新偏好</button></div>
     </form>
     <details class="preference-help" id="app-update-history" hidden><summary>历史安装记录（与本次下载分开）</summary><p class="hint" id="app-update-last-install"></p></details>
     <div class="update-feedback is-hidden" id="app-update-feedback">
-      <div class="app-update-summary"><div aria-live="polite"><strong id="app-update-title">尚未检查</strong><p id="app-update-message">自动模式优先下载中心，同版本 Gitee / GitHub 备用；安装前由你确认。</p></div></div>
-      <div class="about-grid app-update-details"><span>最新稳定版</span><strong id="app-update-latest">尚未检查</strong><span>发布日期</span><strong id="app-update-date">—</strong><span>当前渠道</span><strong id="app-update-source">—</strong></div>
+      <div class="app-update-summary"><div aria-live="polite"><strong id="app-update-title">尚未检查</strong><p id="app-update-message">仅使用下载中心；暂不可用时提示重试，安装前由你确认。</p></div></div>
+      <div class="about-grid app-update-details"><span>最新稳定版</span><strong id="app-update-latest">尚未检查</strong><span>发布日期</span><strong id="app-update-date">—</strong><span>更新来源</span><strong id="app-update-source">—</strong></div>
       <p class="hint" id="app-update-network-path"></p>
       <ol class="app-update-channels" id="app-update-attempts" aria-label="本次下载路径记录" hidden></ol>
-      <ul class="app-update-channels is-hidden" id="app-update-channels" aria-label="渠道检查结果"></ul>
+      <ul class="app-update-channels is-hidden" id="app-update-channels" aria-label="下载中心检查结果"></ul>
       <div class="app-update-progress is-hidden" id="app-update-progress"><progress id="app-update-progress-bar" max="100" value="0" aria-label="更新包下载进度"></progress><span id="app-update-progress-text" aria-live="off"></span></div>
       <div class="app-update-controls"><span class="hint">更新签名校验 · SHA-256 校验 · 禁止降级</span><div class="toolbar">
-        <button class="button button-quiet is-hidden" id="app-update-open" type="button">发布页面</button>
+        <button class="button button-quiet is-hidden" id="app-update-open" type="button">下载中心</button>
         <button class="button button-primary is-hidden" id="app-update-download" type="button">下载更新</button>
         <button class="button button-quiet is-hidden" id="app-update-cancel" type="button">取消下载</button>
         <button class="button button-primary is-hidden" id="app-update-install" type="button">安装并重启</button>

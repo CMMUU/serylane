@@ -29,8 +29,8 @@ const systemTags = tagged(tag => Object.hasOwn(tag.attributes, 'data-system'));
 const architectureTags = tagged(tag => Object.hasOwn(tag.attributes, 'data-architecture'));
 const releaseLinks = html.match(/<div\b[^>]*class="release-links"[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? '';
 
-function createPage(fetchResult) {
-  const page = { activeElement: null };
+function createPage(fetchResult, resolveResult = () => { throw new Error("download unavailable"); }) {
+  const page = { activeElement: null, navigations: [], requests: [] };
   function element({ tag = 'span', attributes = {} } = {}) {
     const attrs = new Map(Object.entries(attributes));
     const classes = new Set((attributes.class ?? '').split(/\s+/).filter(Boolean));
@@ -62,7 +62,7 @@ function createPage(fetchResult) {
     };
   }
   const selectors = new Map();
-  for (const id of ['hero-download', 'main-nav', 'platform-name', 'download-panel', 'download-github', 'download-gitee', 'channel-note', 'download-selection', 'release-status', 'release-retry', 'architecture-selector', 'mac-chip-help']) {
+  for (const id of ['hero-download', 'main-nav', 'platform-name', 'download-panel', 'download-center', 'download-progress', 'channel-note', 'download-selection', 'release-status', 'release-retry', 'architecture-selector', 'mac-chip-help']) {
     selectors.set(`#${id}`, element(byId(id)));
   }
   selectors.set('.menu-toggle', element(oneTag(tag => hasClass(tag, 'menu-toggle'))));
@@ -75,41 +75,38 @@ function createPage(fetchResult) {
     assert.ok(selectors.has(selector), `Unexpected document selector: ${selector}`);
     return selectors.get(selector);
   };
-  const github = query('#download-github');
-  const gitee = query('#download-gitee');
-  for (const link of [github, gitee]) link.descendants.set('span', element());
-  query('.release-links').children = [github, gitee].sort((a, b) =>
-    releaseLinks.indexOf(`id="${a.getAttribute('id')}"`) - releaseLinks.indexOf(`id="${b.getAttribute('id')}"`));
+  const center = query('#download-center');
+  center.descendants.set('span', element());
+  query('.release-links').children = [center];
   const collections = new Map([['[data-system]', tabs], ['[data-architecture]', architectures]]);
   const document = Object.assign(element(), {
     querySelector: query,
     querySelectorAll(selector) { assert.ok(collections.has(selector), `Unexpected collection: ${selector}`); return collections.get(selector); },
   });
   const forbidden = () => assert.fail('The static website must not call network, storage or desktop APIs');
-  const window = { matchMedia: () => ({ addEventListener() {} }), open: forbidden, fetch: forbidden };
+  const window = { matchMedia: () => ({ addEventListener() {} }), open: forbidden, fetch: forbidden, location: { assign: url => page.navigations.push(url) } };
   for (const name of ['__TAURI__', 'localStorage', 'sessionStorage']) Object.defineProperty(window, name, { get: forbidden });
   runInNewContext(script, {
-    document, window, AbortSignal, fetch: async (url, options) => {
-      assert.equal(url, '/api/releases/latest');
+    document, window, AbortSignal, requestAnimationFrame: callback => callback(), fetch: async (url, options) => {
+      page.requests.push(url);
+      assert.ok(url === '/api/releases/latest' || /^\/api\/download\/(windows|macos|linux)-(x64|arm64)$/.test(url));
       assert.equal(options.cache, 'no-store');
       assert.equal(options.credentials, 'omit');
-      return fetchResult();
+      return url === "/api/releases/latest" ? fetchResult() : resolveResult(url);
     }, XMLHttpRequest: forbidden, WebSocket: forbidden,
     EventSource: forbidden, navigator: { sendBeacon: forbidden },
   }, { filename: 'website/public/site.js', timeout: 1_000 });
-  return { page, query, tabs, architectures, github, gitee };
+  return { page, query, tabs, architectures, center };
 }
 
 const targets = ['windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64', 'linux-x64', 'linux-arm64'];
-const data = { version: 'v9.2.1', assets: Object.fromEntries(targets.map(t => [t, { domesticAvailable: t.startsWith('windows'), hkAvailable: t.startsWith('windows') }])) };
+const data = { version: 'v9.2.1', assets: Object.fromEntries(targets.map(t => [t, { channel: 'hk' }])) };
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 function verifySelection(view, target) {
   const [system, architecture] = target.split('-');
-  assert.equal(view.gitee.href, 'https://downloads.cmmuu.com/download/serylane/latest/' + target);
-  assert.equal(view.github.href, '/download/' + target + '?channel=github');
-  assert.deepEqual(view.query('.release-links').children, [view.gitee, view.github]);
-  assert.equal(view.gitee.classList.contains('button-primary'), true);
-  assert.equal(view.github.classList.contains('button-secondary'), true);
+  assert.equal(view.center.href, '/download/' + target);
+  assert.deepEqual(view.query('.release-links').children, [view.center]);
+  assert.equal(view.center.classList.contains('button-primary'), true);
   assert.equal(view.query('#download-panel').getAttribute('aria-labelledby'), 'tab-' + system);
   for (const tab of view.tabs) {
     assert.equal(tab.disabled, false);
@@ -124,18 +121,19 @@ function verifySelection(view, target) {
       : button.dataset.architecture === 'arm64' ? 'ARM64' : 'x64';
     assert.equal(button.textContent, label);
     if (button.dataset.architecture === architecture) {
-      assert.ok(view.gitee.getAttribute('aria-label').includes(label));
+      assert.ok(view.center.getAttribute('aria-label').includes(label));
       assert.ok(view.query('#download-selection').textContent.includes(label));
     }
   }
-  for (const link of [view.github, view.gitee]) {
+  for (const link of [view.center]) {
     assert.equal(link.getAttribute('target'), '_blank');
     assert.match(link.getAttribute('rel'), /noopener/);
     assert.match(link.getAttribute('aria-label'), /点击时重新核对版本/);
   }
 }
-assert.equal(byId('download-gitee').attributes.href, 'https://downloads.cmmuu.com/download/serylane/latest/windows-x64');
-assert.equal(byId('download-github').attributes.href, '/download/windows-x64?channel=github');
+assert.equal(byId('download-center').attributes.href, '/download/windows-x64');
+assert.doesNotMatch(html, /download-github|download-gitee|channel=|GitHub 备用/);
+for (const target of targets) assert.ok(html.includes('href="/download/' + target + '"'));
 for (const tag of [...systemTags, ...architectureTags]) assert.ok(Object.hasOwn(tag.attributes, 'disabled'));
 assert.doesNotMatch(html, /releases\/download\/v[0-9]/, 'No version-pinned HTML fallback');
 assert.match(html, /界面示意 · 非实时状态/);
@@ -161,7 +159,7 @@ for (const target of targets) {
   view.tabs.find(t => t.dataset.system === system).dispatch('click');
   view.architectures.find(a => a.dataset.architecture === arch).dispatch('click');
   verifySelection(view, target);
-  assert.match(view.query('#channel-note').textContent, system === 'windows' ? /已核对下载中心/ : /暂未确认下载中心/);
+  assert.match(view.query('#channel-note').textContent, /已核对下载中心/);
 }
 view.tabs[0].dispatch('keydown', { key: 'End' });
 verifySelection(view, 'linux-x64');
@@ -202,3 +200,36 @@ for (const failure of ['network', 'status', 'malformed', 'incomplete']) {
   assert.equal(errorView.query('#release-retry').hidden, true);
 }
 console.log('PASS: six platforms, keyboard, loading/errors/retry, no-JS fallback, independent click-time URLs.');
+
+const valid = { version: 'v9.2.1', channel: 'hk', url: 'https://files.cmmuu.com/releases/serylane/v9.2.1/Serylane_9.2.1_x64-setup.exe' };
+const downloadView = createPage(async () => ({ ok: true, json: async () => data }), async () => ({ ok: true, json: async () => valid }));
+await flush();
+downloadView.center.dispatch('click', { button: 0 });
+await flush();
+assert.deepEqual(downloadView.page.navigations, [valid.url]);
+assert.equal(downloadView.page.requests.at(-1), '/api/download/windows-x64');
+assert.match(downloadView.query('#download-progress').textContent, /已交给浏览器/);
+for (const change of [
+  { channel: 'github' }, { channel: 'gitee' }, { url: 'https://github.com/CMMUU/serylane/releases/download/v9.2.1/package.exe' },
+  { url: valid.url + '?fallback=github' }, { url: valid.url.replace('x64', 'arm64') }, { version: 'v9.2.2' },
+]) {
+  const invalidView = createPage(async () => ({ ok: true, json: async () => data }), async () => ({ ok: true, json: async () => ({ ...valid, ...change }) }));
+  await flush();
+  invalidView.center.dispatch('click', { button: 0 });
+  await flush();
+  assert.deepEqual(invalidView.page.navigations, []);
+  assert.match(invalidView.query('#download-progress').textContent, /重试/);
+  assert.doesNotMatch(invalidView.query('#download-progress').textContent, /备用|GitHub|Gitee/);
+}
+let available = false;
+const retryView = createPage(async () => ({ ok: true, json: async () => data }), async () => available ? { ok: true, json: async () => valid } : { ok: false });
+await flush();
+retryView.center.dispatch('click', { button: 0 }); await flush();
+assert.equal(retryView.page.navigations.length, 0);
+assert.match(retryView.query('#download-progress').textContent, /重试/);
+available = true;
+retryView.center.dispatch('click', { button: 0 }); await flush();
+assert.deepEqual(retryView.page.navigations, [valid.url]);
+assert.equal(retryView.center.dispatch('click', { button: 0, ctrlKey: true }).defaultPrevented, false);
+assert.equal(retryView.center.href, '/download/windows-x64');
+console.log('PASS: center-only click-time identity, rejected foreign sources, download failure and retry.');

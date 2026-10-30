@@ -63,30 +63,30 @@ export async function verifyDownloads(fetcher = request) {
   assert.match(release.version, /^v\d+\.\d+\.\d+$/);
   const targets = ['windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64', 'linux-x64', 'linux-arm64'];
   assert.deepEqual(Object.keys(release.assets).sort(), [...targets].sort());
-  const bases = { github: 'https://github.com/CMMUU/serylane/releases/download',
-    gitee: 'https://gitee.com/cmmuu/serylane/releases/download', hk: 'https://files.cmmuu.com/releases/serylane' };
-  // Verify BOTH the primary selection and explicit fallback for all six targets.
-  // HEAD only: deployment verification never pulls installer bodies into Node.
-  for (const target of targets) for (const githubOnly of [false, true]) {
-    const response = await fetcher(`${origin}/download/${target}${githubOnly ? '?channel=github' : ''}`, { method: 'HEAD' });
-    assert.equal(response.status, 302, `Latest download not verified: ${target}`);
-    assert.equal(response.headers.get('x-serylane-version'), release.version, 'Release changed during verification; rerun');
-    const channel = response.headers.get('x-serylane-channel');
-    assert.ok(Object.hasOwn(bases, channel), 'Unknown download channel');
-    if (githubOnly) assert.equal(channel, 'github');
-    assert.equal(response.headers.get('location'), `${bases[channel]}/${release.version}/${release.assets[target].filename}`,
-      `Channel/version/architecture identity differs: ${target}`);
-  }
+  const archive = 'https://files.cmmuu.com/releases/serylane';
+  // The six same-origin adapters are the only product download entries.
+  // HEAD only: never fetch installer bodies during deployment verification.
   for (const target of targets) {
-    const response = await fetcher(`https://downloads.cmmuu.com/download/serylane/latest/${target}`, { method: 'HEAD' });
-    assert.equal(response.status, 302, `Center permanent route not verified: ${target}`);
+    const asset = release.assets[target];
+    assert.equal(asset.channel, 'hk', 'Catalog contains a non-center download source');
+    assert.match(asset.sha256, /^[a-f0-9]{64}$/);
+    assert.ok(Number.isSafeInteger(asset.size) && asset.size > 0);
+    const response = await fetcher(`${origin}/download/${target}`, { method: 'HEAD' });
+    assert.equal(response.status, 302, `Center download not verified: ${target}`);
     assert.match(response.headers.get('cache-control') ?? '', /no-store/);
-    assert.equal(response.headers.get('x-serylane-version'), release.version, 'Center version differs; rerun verification');
-    const channel = response.headers.get('x-serylane-channel');
-    assert.ok(channel === 'hk' || channel === 'github');
-    assert.equal(response.headers.get('location'), `${bases[channel]}/${release.version}/${release.assets[target].filename}`);
+    assert.equal(response.headers.get('x-serylane-version'), release.version, 'Release changed during verification; rerun');
+    assert.equal(response.headers.get('x-serylane-channel'), 'hk', 'Alternate download source rejected');
+    assert.equal(response.headers.get('x-serylane-resolver'), 'download-center');
+    assert.equal(response.headers.get('location'), `${archive}/${release.version}/${asset.filename}`,
+      `Version/architecture identity differs: ${target}`);
   }
-  console.log(`Verified latest release ${release.version}, six center routes, six legacy routes and six GitHub fallback routes.`);
+  for (const channel of ['github', 'gitee']) {
+    const response = await fetcher(`${origin}/download/windows-x64?channel=${channel}`, { method: 'HEAD' });
+    assert.equal(response.status, 400, 'Retired channel override must be rejected');
+    assert.equal(response.headers.get('location'), null);
+  }
+  console.log(`Verified latest release ${release.version}, all six center-only architecture routes, and rejected retired channel overrides.`);
+
 }
 export async function retryRead(check, wait = () => new Promise(resolve => setTimeout(resolve, 15000))) {
   // Edge activation can briefly return the previous asset manifest. Retry only

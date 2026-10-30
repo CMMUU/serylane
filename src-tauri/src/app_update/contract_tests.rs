@@ -46,7 +46,7 @@ impl Fixture {
         platform.installer = installer;
         let key = platform.keys()[0].clone();
         let official = asset_url(
-            UpdateSource::Github,
+            UpdateSource::Hk,
             version,
             &artifact_name(&key, version).unwrap(),
         )
@@ -125,6 +125,7 @@ impl Fixture {
             .endpoints(vec![format!("http://{address}/manifest").parse().unwrap()])
             .unwrap()
             .no_proxy()
+            .configure_client(|client| client.redirect(transport::redirect_policy()))
             .version_comparator(|_, _| true)
             .timeout(Duration::from_secs(15));
         // A test binary has no MSI bundle marker. Only the MSI scenario selects
@@ -151,7 +152,7 @@ impl Fixture {
             .unwrap()
             .unwrap();
         let candidate =
-            Candidate::from_update(update.clone(), UpdateSource::Github, &platform).unwrap();
+            Candidate::from_update(update.clone(), UpdateSource::Hk, &platform).unwrap();
         let mut transport = update;
         transport.download_url = format!("http://{address}/archive").parse().unwrap();
         // Only test transport is rerouted. The stored identity keeps the exact
@@ -181,7 +182,7 @@ impl Fixture {
 
 pub(super) fn ready_session(candidate: &Candidate, bytes: Vec<u8>) -> Mutex<Session> {
     Mutex::new(Session {
-        source: UpdateSource::Auto,
+        source: UpdateSource::Hk,
         status: AppUpdateStatus {
             phase: "ready".into(),
             stage: "verified".into(),
@@ -451,6 +452,40 @@ fn updater_contract_download_cancellation_bad_signature_and_size_never_become_re
         assert!(manager.lock().unwrap().ready.is_none());
     }
 }
+#[test]
+fn updater_contract_provenance_cannot_authorize_mirror_downloads() {
+    let f = Fixture::new(
+        b"signed center identity fixture".to_vec(),
+        "9.0.1",
+        &std::env::temp_dir().join("never-install/serylane"),
+        None,
+    );
+    for provenance in ["github", "gitee", "hk"] {
+        let mut update = f.candidate.update.clone();
+        update.raw_json["source"] = provenance.into();
+        update.raw_json["channel"] = provenance.into();
+        update.raw_json["fallback"] = "https://github.com/CMMUU/serylane/releases/latest".into();
+        // Provenance is allowed, but may not change where the client connects.
+        assert!(Candidate::from_update(update.clone(), UpdateSource::Hk, &f.platform).is_ok());
+        for origin in [
+            "https://github.com/CMMUU/serylane/releases/download",
+            "https://gitee.com/cmmuu/serylane/releases/download",
+        ] {
+            update.download_url = f
+                .candidate
+                .update
+                .download_url
+                .as_str()
+                .replace(HK_RELEASES, origin)
+                .parse()
+                .unwrap();
+            update.raw_json["platforms"][&f.candidate.platform_key]["url"] =
+                update.download_url.as_str().into();
+            assert!(Candidate::from_update(update.clone(), UpdateSource::Hk, &f.platform).is_err());
+        }
+    }
+}
+
 #[test]
 fn updater_contract_platform_keys_keep_architecture_and_windows_format_separate() {
     for arch in ["x86_64", "aarch64"] {

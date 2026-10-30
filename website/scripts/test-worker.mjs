@@ -1,27 +1,20 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { handle } from '../src/worker.ts';
-import { TARGETS, GITHUB, GITEE, HK_FILES } from '../src/releases.ts';
+import { TARGETS, HK_FILES, filenames } from '../src/releases.ts';
 import { CENTER, CENTER_API } from '../src/center.ts';
-
-const hash = text => createHash('sha256').update(text).digest('hex');
-const suffix = { 'windows-x64': 'x64-setup.exe', 'windows-arm64': 'arm64-setup.exe', 'macos-x64': 'x64.dmg', 'macos-arm64': 'aarch64.dmg', 'linux-x64': 'amd64.AppImage', 'linux-arm64': 'aarch64.AppImage' };
-export function fixture(version = 'v0.7.7') {
-  const assets = Object.fromEntries(TARGETS.map((target, index) => [target, {
-    filename: `${version === 'v0.7.6' ? 'RouteDeck' : 'Serylane'}_${version.slice(1)}_${suffix[target]}`,
-    size: 1000 + index, sha256: hash(target),
-  }]));
-  const marker = version === 'v0.7.6' ? 'latest.json' : 'downloads.json';
-  const markerText = JSON.stringify(marker === 'downloads.json' ? { schemaVersion: 1, version, assets } : {
-    version: version.slice(1), platforms: Object.fromEntries(TARGETS.filter(t => !t.startsWith('macos')).map(t => [
-      t.replace('-x64', '-x86_64').replace('-arm64', '-aarch64'), { ...assets[t], signature: 'existing-published-signature' },
-    ])),
-  });
-  const sums = [...Object.values(assets).map(a => `${a.sha256}  ${a.filename}`), `${hash(markerText)}  ${marker}`].join('\n') + '\n';
-  return { version, assets, marker, markerText, sums };
-}
 const env = { ASSETS: { fetch: () => new Response('static-assets') } };
+const request = (path, method = 'GET') => new Request('https://serylane.cmmuu.com' + path, { method });
+function fixture(version = 'v0.7.33') {
+  const names = filenames(version);
+  return { schemaVersion: 1, project: 'serylane', version, checkedAt: new Date().toISOString(), source: 'github',
+    assets: Object.fromEntries(TARGETS.map((target, i) => [target, {
+      filename: names[target], size: 1000 + i, sha256: 'a'.repeat(64), channel: 'hk',
+      hkAvailable: true, domesticAvailable: true, giteeAvailable: false,
+      fileUrl: `${HK_FILES}/${version}/${names[target]}`,
+      downloadUrl: `${CENTER}/download/serylane/latest/${target}`,
+    }])) };
+}
 function upstream(data, override = () => undefined) {
   const calls = [];
   const fetcher = async (url, init) => {
@@ -30,269 +23,154 @@ function upstream(data, override = () => undefined) {
     assert.equal(init.cache, 'no-store');
     assert.ok(init.signal);
     assert.ok(!init.headers.Authorization && !init.headers.Cookie);
-    const altered = await override(url, init, calls);
+    const altered = await override(url, init);
     if (altered) return altered;
-    if (url.startsWith(HK_FILES)) return new Response('not mirrored yet', { status: 404 });
-    if (url === `${GITHUB}/releases/latest`) return new Response(null, { status: 302, headers: { location: `${GITHUB}/releases/tag/${data.version}` } });
-    if (url.endsWith(`/${data.marker}`)) return new Response(data.markerText);
-    if (url.endsWith('/SHA256SUMS.txt')) return new Response(data.sums);
-    const asset = Object.values(data.assets).find(a => url.endsWith('/' + a.filename));
-    if (asset && init.method === 'HEAD') return new Response(null, { headers: { 'content-length': String(asset.size), 'content-type': 'application/octet-stream' } });
-    return new Response('missing', { status: 404 });
+    if (url === CENTER_API) return Response.json(data);
+    const asset = Object.values(data.assets).find(a => url === a.fileUrl);
+    assert.ok(asset, 'No alternate source may be called');
+    assert.equal(init.method, 'HEAD', 'Never download installer bodies in the website worker');
+    return new Response(null, { headers: { 'content-length': String(asset.size), 'content-type': 'application/octet-stream' } });
   };
   return { fetcher, calls };
 }
-const request = (path, method = 'GET') => new Request(`https://serylane.cmmuu.com${path}`, { method });
 function noCache(response) {
   assert.match(response.headers.get('cache-control'), /no-store/);
   assert.equal(response.headers.get('cdn-cache-control'), 'no-store');
   assert.equal(response.headers.get('x-robots-tag'), 'noindex');
 }
-
-test('six platforms: latest exact packages, Gitee primary and GitHub override, no binary GET', async () => {
+test('six center-only routes and resolve APIs preserve version and exact architecture; provenance is not a download channel', async () => {
   const data = fixture();
-  for (const target of TARGETS) for (const githubOnly of [false, true]) {
+  for (const target of TARGETS) for (const method of ['GET', 'HEAD']) for (const prefix of ['/download/', '/api/download/']) {
     const { fetcher, calls } = upstream(data);
-    const response = await handle(request(`/download/${target}${githubOnly ? '?channel=github' : ''}`), env, fetcher);
-    assert.equal(response.status, 302);
-    assert.equal(response.headers.get('location'), `${githubOnly ? GITHUB : GITEE}/releases/download/${data.version}/${data.assets[target].filename}`);
-    noCache(response);
-    assert.ok(calls.every(c => c.url === CENTER_API || c.method === 'HEAD' || /\/(downloads.json|SHA256SUMS.txt)$/.test(c.url)));
-    if (githubOnly) assert.ok(calls.every(c => !c.url.startsWith(GITEE)));
+    const reply = await handle(request(prefix + target, method), env, fetcher);
+    const api = prefix.startsWith('/api');
+    assert.equal(reply.status, api ? 200 : 302);
+    assert.equal(reply.headers.get('x-serylane-version'), data.version);
+    assert.equal(reply.headers.get('x-serylane-channel'), 'hk');
+    assert.equal(reply.headers.get('x-serylane-resolver'), 'download-center');
+    if (api && method === 'GET') assert.deepEqual(await reply.json(), { version: data.version, channel: 'hk', url: data.assets[target].fileUrl });
+    else if (!api) assert.equal(reply.headers.get('location'), data.assets[target].fileUrl);
+    if (method === 'HEAD') assert.equal(await reply.text(), '');
+    noCache(reply);
+    assert.deepEqual(calls, [{ url: CENTER_API, method: 'GET' }, { url: data.assets[target].fileUrl, method: 'HEAD' }]);
   }
 });
-test('legacy published 0.7.6 works without rewriting or renaming its assets', async () => {
+test('catalog is refreshed each request; source publishing a new version never uses a stored snapshot', async () => {
+  for (const version of ['v0.7.33', 'v0.7.34']) {
+    const data = fixture(version);
+    const { fetcher, calls } = upstream(data);
+    const reply = await handle(request('/api/releases/latest'), env, fetcher);
+    assert.equal(reply.status, 200);
+    assert.equal((await reply.json()).version, version);
+    assert.deepEqual(calls, [{ url: CENTER_API, method: 'GET' }]);
+    noCache(reply);
+  }
+});
+test('historical archive names are not rewritten', async () => {
   const data = fixture('v0.7.6');
   const { fetcher } = upstream(data);
-  const response = await handle(request('/api/releases/latest'), env, fetcher);
-  assert.equal(response.status, 200);
-  const result = await response.json();
-  assert.equal(result.version, 'v0.7.6');
-  assert.equal(Object.keys(result.assets).length, 6);
-  assert.ok(Object.values(result.assets).every(a => a.domesticAvailable && a.filename.startsWith('RouteDeck_')));
+  const reply = await handle(request('/download/windows-x64'), env, fetcher);
+  assert.equal(reply.headers.get('location'), HK_FILES + '/v0.7.6/RouteDeck_0.7.6_x64-setup.exe');
 });
-test('legacy Windows download does not depend on unrelated macOS/Linux package HEAD requests', async () => {
-  const { fetcher, calls } = upstream(fixture('v0.7.6'), url => /\.(dmg|AppImage)$/.test(url) ? new Response(null, { status: 503 }) : undefined);
-  const result = await handle(request('/download/windows-x64'), env, fetcher);
-  assert.equal(result.status, 302);
-  assert.ok(calls.every(c => !/\.(dmg|AppImage)$/.test(c.url)));
-});
-test('mirror missing, timeout, HTML login, wrong bytes or wrong package size => SAME-version GitHub', async () => {
-  for (const failure of ['missing', 'timeout', 'html', 'bytes', 'size']) {
-    const data = fixture();
-    const { fetcher } = upstream(data, (url, init) => {
-      if (!url.startsWith(GITEE)) return;
-      if (failure === 'timeout') throw new DOMException('timeout', 'TimeoutError');
-      if (failure === 'missing') return new Response('missing', { status: 404 });
-      if (failure === 'html') return new Response('<html>login</html>');
-      if (failure === 'bytes') return new Response(data.markerText + ' ');
-      if (init.method === 'HEAD') return new Response(null, { headers: { 'content-length': '50' } });
-    });
-    const response = await handle(request('/download/windows-arm64'), env, fetcher);
-    assert.equal(response.status, 302, failure);
-    assert.equal(response.headers.get('location'), `${GITHUB}/releases/download/v0.7.7/Serylane_0.7.7_arm64-setup.exe`);
+test('retired channels, version overrides and unknown query parameters fail before networking', async () => {
+  const fetcher = () => assert.fail('Invalid request must not fetch');
+  for (const path of ['/download/windows-x64', '/api/download/windows-x64', '/api/releases/latest']) {
+    for (const query of ['?channel=github', '?channel=gitee', '?channel=hk', '?version=v0.7.33', '?url=https://evil.example', '?channel=github&channel=hk']) {
+      const reply = await handle(request(path + query), env, fetcher);
+      assert.equal(reply.status, 400);
+      noCache(reply);
+    }
   }
 });
-test('metadata reports partial mirrors without claiming all platforms ready', async () => {
-  const { fetcher } = upstream(fixture(), (url, init) => {
-    if (url.startsWith(GITEE) && init.method === 'HEAD' && !url.endsWith('_x64-setup.exe')) return new Response(null, { status: 404 });
-  });
-  const response = await handle(request('/api/releases/latest'), env, fetcher);
-  const data = await response.json();
-  assert.equal(response.status, 200);
-  assert.deepEqual(Object.entries(data.assets).filter(([, a]) => a.domesticAvailable).map(([t]) => t), ['windows-x64']);
-  assert.ok(!JSON.stringify(data).includes('https://'), 'No upstream URLs exposed as frontend inputs');
-  noCache(response);
+test('invalid routes and methods fail locally; static assets are delegated', async () => {
+  const fetcher = () => assert.fail('Must not fetch');
+  assert.equal(await (await handle(request('/docs/'), env, fetcher)).text(), 'static-assets');
+  for (const path of ['/download/windows-x86', '/download/windows-x64/extra', '/api/nope']) assert.equal((await handle(request(path), env, fetcher)).status, 404);
+  const post = await handle(request('/download/windows-x64', 'POST'), env, fetcher);
+  assert.equal(post.status, 405);
+  assert.equal(post.headers.get('allow'), 'GET, HEAD');
+  assert.equal(await (await handle(request('/api/nope', 'HEAD'), env, fetcher)).text(), '');
 });
-test('fresh resolution on every click; page-open release does not pin subsequent downloads', async () => {
-  for (const version of ['v0.7.7', 'v0.7.8']) {
-    const response = await handle(request('/download/linux-x64'), env, upstream(fixture(version)).fetcher);
-    assert.equal(response.headers.get('x-serylane-version'), version);
-    assert.ok(response.headers.get('location').includes(`/${version}/`));
+test('center failures produce retryable 503, no other source and no sensitive details', async () => {
+  for (const failure of ['network', 'redirect', 'status', 'malformed', 'oversized-header', 'oversized-body']) {
+    for (const path of ['/download/windows-x64', '/api/download/windows-x64', '/api/releases/latest']) {
+      const calls = [];
+      const fetcher = async (url, init) => {
+        calls.push(url);
+        assert.equal(url, CENTER_API);
+        assert.equal(init.redirect, 'manual');
+        if (failure === 'network') throw new Error('secret-token https://evil.example/private');
+        if (failure === 'redirect') return new Response(null, { status: 302, headers: { location: 'https://github.com/CMMUU/serylane/releases/latest' } });
+        if (failure === 'status') return new Response('secret-token', { status: 503 });
+        if (failure === 'malformed') return new Response('secret-token');
+        if (failure === 'oversized-header') return new Response('{}', { headers: { 'content-length': String(256 * 1024 + 1) } });
+        return new Response(' '.repeat(256 * 1024 + 1));
+      };
+      const reply = await handle(request(path), env, fetcher);
+      assert.equal(reply.status, 503, failure);
+      assert.equal(reply.headers.get('retry-after'), '30');
+      noCache(reply);
+      const body = await reply.text();
+      assert.match(body, /重试/);
+      assert.doesNotMatch(body, /github|gitee|secret-token|evil\.example/i);
+      assert.deepEqual(calls, [CENTER_API]);
+    }
   }
 });
-test('latest unavailable, prerelease, missing/corrupt manifest or unavailable binaries => 503, never older version', async () => {
-  for (const failure of ['latest', 'prerelease', 'manifest', 'checksum', 'binary', 'oversize', 'streamOversize']) {
-    const data = fixture();
-    const { fetcher, calls } = upstream(data, (url, init) => {
-      if (failure === 'latest' && url.endsWith('/latest')) return new Response(null, { status: 429 });
-      if (failure === 'prerelease' && url.endsWith('/latest')) return new Response(null, { status: 302, headers: { location: `${GITHUB}/releases/tag/v0.8.0-beta.1` } });
-      if (failure === 'manifest' && url.endsWith('/downloads.json')) return new Response(null, { status: 404 });
-      if (failure === 'checksum' && url.endsWith('/SHA256SUMS.txt')) return new Response(data.sums.replace(hash(data.markerText), 'a'.repeat(64)));
-      if (failure === 'oversize' && url.endsWith('/downloads.json')) return new Response('{}', { headers: { 'content-length': '500000' } });
-      if (failure === 'streamOversize' && url.endsWith('/downloads.json')) return new Response('x'.repeat(262145));
-      if (failure === 'binary' && init.method === 'HEAD' && !url.endsWith('/latest')) return new Response(null, { status: 404 });
-    });
-    const response = await handle(request('/download/windows-x64'), env, fetcher);
-    assert.equal(response.status, 503, failure);
-    assert.equal(response.headers.get('location'), null);
-    assert.match(await response.text(), /本次没有转向旧版本/);
-    noCache(response);
-    assert.ok(calls.every(c => !c.url.includes('/v0.7.6/')));
+test('reject malformed, stale, wrong-architecture and foreign-source metadata without fallback', async () => {
+  const mutations = [
+    d => { d.version = 'v0.7.34-beta.1'; },
+    d => { d.version = 'v00.7.34'; },
+    d => { d.checkedAt = new Date(Date.now() - 61000).toISOString(); },
+    d => { d.checkedAt = new Date(Date.now() + 61000).toISOString(); },
+    d => { d.checkedAt = 'invalid'; },
+    d => { d.project = 'other'; },
+    d => { d.schemaVersion = 2; },
+    d => { delete d.assets['macos-x64']; },
+    d => { d.assets.other = {}; },
+    ...['filename', 'sha256', 'size'].map(field => d => { d.assets['windows-x64'][field] = field === 'size' ? -1 : 'incorrect'; }),
+    d => { d.assets['windows-x64'].size = 2 * 1024 ** 3 + 1; },
+    d => { d.assets['windows-x64'].size = 1.5; },
+    d => { d.assets['macos-x64'].filename = d.assets['macos-arm64'].filename; },
+    d => { d.assets['windows-x64'].channel = 'github'; d.assets['windows-x64'].fileUrl = 'https://github.com/CMMUU/serylane/releases/download/v0.7.33/Serylane_0.7.33_x64-setup.exe'; },
+    d => { d.assets['windows-x64'].channel = 'gitee'; },
+    d => { d.assets['windows-x64'].hkAvailable = false; },
+    d => { d.assets['windows-x64'].giteeAvailable = true; },
+    d => { d.assets['windows-x64'].downloadUrl += '?channel=github'; },
+    ...['https://evil.example/package.exe', 'https://files.cmmuu.com.evil.example/package.exe',
+      'https://user:password@files.cmmuu.com/releases/serylane/v0.7.33/Serylane_0.7.33_x64-setup.exe',
+      HK_FILES + '/v0.7.32/Serylane_0.7.32_x64-setup.exe',
+      HK_FILES + '/v0.7.33/Serylane_0.7.33_arm64-setup.exe',
+      HK_FILES + '/v0.7.33/Serylane_0.7.33_x64-setup.exe?channel=github',
+      HK_FILES + '/v0.7.33/Serylane_0.7.33_x64-setup.exe#fragment'].map(url => d => { d.assets['windows-x64'].fileUrl = url; }),
+  ];
+  for (const mutate of mutations) {
+    const data = fixture(); mutate(data);
+    const { fetcher, calls } = upstream(data);
+    const reply = await handle(request('/download/windows-x64'), env, fetcher);
+    assert.equal(reply.status, 503, mutate.toString());
+    assert.deepEqual(calls, [{ url: CENTER_API, method: 'GET' }]);
   }
 });
-test('malformed future catalog is rejected even with matching catalog checksum', async () => {
-  for (const mutation of [d => delete d.assets['macos-x64'], d => { d.assets['windows-x64'].filename = '../../other.exe'; }, d => { d.assets['linux-x64'].sha256 = 'b'.repeat(64); }, d => { d.version = 'v9.0.0'; }]) {
-    const data = fixture();
-    const json = JSON.parse(data.markerText);
-    mutation(json);
-    const oldHash = hash(data.markerText);
-    data.markerText = JSON.stringify(json);
-    data.sums = data.sums.replace(oldHash, hash(data.markerText));
-    assert.equal((await handle(request('/api/releases/latest'), env, upstream(data).fetcher)).status, 503);
-  }
-});
-test('upstream redirects cannot escape fixed HTTPS provider/CDN allowlists', async () => {
-  for (const location of ['http://127.0.0.1:7890/', 'https://evil.example/file', 'https://foruda.gitee.com.evil.example/attach_file/x', 'https://user:secret@github.com/CMMUU/serylane/releases/tag/v0.7.7']) {
-    const { fetcher, calls } = upstream(fixture(), url => url.endsWith('/downloads.json') && url.startsWith(GITHUB)
-      ? new Response(null, { status: 302, headers: { location } }) : undefined);
-    assert.equal((await handle(request('/api/releases/latest'), env, fetcher)).status, 503);
-    assert.ok(!calls.some(c => c.url === location));
-  }
-});
-test('known release CDN redirects work, loops fail bounded', async () => {
+test('archive HEAD must confirm exact size and non-HTML file, with no redirects', async () => {
   const data = fixture();
-  for (const loop of [false, true]) {
-    const { fetcher, calls } = upstream(data, url => {
-      if (url.startsWith(GITHUB) && url.endsWith('/downloads.json')) return new Response(null, { status: 302, headers: { location: loop ? url : 'https://release-assets.githubusercontent.com/github-production-release-asset/1355770287/catalog' } });
-      if (url.includes('/github-production-release-asset/')) return new Response(data.markerText);
-    });
-    assert.equal((await handle(request('/api/releases/latest'), env, fetcher)).status, loop ? 503 : 200);
-    assert.ok(calls.length < 30);
+  const bad = [
+    new Response(null, { status: 404 }),
+    new Response(null, { status: 302, headers: { location: 'https://github.com/CMMUU/serylane/releases/download/v0.7.33/Serylane_0.7.33_x64-setup.exe' } }),
+    new Response(null, { status: 302, headers: { location: data.assets['windows-arm64'].fileUrl } }),
+    new Response(null, { headers: { 'content-length': '999', 'content-type': 'application/octet-stream' } }),
+    new Response(null, { headers: { 'content-length': '1000', 'content-type': 'text/html' } }),
+    new Response(null, { headers: { 'content-length': '1000', 'content-type': 'application/json' } }),
+    new Response(null, { headers: { 'content-type': 'application/octet-stream' } }),
+    new Response(null, { headers: { 'content-length': '1000' } }),
+    new Response(null, { headers: { 'content-length': '1000', 'content-type': 'application/octet-stream', location: data.assets['windows-arm64'].fileUrl } }),
+  ];
+  for (const response of bad) {
+    const { fetcher, calls } = upstream(data, url => url === CENTER_API ? undefined : response);
+    const reply = await handle(request('/download/windows-x64', 'HEAD'), env, fetcher);
+    assert.equal(reply.status, 503);
+    assert.equal(await reply.text(), '');
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every(call => call.url === CENTER_API || call.url === data.assets['windows-x64'].fileUrl));
   }
-});
-test('invalid routes/queries/methods perform no outbound requests; assets passed through', async () => {
-  const forbidden = () => assert.fail('Unexpected network');
-  for (const [path, method, status] of [
-    ['/download/windows-ia32', 'GET', 404], ['/api/unknown', 'GET', 404],
-    ['/download/windows-x64?url=https://evil.example', 'GET', 400], ['/api/releases/latest?version=v1.0.0', 'GET', 400],
-    ['/download/windows-x64?channel=github&channel=gitee', 'GET', 400], ['/download/windows-x64', 'POST', 405],
-  ]) assert.equal((await handle(request(path, method), env, forbidden)).status, status);
-  assert.equal(await (await handle(request('/docs/'), env, forbidden)).text(), 'static-assets');
-});
-test('HEAD download resolves normally but has no response body', async () => {
-  const response = await handle(request('/download/windows-x64', 'HEAD'), env, upstream(fixture()).fetcher);
-  assert.equal(response.status, 302);
-  assert.equal(await response.text(), '');
-});
-
-function hkUpstream(data, failure) {
-  return upstream(data, (url, init) => {
-    if (!url.startsWith(HK_FILES)) return;
-    if (failure === 'timeout') throw new DOMException('timeout', 'TimeoutError');
-    if (failure === 'missing') return new Response(null, { status: 404 });
-    if (url.endsWith('/' + data.marker)) return new Response(failure === 'stale' ? fixture('v0.7.6').markerText
-      : failure === 'changed' ? data.markerText + ' ' : data.markerText);
-    const asset = Object.values(data.assets).find(a => url.endsWith('/' + a.filename));
-    if (asset && init.method === 'HEAD') return new Response(null, { headers: {
-      'content-length': String(failure === 'size' ? asset.size + 1 : asset.size), 'content-type': 'application/octet-stream',
-    } });
-  });
-}
-test('HK archive is preferred for all six exact current packages, GitHub override skips both mirrors', async () => {
-  const data = fixture();
-  for (const target of TARGETS) {
-    const { fetcher, calls } = hkUpstream(data);
-    const response = await handle(request(`/download/${target}`), env, fetcher);
-    assert.equal(response.status, 302);
-    assert.equal(response.headers.get('location'), `${HK_FILES}/${data.version}/${data.assets[target].filename}`);
-    assert.equal(response.headers.get('x-serylane-channel'), 'hk');
-    assert.ok(calls.every(c => c.url === CENTER_API || c.method === 'HEAD' || /\/(downloads.json|SHA256SUMS.txt)$/.test(c.url)));
-    const override = hkUpstream(data);
-    const github = await handle(request(`/download/${target}?channel=github`), env, override.fetcher);
-    assert.equal(github.headers.get('x-serylane-channel'), 'github');
-    assert.ok(override.calls.every(c => !c.url.startsWith(HK_FILES) && !c.url.startsWith(GITEE)));
-  }
-});
-test('HK lag, timeout, missing file, changed marker or wrong length falls back only to identical current Gitee', async () => {
-  for (const failure of ['stale', 'timeout', 'missing', 'changed', 'size']) {
-    const { fetcher } = hkUpstream(fixture(), failure);
-    const response = await handle(request('/download/macos-arm64'), env, fetcher);
-    assert.equal(response.status, 302, failure);
-    assert.equal(response.headers.get('location'), `${GITEE}/releases/download/v0.7.7/Serylane_0.7.7_aarch64.dmg`);
-  }
-});
-test('HK catalog readiness is reported separately and does not conceal failed Gitee', async () => {
-  const data = fixture();
-  const hk = hkUpstream(data);
-  const response = await handle(request('/api/releases/latest'), env, async (url, init) =>
-    url.startsWith(GITEE) ? new Response(null, { status: 503 }) : hk.fetcher(url, init));
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get('x-serylane-hk'), 'VERIFIED');
-  assert.notEqual(response.headers.get('x-serylane-mirror'), 'VERIFIED');
-  assert.ok(Object.values((await response.json()).assets).every(a => a.domesticAvailable && a.hkAvailable && !a.giteeAvailable));
-});
-test('HK redirect allowlist rejects other origins, credentials, paths and query strings before request', async () => {
-  for (const location of ['https://files.cmmuu.com.evil.example/releases/serylane/v0.7.7/downloads.json',
-    'https://files.cmmuu.com/manual/other', 'https://files.cmmuu.com/releases/other/v0.7.7/downloads.json',
-    'https://files.cmmuu.com/releases/serylane/v0.7.7/downloads.json?url=other',
-    'https://files.cmmuu.com/releases/serylane/v0.7.6/downloads.json',
-    'https://files.cmmuu.com/releases/serylane/v0.7.7/other.json',
-    'http://files.cmmuu.com/releases/serylane/v0.7.7/downloads.json',
-    'https://user@files.cmmuu.com/releases/serylane/v0.7.7/downloads.json']) {
-    const data = fixture();
-    const { fetcher, calls } = upstream(data, url => url.startsWith(HK_FILES)
-      ? new Response(null, { status: 302, headers: { location } }) : undefined);
-    const response = await handle(request('/download/windows-x64'), env, fetcher);
-    assert.equal(response.headers.get('x-serylane-channel'), 'gitee');
-    assert.ok(!calls.some(c => c.url === location), location);
-  }
-});
-
-function centerData(version = 'v0.7.17', channel = 'hk') {
-  const data = fixture(version);
-  return {schemaVersion: 1, project:'serylane', version, checkedAt:new Date().toISOString(), assets: Object.fromEntries(TARGETS.map(t => [t, {...data.assets[t], channel, hkAvailable: channel === 'hk', domesticAvailable: channel === 'hk', giteeAvailable:false, downloadUrl:`${CENTER}/download/serylane/latest/${t}`, fileUrl:channel === 'hk' ? `${HK_FILES}/${version}/${data.assets[t].filename}` : `${GITHUB}/releases/download/${version}/${data.assets[t].filename}`}]))};
-}
-test('center is the normal resolver, six old GET/HEAD routes keep their exact identity', async () => {
-  for (const channel of ['hk','github']) for (const target of TARGETS) for (const method of ['GET','HEAD']) {
-    const data = centerData('v0.7.17',channel); const calls=[];
-    const fetcher = async (url, init) => { calls.push(url); assert.equal(url,CENTER_API); assert.equal(init.redirect,'manual'); assert.equal(init.cache,'no-store'); return Response.json(data); };
-    const r = await handle(request(`/download/${target}`,method),env,fetcher);
-    assert.equal(r.status,302); assert.equal(r.headers.get('location'),data.assets[target].fileUrl); noCache(r);
-    assert.equal(r.headers.get('x-serylane-resolver'),'download-center'); assert.equal(await r.text(),'');
-    assert.equal(calls.length,1);
-  }
-});
-test('center API adapter is bounded and HEAD has no body', async () => {
-  for (const method of ['GET','HEAD']) {
-    const r=await handle(request('/api/releases/latest',method),env,async()=>Response.json(centerData()));
-    assert.equal(r.status,200); noCache(r);
-    if (method==='HEAD') assert.equal(await r.text(),''); else assert.equal((await r.json()).version,'v0.7.17');
-  }
-});
-test('malformed, stale, redirecting, wrong-version or wrong-architecture center data uses independent verification', async () => {
-  for(const scenario of ['stale','arch','version','hash','partial','redirect','oversize']) {
-    const data=centerData();
-    if(scenario==='stale') data.checkedAt='2000-01-01T00:00:00Z';
-    if(scenario==='arch') data.assets['macos-arm64']=data.assets['macos-x64'];
-    if(scenario==='version') data.assets['windows-x64'].fileUrl=data.assets['windows-x64'].fileUrl.replace('v0.7.17','v0.7.16');
-    if(scenario==='hash') data.assets['windows-x64'].sha256='invalid';
-    if(scenario==='partial') delete data.assets['linux-arm64'];
-    const {fetcher}=upstream(fixture('v0.7.17'),url=>url===CENTER_API ? scenario==='redirect' ? new Response(null,{status:302,headers:{location:'https://example.com'}}) : scenario==='oversize' ? new Response('x'.repeat(270000)) : Response.json(data) : undefined);
-    const r=await handle(request('/download/macos-arm64'),env,fetcher);
-    assert.equal(r.status,302); assert.equal(r.headers.get('x-serylane-resolver'),null);
-    assert.equal(r.headers.get('location'),`${GITEE}/releases/download/v0.7.17/Serylane_0.7.17_aarch64.dmg`);
-  }
-});
-test('explicit GitHub fallback never depends on download center availability', async()=>{
-  const {fetcher,calls}=upstream(fixture('v0.7.17'));
-  const r=await handle(request('/download/macos-arm64?channel=github'),env,fetcher);
-  assert.equal(r.status,302); assert.equal(r.headers.get('x-serylane-channel'),'github');
-  assert.ok(calls.every(c=>!c.url.startsWith(CENTER)));
-});
-
-test('fresh download resolution reports the same immutable source as the redirect', async () => {
-  const data = fixture();
-  for (const target of TARGETS) for (const query of ['', '?channel=github']) {
-    const { fetcher } = upstream(data);
-    const resolved = await handle(request(`/api/download/${target}${query}`), env, fetcher);
-    assert.equal(resolved.status, 200); noCache(resolved);
-    const body = await resolved.json();
-    const redirect = await handle(request(`/download/${target}${query}`), env, fetcher);
-    assert.equal(body.url, redirect.headers.get('location'));
-    assert.equal(body.channel, redirect.headers.get('x-serylane-channel'));
-    assert.equal(body.version, data.version);
-  }
-  assert.equal((await handle(request('/api/download/not-a-target'),env)).status,404);
-  assert.equal((await handle(request('/api/download/macos-arm64?url=https://example.com'),env)).status,400);
 });

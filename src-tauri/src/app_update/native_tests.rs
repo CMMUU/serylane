@@ -190,9 +190,7 @@ fn execute(host: &NativeFixtureHost, bytes: Vec<u8>) -> AppResult<()> {
     tauri::async_runtime::block_on(transport::recover(
         &manager,
         vec![f.candidate.clone()],
-        false,
         transport::Policy::default(),
-        |_| async { Err(failure("unexpected fixture discovery")) },
         |_| f.transport.clone(),
     ))?;
     let selected = select_install(&mut *manager.lock()?, &format!("v{}", host.target))?;

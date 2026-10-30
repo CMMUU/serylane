@@ -2,7 +2,6 @@ use crate::error::{AppError, AppErrorDto, AppResult};
 use crate::models::RuntimePhase;
 use crate::runtime::MihomoRuntime;
 use crate::storage::AppStorage;
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,15 +24,7 @@ mod transport;
 
 const HK_MANIFEST: &str = "https://downloads.cmmuu.com/api/releases/serylane/latest";
 const HK_RELEASES: &str = "https://files.cmmuu.com/releases/serylane";
-const GITHUB_MANIFEST: &str =
-    "https://github.com/CMMUU/serylane/releases/latest/download/latest-serylane.json";
-const LEGACY_GITHUB_MANIFEST: &str =
-    "https://github.com/CMMUU/serylane/releases/latest/download/latest.json";
-// Published <= 0.7.6 clients require this exact URL in latest.json. Keep the
-// signed compatibility alias while all visible release links use Serylane.
-const LEGACY_GITHUB_RELEASES: &str = "https://github.com/CMMUU/routedeck/releases";
-const LEGACY_GITEE_RELEASES: &str = "https://gitee.com/cmmuu/routedeck/releases";
-const GITEE_RELEASE: &str = "https://gitee.com/api/v5/repos/cmmuu/serylane/releases/latest";
+const DOWNLOAD_CENTER: &str = "https://downloads.cmmuu.com/projects/serylane";
 const MAX_METADATA_BYTES: usize = 512 * 1024;
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -41,27 +32,20 @@ const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 #[serde(rename_all = "lowercase")]
 pub enum UpdateSource {
     #[default]
-    Auto,
-    Github,
-    Gitee,
+    // Keep the stored identity and migrate previous preferences in place.
+    #[serde(alias = "auto", alias = "github", alias = "gitee")]
     Hk,
 }
 
 impl UpdateSource {
     fn label(self) -> &'static str {
         match self {
-            Self::Auto => "自动",
-            Self::Github => "GitHub",
-            Self::Gitee => "Gitee",
             Self::Hk => "下载中心",
         }
     }
     fn release_base(self) -> AppResult<&'static str> {
         match self {
-            Self::Github => Ok("https://github.com/CMMUU/serylane/releases"),
-            Self::Gitee => Ok("https://gitee.com/cmmuu/serylane/releases"),
             Self::Hk => Ok(HK_RELEASES),
-            Self::Auto => Err(failure("请指定实际发布渠道")),
         }
     }
 }
@@ -88,18 +72,12 @@ fn parse_version(value: &str) -> AppResult<StableVersion> {
     ))
 }
 
-fn official_release_url(source: UpdateSource, tag: &str) -> AppResult<String> {
+fn official_release_url(_source: UpdateSource, tag: &str) -> AppResult<String> {
     parse_version(
         tag.strip_prefix('v')
             .ok_or_else(|| failure("发布标签必须以 v 开头"))?,
     )?;
-    // The archive is a download source; release notes remain authoritative on GitHub.
-    let source = if source == UpdateSource::Hk {
-        UpdateSource::Github
-    } else {
-        source
-    };
-    Ok(format!("{}/tag/{tag}", source.release_base()?))
+    Ok(DOWNLOAD_CENTER.into())
 }
 
 fn failure(message: impl Into<String>) -> AppError {
@@ -418,11 +396,7 @@ fn artifact_name(target: &str, version: &str) -> AppResult<String> {
 
 fn asset_url(source: UpdateSource, version: &str, filename: &str) -> AppResult<String> {
     let base = source.release_base()?;
-    Ok(if source == UpdateSource::Hk {
-        format!("{base}/v{version}/{filename}")
-    } else {
-        format!("{base}/download/v{version}/{filename}")
-    })
+    Ok(format!("{base}/v{version}/{filename}"))
 }
 
 fn validate_asset(
@@ -433,22 +407,11 @@ fn validate_asset(
     raw: &serde_json::Value,
 ) -> AppResult<(String, u64)> {
     let expected = asset_url(source, version, &artifact_name(target, version)?)?;
-    let legacy_github = matches!(source, UpdateSource::Github)
-        && url.as_str()
-            == format!(
-                "{LEGACY_GITHUB_RELEASES}/download/v{version}/{}",
-                legacy_artifact_name(target, version)?
-            );
     let legacy_channel = asset_url(source, version, &legacy_artifact_name(target, version)?)?;
-    let legacy_gitee = matches!(source, UpdateSource::Gitee)
-        && url.as_str()
-            == format!(
-                "{LEGACY_GITEE_RELEASES}/download/v{version}/{}",
-                legacy_artifact_name(target, version)?
-            );
-    if url.as_str() != expected && url.as_str() != legacy_channel && !legacy_github && !legacy_gitee
-    {
-        return Err(failure("更新包地址与官方渠道、版本或架构不一致"));
+    if url.as_str() != expected && url.as_str() != legacy_channel {
+        return Err(failure(
+            "更新包地址与下载中心、版本或架构不一致；请稍后重试",
+        ));
     }
     let platform = &raw["platforms"][target];
     let hash = platform["sha256"]
@@ -480,108 +443,19 @@ struct ManifestLocation {
 }
 
 fn manifest_location(source: UpdateSource, tag: Option<&str>) -> AppResult<ManifestLocation> {
-    if let Some(tag) = tag {
+    let (address, expected_version) = if let Some(tag) = tag {
         official_release_url(source, tag)?;
-        let version = parse_version(&tag[1..])?;
-        let base = source.release_base()?;
-        let addresses = match source {
-            UpdateSource::Hk => vec![format!("{base}/{tag}/latest-serylane-hk.json")],
-            UpdateSource::Github => vec![
-                format!("{base}/download/{tag}/latest-serylane.json"),
-                format!("{base}/download/{tag}/latest.json"),
-            ],
-            UpdateSource::Gitee => vec![
-                format!("{base}/download/{tag}/latest-serylane-gitee.json"),
-                format!("{base}/download/{tag}/latest-gitee.json"),
-            ],
-            UpdateSource::Auto => return Err(failure("请指定实际发布渠道")),
-        };
-        return Ok(ManifestLocation {
-            endpoints: addresses
-                .iter()
-                .map(|s| Url::parse(s).map_err(|_| failure("更新清单地址无效")))
-                .collect::<AppResult<_>>()?,
-            expected_version: Some(version),
-        });
-    }
-    let (addresses, expected_version) = match source {
-        UpdateSource::Hk => (vec![HK_MANIFEST.to_owned()], None),
-        UpdateSource::Github => (
-            vec![
-                GITHUB_MANIFEST.to_owned(),
-                LEGACY_GITHUB_MANIFEST.to_owned(),
-            ],
-            None,
-        ),
-        UpdateSource::Gitee => {
-            let tag = tag.ok_or_else(|| failure("Gitee 缺少发布标签"))?;
-            official_release_url(source, tag)?;
-            let version = parse_version(&tag[1..])?;
-            let base = source.release_base()?;
-            (
-                vec![
-                    format!("{base}/download/{tag}/latest-serylane-gitee.json"),
-                    format!("{base}/download/{tag}/latest-gitee.json"),
-                ],
-                Some(version),
-            )
-        }
-        UpdateSource::Auto => return Err(failure("请指定实际发布渠道")),
+        (
+            format!("{}/{tag}/latest-serylane-hk.json", source.release_base()?),
+            Some(parse_version(&tag[1..])?),
+        )
+    } else {
+        (HK_MANIFEST.to_owned(), None)
     };
     Ok(ManifestLocation {
-        endpoints: addresses
-            .iter()
-            .map(|address| Url::parse(address).map_err(|_| failure("更新清单地址无效")))
-            .collect::<AppResult<Vec<_>>>()?,
+        endpoints: vec![Url::parse(&address).map_err(|_| failure("更新清单地址无效"))?],
         expected_version,
     })
-}
-
-async fn gitee_manifest(proxy: Option<&Url>) -> AppResult<ManifestLocation> {
-    let mut builder = reqwest::Client::builder()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(transport::CONNECT_TIMEOUT)
-        .timeout(transport::METADATA_TIMEOUT);
-    if let Some(proxy) = proxy {
-        builder = builder
-            .proxy(reqwest::Proxy::all(proxy.as_str()).map_err(|_| failure("更新代理无效"))?);
-    }
-    let response = builder
-        .build()
-        .map_err(|_| failure("无法创建 Gitee 更新客户端"))?
-        .get(GITEE_RELEASE)
-        .header(
-            "User-Agent",
-            concat!("Serylane/", env!("CARGO_PKG_VERSION")),
-        )
-        .send()
-        .await
-        .map_err(|_| failure("无法连接 Gitee 发布服务"))?;
-    if !response.status().is_success() {
-        return Err(failure(format!(
-            "Gitee 发布服务返回 HTTP {}",
-            response.status().as_u16()
-        )));
-    }
-    let mut body = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| failure("读取 Gitee 发布信息失败"))?;
-        if body.len().saturating_add(chunk.len()) > MAX_METADATA_BYTES {
-            return Err(failure("Gitee 发布信息过大"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    let release: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|_| failure("Gitee 发布信息格式无效"))?;
-    if release["prerelease"].as_bool() == Some(true) || release["draft"].as_bool() == Some(true) {
-        return Err(failure("Gitee 尚无稳定正式版"));
-    }
-    let tag = release["tag_name"]
-        .as_str()
-        .ok_or_else(|| failure("Gitee 缺少发布标签"))?;
-    manifest_location(UpdateSource::Gitee, Some(tag))
 }
 
 async fn check_source_at(
@@ -595,15 +469,10 @@ async fn check_source_at(
         || app.env().appimage.is_none()
     {
         return Err(failure(
-            "此 Linux 安装不是 AppImage，请通过原 deb/rpm 包管理方式升级",
+            "此 Linux 安装不是 AppImage，请从下载中心下载对应安装包后升级",
         ));
     }
-    let manifest = match source {
-        _ if tag.is_some() => manifest_location(source, tag)?,
-        UpdateSource::Github | UpdateSource::Hk => manifest_location(source, None)?,
-        UpdateSource::Gitee => gitee_manifest(proxy).await?,
-        UpdateSource::Auto => return Err(failure("请指定实际发布渠道")),
-    };
+    let manifest = manifest_location(source, tag)?;
     let platform = UpdatePlatform::native()?;
     let mut builder = app
         .updater_builder()
@@ -611,13 +480,13 @@ async fn check_source_at(
         // Inspect equal/older versions to report unpublished local builds, but
         // keep installation strictly newer-only in the native command below.
         .version_comparator(|_, _| true)
-        // Serylane manifests come first. A pre-migration release may only
-        // expose latest.json; the updater tries the bounded legacy fallback.
+        // Download-center metadata only; never consult another channel.
         .endpoints(manifest.endpoints)
         .map_err(|_| failure("更新清单地址无效"))?
         .configure_client(|client| {
             client
                 .https_only(true)
+                .redirect(transport::redirect_policy())
                 .connect_timeout(transport::CONNECT_TIMEOUT)
         });
     if let Some(proxy) = proxy {
@@ -632,12 +501,12 @@ async fn check_source_at(
         .map_err(|e| {
             let detail = transport::TransportFailure::from_updater(e);
             failure(format!(
-                "{} 更新清单读取或验证未完成：{}",
+                "{} 更新清单读取或验证未完成，请稍后重试：{}",
                 source.label(),
                 detail.detail
             ))
         })?
-        .ok_or_else(|| failure("发布服务没有返回更新清单"))?;
+        .ok_or_else(|| failure("下载中心没有返回更新清单，请稍后重试"))?;
     let candidate = Candidate::from_update(update, source, &platform)?;
     if manifest
         .expected_version
@@ -658,7 +527,7 @@ async fn check_source(
         check_source_at(app, source, proxy, None),
     )
     .await
-    .map_err(|_| failure("检查更新等待时间已到"))?
+    .map_err(|_| failure("下载中心检查更新等待时间已到，请稍后重试"))?
 }
 
 fn same_build(a: &Candidate, b: &Candidate) -> bool {
@@ -667,21 +536,6 @@ fn same_build(a: &Candidate, b: &Candidate) -> bool {
         && a.sha256 == b.sha256
         && a.size == b.size
         && a.update.signature == b.update.signature
-}
-
-fn candidate_priority(
-    version: StableVersion,
-    source: UpdateSource,
-) -> (std::cmp::Reverse<StableVersion>, u8) {
-    // Prefer the domestic mirror for the newest stable build. A lagging mirror
-    // must not hide a newer GitHub release or become a downgrade fallback.
-    let priority = match source {
-        UpdateSource::Hk => 0,
-        UpdateSource::Gitee => 1,
-        UpdateSource::Github => 2,
-        UpdateSource::Auto => 3,
-    };
-    (std::cmp::Reverse(version), priority)
 }
 
 #[tauri::command]
@@ -746,21 +600,7 @@ pub async fn check_app_update(
         let source = AppStorage::from_app(&app)?.settings()?.update_source;
         state.lock()?.source = source;
         let proxy = proxy_for_update(&app)?;
-        let results = match source {
-            UpdateSource::Auto => {
-                let (hk, gitee, github) = tokio::join!(
-                    check_source(&app, UpdateSource::Hk, proxy.as_ref()),
-                    check_source(&app, UpdateSource::Gitee, proxy.as_ref()),
-                    check_source(&app, UpdateSource::Github, proxy.as_ref())
-                );
-                vec![
-                    (UpdateSource::Hk, hk),
-                    (UpdateSource::Gitee, gitee),
-                    (UpdateSource::Github, github),
-                ]
-            }
-            single => vec![(single, check_source(&app, single, proxy.as_ref()).await)],
-        };
+        let results = vec![(source, check_source(&app, source, proxy.as_ref()).await)];
         let task_id = state.lock()?.status.task_id.clone();
         let mut channels = Vec::new();
         let mut candidates = Vec::new();
@@ -793,7 +633,6 @@ pub async fn check_app_update(
                 }),
             }
         }
-        candidates.sort_by_key(|candidate| candidate_priority(candidate.version, candidate.source));
         let latest = candidates.first().ok_or_else(|| {
             failure(
                 channels
@@ -804,17 +643,6 @@ pub async fn check_app_update(
             )
         })?;
         let current = parse_version(env!("CARGO_PKG_VERSION"))?;
-        for candidate in &candidates {
-            if candidate.version == latest.version && !same_build(latest, candidate) {
-                if let Some(channel) = channels
-                    .iter_mut()
-                    .find(|channel| channel.source == candidate.source)
-                {
-                    channel.error =
-                        Some("此渠道同版本的安装包或签名不一致，已排除跨渠道下载回退".into());
-                }
-            }
-        }
         let info = AppUpdateInfo {
             current_version: env!("CARGO_PKG_VERSION").into(),
             latest_version: format!("v{}", latest.update.version),
@@ -838,9 +666,6 @@ pub async fn check_app_update(
             source: latest.source,
             channels,
         };
-        let selected = latest.clone();
-        // Never silently substitute a different build/version on a mirror.
-        candidates.retain(|candidate| same_build(&selected, candidate));
         let mut session = state.lock()?;
         session.status.phase = if info.available {
             "available"
@@ -900,7 +725,6 @@ pub async fn download_app_update(
     };
     // Resolve once; do not silently change the user's proxy or bypass it.
     let proxy = proxy_for_update(&app).map_err(|e| state.finish_error(&e))?;
-    let auto = state.lock().map_err(|e| e.dto())?.source == UpdateSource::Auto;
     state.lock().map_err(|e| e.dto())?.status.network_path = if proxy.is_some() {
         "经 Serylane 当前代理"
     } else {
@@ -910,9 +734,7 @@ pub async fn download_app_update(
     transport::recover(
         &state,
         candidates,
-        auto,
         transport::Policy::default(),
-        |source| check_source_at(&app, source, proxy.as_ref(), Some(&version_tag)),
         |candidate| {
             let mut update = candidate.update.clone();
             update.proxy = proxy.clone();
@@ -1139,21 +961,24 @@ mod tests {
         assert_eq!(installation_reserve(u64::MAX, u64::MAX), u64::MAX);
     }
     #[test]
-    fn source_display_names_preserve_persisted_channel_identities() {
-        for (source, key, label) in [
-            (UpdateSource::Auto, "auto", "自动"),
-            (UpdateSource::Hk, "hk", "下载中心"),
-            (UpdateSource::Gitee, "gitee", "Gitee"),
-            (UpdateSource::Github, "github", "GitHub"),
-        ] {
-            let stored = serde_json::to_string(key).unwrap();
-            assert_eq!(
-                serde_json::from_str::<UpdateSource>(&stored).unwrap(),
-                source
-            );
-            assert_eq!(serde_json::to_string(&source).unwrap(), stored);
-            assert_eq!(source.label(), label);
+    fn legacy_source_settings_normalize_without_resetting_other_preferences() {
+        assert_eq!(UpdateSource::default(), UpdateSource::Hk);
+        for key in ["auto", "github", "gitee", "hk"] {
+            let mut saved = serde_json::to_value(crate::models::AppSettings::default()).unwrap();
+            saved["updateSource"] = key.into();
+            saved["mixedPort"] = 17990.into();
+            saved["theme"] = "dark".into();
+            saved["silentStartup"] = false.into();
+            saved["autoCheckUpdates"] = false.into();
+            saved["autoDownloadUpdates"] = true.into();
+            let migrated: crate::models::AppSettings =
+                serde_json::from_value(saved.clone()).unwrap();
+            assert_eq!(migrated.update_source, UpdateSource::Hk);
+            saved["updateSource"] = "hk".into();
+            assert_eq!(serde_json::to_value(migrated).unwrap(), saved);
         }
+        assert!(serde_json::from_str::<UpdateSource>("\"untrusted\"").is_err());
+        assert_eq!(UpdateSource::Hk.label(), "下载中心");
         assert_eq!(UpdateSource::Hk.release_base().unwrap(), HK_RELEASES);
     }
 
@@ -1228,41 +1053,6 @@ mod tests {
     }
 
     #[test]
-    fn newest_build_prefers_hk_and_keeps_identical_mirrors_as_download_fallback() {
-        let version = StableVersion(1, 2, 3);
-        let mut sources = [UpdateSource::Github, UpdateSource::Gitee, UpdateSource::Hk];
-        sources.sort_by_key(|source| candidate_priority(version, *source));
-        assert_eq!(
-            sources,
-            [UpdateSource::Hk, UpdateSource::Gitee, UpdateSource::Github]
-        );
-        sources.reverse();
-        sources.sort_by_key(|source| candidate_priority(version, *source));
-        assert_eq!(
-            sources,
-            [UpdateSource::Hk, UpdateSource::Gitee, UpdateSource::Github]
-        );
-    }
-    #[test]
-    fn lagging_domestic_mirror_never_hides_a_newer_official_release() {
-        let mut releases = [
-            (StableVersion(1, 2, 3), UpdateSource::Hk),
-            (StableVersion(1, 2, 3), UpdateSource::Gitee),
-            (StableVersion(1, 2, 4), UpdateSource::Github),
-        ];
-        releases.sort_by_key(|(version, source)| candidate_priority(*version, *source));
-        assert_eq!(releases[0], (StableVersion(1, 2, 4), UpdateSource::Github));
-    }
-    #[test]
-    fn automatic_updates_remain_the_default_and_either_single_source_is_usable() {
-        assert_eq!(UpdateSource::default(), UpdateSource::Auto);
-        for source in [UpdateSource::Hk, UpdateSource::Gitee, UpdateSource::Github] {
-            let mut sources = [source];
-            sources.sort_by_key(|source| candidate_priority(StableVersion(1, 2, 3), *source));
-            assert_eq!(sources, [source]);
-        }
-    }
-    #[test]
     fn versions_are_strict_numeric_and_never_allow_prereleases_or_paths() {
         assert!(parse_version("0.10.0").unwrap() > parse_version("0.9.9").unwrap());
         for version in [
@@ -1279,199 +1069,116 @@ mod tests {
         }
     }
     #[test]
-    fn official_urls_are_derived_from_source_and_strict_tag() {
+    fn manifest_and_download_actions_only_use_the_download_center() {
+        let latest = manifest_location(UpdateSource::Hk, None).unwrap();
+        assert_eq!(latest.endpoints.len(), 1);
+        assert_eq!(latest.endpoints[0].as_str(), HK_MANIFEST);
+        assert_eq!(latest.expected_version, None);
+        let frozen = manifest_location(UpdateSource::Hk, Some("v1.2.3")).unwrap();
+        assert_eq!(frozen.endpoints.len(), 1);
         assert_eq!(
-            official_release_url(UpdateSource::Github, "v0.7.7").unwrap(),
-            "https://github.com/CMMUU/serylane/releases/tag/v0.7.7"
+            frozen.endpoints[0].as_str(),
+            "https://files.cmmuu.com/releases/serylane/v1.2.3/latest-serylane-hk.json"
         );
+        assert_eq!(frozen.expected_version, Some(StableVersion(1, 2, 3)));
         assert_eq!(
-            official_release_url(UpdateSource::Gitee, "v1.2.3").unwrap(),
-            "https://gitee.com/cmmuu/serylane/releases/tag/v1.2.3"
+            official_release_url(UpdateSource::Hk, "v1.2.3").unwrap(),
+            DOWNLOAD_CENTER
         );
-        assert!(official_release_url(UpdateSource::Auto, "v1.2.3").is_err());
-        assert!(official_release_url(UpdateSource::Github, "v1.2.3?redirect=evil").is_err());
-    }
-    #[test]
-    fn branded_manifest_precedes_legacy_fallback_and_gitee_is_bound_to_tag() {
-        let hk = manifest_location(UpdateSource::Hk, None).unwrap();
-        assert_eq!(hk.endpoints.len(), 1);
-        assert_eq!(hk.endpoints[0].as_str(), HK_MANIFEST);
-        assert_eq!(
-            official_release_url(UpdateSource::Hk, "v0.7.18").unwrap(),
-            "https://github.com/CMMUU/serylane/releases/tag/v0.7.18"
-        );
-        let github = manifest_location(UpdateSource::Github, None).unwrap();
-        assert_eq!(github.endpoints.len(), 2);
-        assert_eq!(github.endpoints[0].as_str(), GITHUB_MANIFEST);
-        assert!(github.endpoints[0]
-            .path()
-            .ends_with("/latest-serylane.json"));
-        assert_eq!(github.endpoints[1].as_str(), LEGACY_GITHUB_MANIFEST);
-        assert_eq!(github.expected_version, None);
-        let gitee = manifest_location(UpdateSource::Gitee, Some("v0.7.7")).unwrap();
-        assert_eq!(gitee.expected_version, Some(StableVersion(0, 7, 7)));
-        assert_eq!(gitee.endpoints.len(), 2);
-        assert_eq!(
-            gitee.endpoints[0].as_str(),
-            "https://gitee.com/cmmuu/serylane/releases/download/v0.7.7/latest-serylane-gitee.json"
-        );
-        assert_eq!(
-            gitee.endpoints[1].as_str(),
-            "https://gitee.com/cmmuu/serylane/releases/download/v0.7.7/latest-gitee.json"
-        );
-        assert!(manifest_location(UpdateSource::Auto, None).is_err());
-        for tag in [
-            None,
-            Some("main"),
-            Some("v0.7.7/other"),
-            Some("v0.7.7?x=1"),
-            Some("v0.7.07"),
-        ] {
-            assert!(manifest_location(UpdateSource::Gitee, tag).is_err());
+        for tag in ["main", "v1.2.3/other", "v1.2.3?x=1", "v1.02.3"] {
+            assert!(manifest_location(UpdateSource::Hk, Some(tag)).is_err());
+            assert!(official_release_url(UpdateSource::Hk, tag).is_err());
         }
     }
 
     #[test]
-    fn serylane_downloads_validate_all_architectures_and_all_channels() {
-        for source in [UpdateSource::Hk, UpdateSource::Github, UpdateSource::Gitee] {
-            for target in [
-                "windows-x86_64",
-                "windows-aarch64",
-                "windows-x86_64-nsis",
-                "windows-aarch64-nsis",
-                "windows-x86_64-msi",
-                "windows-aarch64-msi",
-                "darwin-x86_64",
-                "darwin-aarch64",
-                "linux-x86_64",
-                "linux-aarch64",
-            ] {
-                let mut raw = serde_json::json!({"platforms": {}});
-                raw["platforms"][target] =
-                    serde_json::json!({"sha256": "a".repeat(64), "size": 123});
-                let address =
-                    asset_url(source, "0.7.7", &artifact_name(target, "0.7.7").unwrap()).unwrap();
-                assert!(address.contains("/Serylane_0.7.7_"));
-                assert!(validate_asset(
-                    source,
-                    target,
-                    "0.7.7",
-                    &Url::parse(&address).unwrap(),
-                    &raw
-                )
-                .is_ok());
-                for invalid in [
-                    address.replace("Serylane_", "Serylane-fake_"),
-                    address.replace("https:", "http:"),
-                    address.replace("v0.7.7/", "v0.7.8/"),
-                    format!("{address}#other"),
-                    format!("{address}?token=other"),
-                ] {
-                    assert!(validate_asset(
-                        source,
-                        target,
-                        "0.7.7",
-                        &Url::parse(&invalid).unwrap(),
-                        &raw
-                    )
-                    .is_err());
-                }
-            }
-        }
-    }
-    #[test]
-    fn gitee_legacy_manifest_accepts_only_the_exact_old_asset_alias() {
-        let raw = serde_json::json!({ "platforms": { "windows-x86_64": { "sha256": "a".repeat(64), "size": 100 } } });
-        let legacy = "https://gitee.com/cmmuu/routedeck/releases/download/v0.7.6/RouteDeck_0.7.6_x64-setup.exe";
-        assert!(validate_asset(
-            UpdateSource::Gitee,
+    fn center_assets_bind_all_architectures_versions_and_exact_origins() {
+        for target in [
             "windows-x86_64",
-            "0.7.6",
-            &Url::parse(legacy).unwrap(),
-            &raw
-        )
-        .is_ok());
-        for invalid in [
-            legacy.replace("cmmuu/", "other/"),
-            legacy.replace("RouteDeck_", "Serylane_"),
-            legacy.replace("v0.7.6/", "v0.7.7/"),
+            "windows-aarch64",
+            "windows-x86_64-nsis",
+            "windows-aarch64-nsis",
+            "windows-x86_64-msi",
+            "windows-aarch64-msi",
+            "darwin-x86_64",
+            "darwin-aarch64",
+            "linux-x86_64",
+            "linux-aarch64",
         ] {
+            let raw =
+                serde_json::json!({"platforms": {target: {"sha256": "a".repeat(64), "size": 123}}});
+            let filename = artifact_name(target, "1.2.3").unwrap();
+            let address = asset_url(UpdateSource::Hk, "1.2.3", &filename).unwrap();
             assert!(validate_asset(
-                UpdateSource::Gitee,
-                "windows-x86_64",
-                "0.7.6",
-                &Url::parse(&invalid).unwrap(),
-                &raw
-            )
-            .is_err());
-        }
-    }
-
-    #[test]
-    fn github_rename_accepts_only_exact_current_and_legacy_update_assets() {
-        let raw = serde_json::json!({ "platforms": { "windows-x86_64": { "sha256": "a".repeat(64), "size": 100 } } });
-        for repo in ["serylane", "routedeck"] {
-            let url = format!("https://github.com/CMMUU/{repo}/releases/download/v0.7.7/RouteDeck_0.7.7_x64-setup.exe");
-            assert!(validate_asset(
-                UpdateSource::Github,
-                "windows-x86_64",
-                "0.7.7",
-                &Url::parse(&url).unwrap(),
+                UpdateSource::Hk,
+                target,
+                "1.2.3",
+                &address.parse().unwrap(),
                 &raw
             )
             .is_ok());
             for invalid in [
-                url.replace("CMMUU", "other"),
-                url.replace("github.com", "github.com.attacker"),
-                url.replace(repo, "other-repository"),
-                url.replace("v0.7.7/", "v0.7.8/"),
-                url.replace("_x64-", "_arm64-"),
-                format!("{url}?redirect=other"),
+                address.replace("Serylane_", "Serylane-fake_"),
+                address.replace("https:", "http:"),
+                address.replace("v1.2.3/", "v1.2.4/"),
+                address.replace("files.cmmuu.com", "files.cmmuu.com.attacker"),
+                address.replace("files.cmmuu.com", "files.cmmuu.com@attacker.test"),
+                format!("{address}#other"),
+                format!("{address}?fallback=github"),
+                format!("https://github.com/CMMUU/serylane/releases/download/v1.2.3/{filename}"),
+                format!("https://gitee.com/cmmuu/serylane/releases/download/v1.2.3/{filename}"),
             ] {
-                assert!(validate_asset(
-                    UpdateSource::Github,
-                    "windows-x86_64",
-                    "0.7.7",
-                    &Url::parse(&invalid).unwrap(),
-                    &raw
-                )
-                .is_err());
+                assert!(
+                    validate_asset(
+                        UpdateSource::Hk,
+                        target,
+                        "1.2.3",
+                        &invalid.parse().unwrap(),
+                        &raw
+                    )
+                    .is_err(),
+                    "{invalid}"
+                );
             }
         }
     }
+
     #[test]
-    fn asset_validation_binds_channel_version_arch_hash_and_size() {
-        let raw = serde_json::json!({ "platforms": { "windows-x86_64": { "sha256": "a".repeat(64), "size": 100 } } });
-        let url = Url::parse("https://gitee.com/cmmuu/serylane/releases/download/v1.2.3/RouteDeck_1.2.3_x64-setup.exe").unwrap();
-        assert!(validate_asset(UpdateSource::Gitee, "windows-x86_64", "1.2.3", &url, &raw).is_ok());
+    fn previous_center_filename_remains_bound_to_the_center_and_integrity_metadata() {
+        let raw = serde_json::json!({"platforms": {"windows-x86_64": {"sha256": "a".repeat(64), "size": 100}}});
+        let address =
+            "https://files.cmmuu.com/releases/serylane/v1.2.3/RouteDeck_1.2.3_x64-setup.exe";
+        let url = address.parse().unwrap();
+        assert!(validate_asset(UpdateSource::Hk, "windows-x86_64", "1.2.3", &url, &raw).is_ok());
+        for target in ["windows-aarch64", "linux-x86_64", "darwin-aarch64"] {
+            assert!(validate_asset(UpdateSource::Hk, target, "1.2.3", &url, &raw).is_err());
+        }
+        assert!(validate_asset(UpdateSource::Hk, "windows-x86_64", "1.2.4", &url, &raw).is_err());
+        for field in ["sha256", "size"] {
+            let mut changed = raw.clone();
+            changed["platforms"]["windows-x86_64"][field] = serde_json::Value::Null;
+            assert!(
+                validate_asset(UpdateSource::Hk, "windows-x86_64", "1.2.3", &url, &changed)
+                    .is_err()
+            );
+        }
+        let mut changed = raw.clone();
+        changed["platforms"]["windows-x86_64"]["size"] = (MAX_DOWNLOAD_BYTES + 1).into();
         assert!(
-            validate_asset(UpdateSource::Github, "windows-x86_64", "1.2.3", &url, &raw).is_err()
+            validate_asset(UpdateSource::Hk, "windows-x86_64", "1.2.3", &url, &changed).is_err()
         );
-        assert!(
-            validate_asset(UpdateSource::Gitee, "windows-aarch64", "1.2.3", &url, &raw).is_err()
-        );
-        assert!(
-            validate_asset(UpdateSource::Gitee, "windows-x86_64", "1.2.4", &url, &raw).is_err()
-        );
-        let mut altered = raw.clone();
-        altered["platforms"]["windows-x86_64"]["size"] = (MAX_DOWNLOAD_BYTES + 1).into();
-        assert!(validate_asset(
-            UpdateSource::Gitee,
-            "windows-x86_64",
-            "1.2.3",
-            &url,
-            &altered
-        )
-        .is_err());
-        assert!(validate_asset(
-            UpdateSource::Gitee,
-            "windows-x86_64",
-            "1.2.3",
-            &url,
-            &serde_json::json!({})
-        )
-        .is_err());
+        for origin in [
+            "https://github.com/CMMUU/routedeck/releases/download",
+            "https://gitee.com/cmmuu/routedeck/releases/download",
+        ] {
+            let foreign = address.replace(HK_RELEASES, origin).parse().unwrap();
+            assert!(
+                validate_asset(UpdateSource::Hk, "windows-x86_64", "1.2.3", &foreign, &raw)
+                    .is_err()
+            );
+        }
     }
+
     #[test]
     fn cancelled_install_caller_cannot_release_the_blocking_workers_busy_lease() {
         let manager = AppUpdateManager::default();

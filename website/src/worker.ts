@@ -1,6 +1,6 @@
-import { GITHUB, TARGETS, catalogAsset, latestCatalog, mirrorReady, resolveDownload, ReleaseError } from './releases.ts';
+import { TARGETS, ReleaseError } from './releases.ts';
 import type { Fetcher, Target } from './releases.ts';
-import { centerCatalog } from './center.ts';
+import { centerCatalog, verifyCenterAsset } from './center.ts';
 
 const HEADERS = {
   'Cache-Control': 'no-store, max-age=0', 'CDN-Cache-Control': 'no-store',
@@ -11,9 +11,10 @@ function response(body: string, status: number, type = 'application/json; charse
   return new Response(body, { status, headers: { ...HEADERS, 'Content-Type': type, ...extra } });
 }
 function unavailable(isAPI: boolean, code: string) {
-  if (isAPI) return response(JSON.stringify({ error: 'LATEST_UNAVAILABLE', message: '暂时无法确认最新正式版，请稍后重试。' }), 503, undefined, { 'Retry-After': '30', 'X-Serylane-Error': code });
-  return response(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>下载暂不可用 — Serylane</title><link rel="stylesheet" href="/styles.css"></head><body class="document-page"><main class="document-main"><h1>暂时无法确认最新安装包。</h1><p>发布源或下载渠道暂时不可用，本次没有转向旧版本。请稍后刷新此页重试。</p><p><a href="/#download">返回下载区</a> · <a href="${GITHUB}/releases" rel="noreferrer">手动查看 GitHub 正式发布</a></p><p>手动下载前请自行核对版本、系统与架构。</p></main></body></html>`, 503, 'text/html; charset=utf-8', {
-    'Retry-After': '30', 'X-Serylane-Error': code, 'Content-Security-Policy': "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+  const extra = { 'Retry-After': '30', 'X-Serylane-Error': code };
+  if (isAPI) return response(JSON.stringify({ error: 'LATEST_UNAVAILABLE', message: '下载中心暂时无法确认最新正式版，请稍后重试。' }), 503, undefined, extra);
+  return response('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>下载暂不可用 — Serylane</title><link rel="stylesheet" href="/styles.css"></head><body class="document-page"><main class="document-main"><h1>下载中心暂时不可用。</h1><p>尚未确认最新正式版安装包，请稍后刷新此页重试。本次没有开始下载。</p><p><a href="/#download">返回下载区重试</a></p></main></body></html>', 503, 'text/html; charset=utf-8', {
+    ...extra, 'Content-Security-Policy': "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   });
 }
 
@@ -24,53 +25,29 @@ export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher
   const isResolve = url.pathname.startsWith('/api/download/');
   const target = url.pathname.slice(isResolve ? '/api/download/'.length : '/download/'.length) as Target;
   const isDownload = url.pathname.startsWith('/download/') && TARGETS.includes(target);
-  if (!isAPI && !isDownload && !(isResolve && TARGETS.includes(target))) return response('{"error":"NOT_FOUND"}', 404);
-  if (!['GET', 'HEAD'].includes(request.method)) return response('{"error":"METHOD_NOT_ALLOWED"}', 405, undefined, { Allow: 'GET, HEAD' });
-  // Only a literal GitHub override is supported; no arbitrary upstream or version parameters.
-  if (url.search && (isAPI || url.search !== '?channel=github')) return response('{"error":"INVALID_QUERY"}', 400);
   let result: Response;
-  try {
-    // Normal resolution is owned by the download center. Keep independent GitHub
-    // verification for explicit fallback and outages, including historical links.
-    if (url.search !== '?channel=github') {
-      try {
-        const catalog = await centerCatalog(fetcher);
-        if (isAPI) {
-          const result = response(JSON.stringify(catalog), 200, undefined, { 'X-Serylane-Resolver': 'download-center' });
-          return request.method === 'HEAD' ? new Response(null, result) : result;
-        }
-        const asset = catalog.assets[target];
-        if (isResolve) {
-          const resolved = response(JSON.stringify({ version: catalog.version, channel: asset.channel, url: asset.fileUrl }), 200);
-          return request.method === "HEAD" ? new Response(null, resolved) : resolved;
-        }
-        return new Response(null, { status: 302, headers: { ...HEADERS, Location: asset.fileUrl,
-          'X-Serylane-Version': catalog.version, 'X-Serylane-Channel': asset.channel, 'X-Serylane-Resolver': 'download-center' } });
-      } catch {
-        console.info({ event: 'download_center_fallback' });
-      }
-    }
-    if (isAPI) {
-      const catalog = await latestCatalog(fetcher);
-      const [hk, mirror] = await Promise.all([
-        mirrorReady(fetcher, catalog, TARGETS, 'hk'), mirrorReady(fetcher, catalog, TARGETS, 'gitee'),
-      ]);
-      result = response(JSON.stringify({
-        version: catalog.version, checkedAt: new Date().toISOString(),
-        assets: Object.fromEntries(TARGETS.map(target => [target, { ...catalogAsset(catalog, target), domesticAvailable: hk.ready.has(target) || mirror.ready.has(target), hkAvailable: hk.ready.has(target), giteeAvailable: mirror.ready.has(target) }])),
-      }), 200, undefined, { 'X-Serylane-Mirror': mirror.diagnostic, 'X-Serylane-HK': hk.diagnostic });
-    } else {
-      const download = await resolveDownload(fetcher, target, url.search === '?channel=github');
-      result = isResolve ? response(JSON.stringify(download), 200) : new Response(null, { status: 302, headers: { ...HEADERS, Location: download.url,
-        'X-Serylane-Version': download.version, 'X-Serylane-Channel': download.channel } });
+  if (!isAPI && !isDownload && !(isResolve && TARGETS.includes(target))) result = response('{"error":"NOT_FOUND"}', 404);
+  else if (!['GET', 'HEAD'].includes(request.method)) result = response('{"error":"METHOD_NOT_ALLOWED"}', 405, undefined, { Allow: 'GET, HEAD' });
+  // Former channel overrides are rejected before any outbound request.
+  else if (url.search) result = response('{"error":"INVALID_QUERY"}', 400);
+  else try {
+    const catalog = await centerCatalog(fetcher);
+    if (isAPI) result = response(JSON.stringify(catalog), 200, undefined, { 'X-Serylane-Resolver': 'download-center' });
+    else {
+      const asset = catalog.assets[target];
+      await verifyCenterAsset(fetcher, asset);
+      const headers = { 'X-Serylane-Version': catalog.version, 'X-Serylane-Channel': 'hk', 'X-Serylane-Resolver': 'download-center' };
+      result = isResolve
+        ? response(JSON.stringify({ version: catalog.version, channel: 'hk', url: asset.fileUrl }), 200, undefined, headers)
+        : new Response(null, { status: 302, headers: { ...HEADERS, ...headers, Location: asset.fileUrl } });
     }
   } catch (error) {
-    // Do not log request URLs, upstream signed URLs, visitor data or arbitrary exception text.
-    console.warn({ event: 'release_resolution_failed', code: error instanceof ReleaseError ? error.code : 'UPSTREAM_UNAVAILABLE' });
-    result = unavailable(isAPI || isResolve, error instanceof ReleaseError ? error.code : 'UPSTREAM_UNAVAILABLE');
+    // Log only bounded, internal codes; never include URLs, credentials or response bodies.
+    const code = error instanceof ReleaseError ? error.code : 'CENTER_UNAVAILABLE';
+    console.warn({ event: 'release_resolution_failed', code });
+    result = unavailable(isAPI || isResolve, code);
   }
   if (request.method === 'HEAD') { await result.body?.cancel(); return new Response(null, result); }
   return result;
 }
-
 export default { fetch: (request, env) => handle(request, env) } satisfies ExportedHandler<Env>;

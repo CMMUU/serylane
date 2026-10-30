@@ -15,6 +15,9 @@ on:
       CLOUDFLARE_API_TOKEN:
         required: true
   workflow_dispatch:
+  workflow_run:
+    workflows: [Release bundles]
+    types: [completed]
 
 permissions:
   contents: read
@@ -42,12 +45,16 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm deploy:check
   deploy:
-    # Reusable calls come only from the trusted synchronizer. Manual runs must
-    # target main. PR checks never receive production credentials.
+    # Deploy trusted main independently of legacy mirrors. PRs never deploy;
+    # a completed release workflow must originate in this repository.
     if: >-
       github.repository == 'CMMUU/serylane' &&
       (inputs.deploy == true ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+      ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.head_branch == 'main' || startsWith(github.event.workflow_run.head_branch, 'v')) &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
     needs: static-site
     runs-on: ubuntu-24.04
     timeout-minutes: 20
