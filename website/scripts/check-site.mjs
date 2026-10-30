@@ -45,7 +45,7 @@ for (const [route, html] of htmls) {
     if (/^(https?:|mailto:)/.test(href)) continue;
     const target = new URL(href, origin + route);
     if (/^\/download\/(windows|macos|linux)-(x64|arm64)$/.test(target.pathname)) {
-      assert.ok(!target.search || target.search === '?channel=github');
+      assert.equal(target.search, '', 'Download routes have no channel override');
       checkedLinks++;
       continue;
     }
@@ -64,7 +64,7 @@ assert.match(htmls.get('/docs/'), /v0\.7\.16：三平台应用快选与更新跟
 assert.match(htmls.get('/docs/'), /NSWorkspace/);
 assert.match(htmls.get('/docs/'), /Flatpak\/Snap/);
 assert.match(htmls.get('/'), /缓存清单先显示、后台刷新不打断编辑/);
-assert.match(htmls.get('/'), /安装包下载优先下载中心，GitHub 备用。/);
+assert.match(htmls.get('/'), /安装包与自动更新统一使用下载中心。/);
 assert.doesNotMatch(htmls.get('/'), /自动更新：同版本(?:香港|下载中心)优先/, 'Do not advertise candidate-only client update behavior as already released');
 assert.match(htmls.get('/docs/'), /v0\.7\.9：更清晰的 macOS 双行网速/);
 assert.match(htmls.get('/'), /macOS 原生双行网速/);
@@ -76,9 +76,12 @@ const sitemap = await readFile(join(root, 'sitemap.xml'), 'utf8');
 for (const route of htmls.keys()) if (route !== '/404') assert.ok(sitemap.includes(`<loc>${origin}${route}</loc>`), `Sitemap omits ${route}`);
 assert.ok(!(sitemap.includes('/404')));
 assert.match(await readFile(join(root, 'robots.txt'), 'utf8'), /Sitemap: https:\/\/serylane\.cmmuu\.com\/sitemap\.xml/);
+for (const [route, html] of htmls) {
+  assert.doesNotMatch(html, /GitHub 备用|Gitee 备用|channel=|https:\/\/github\.com\/CMMUU\/serylane\/releases(?:\/|")|https:\/\/gitee\.com\/[^"]*\/releases/i, route + ': no alternate download links or instructions');
+}
 const script = await readFile(join(root, 'site.js'), 'utf8');
-// Persisted channel keys are API identity, not user-facing geography.
-assert.doesNotMatch(script.replace(/\bhk(?=\s*:)/g, 'internalChannel'), /香港|\bHK\b|Hong Kong/i, 'Dynamic download labels use the same location-neutral service name');
+// The legacy hk field is the fixed download-center protocol identity.
+assert.doesNotMatch(script.replace(/["']hk["']/g, 'internalChannel'), /香港|\bHK\b|Hong Kong/i, 'Dynamic download labels use the same location-neutral service name');
 assert.doesNotMatch(script, /\b(?:XMLHttpRequest|WebSocket|invoke|EventSource)\s*\(|127\.0\.0\.1|localhost|__TAURI__|localStorage|sessionStorage/, 'Website must not contact proxy, storage or desktop services');
 assert.equal([...script.matchAll(/\bfetch\s*\(/g)].length, 2);
 assert.match(script, /fetch\("\/api\/releases\/latest",/);

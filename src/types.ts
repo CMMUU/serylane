@@ -397,7 +397,7 @@ export type AppInfo = {
   targetArch: string;
 };
 
-export type UpdateSource = "auto" | "github" | "gitee" | "hk";
+export type UpdateSource = "hk";
 export type AppUpdateInfo = {
   currentVersion: string;
   latestVersion: string;

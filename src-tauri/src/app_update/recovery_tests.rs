@@ -16,6 +16,13 @@ struct Server {
 }
 impl Server {
     fn new(responses: Vec<(u16, Duration)>, body: Vec<u8>) -> Self {
+        Self::with_redirect(responses, body, None)
+    }
+    fn with_redirect(
+        responses: Vec<(u16, Duration)>,
+        body: Vec<u8>,
+        redirect: Option<String>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/archive", listener.local_addr().unwrap())
@@ -62,9 +69,13 @@ impl Server {
                 } else {
                     b"error"
                 };
+                let location = redirect
+                    .as_ref()
+                    .map(|url| format!("Location: {url}\r\n"))
+                    .unwrap_or_default();
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status} Test\r\n{location}Content-Length: {}\r\nConnection: close\r\n\r\n",
                     data.len()
                 );
                 let _ = stream.write_all(data);
@@ -92,19 +103,6 @@ fn policy() -> Policy {
         attempts: 2,
     }
 }
-fn mirror(c: &Candidate, source: UpdateSource) -> Candidate {
-    let mut u = c.update.clone();
-    u.download_url = asset_url(
-        source,
-        &u.version,
-        &artifact_name(&c.platform_key, &u.version).unwrap(),
-    )
-    .unwrap()
-    .parse()
-    .unwrap();
-    u.raw_json["platforms"][&c.platform_key]["url"] = u.download_url.as_str().into();
-    Candidate::from_update(u, source, &UpdatePlatform::native().unwrap()).unwrap()
-}
 fn fixture() -> Fixture {
     Fixture::new(
         b"signed recovery fixture".to_vec(),
@@ -125,9 +123,7 @@ fn updater_recovery_transient_status_and_disconnect_retry_same_signed_build() {
         let result = tauri::async_runtime::block_on(recover(
             &m,
             vec![f.candidate.clone()],
-            false,
             policy(),
-            |_| async { panic!("no discovery in explicit-source mode") },
             |_| {
                 let mut t = f.transport.clone();
                 t.download_url = s.url.clone();
@@ -142,73 +138,87 @@ fn updater_recovery_transient_status_and_disconnect_retry_same_signed_build() {
     }
 }
 #[test]
-fn updater_recovery_rediscovers_missing_backup_and_excludes_different_build() {
+fn updater_center_down_retries_only_frozen_center_build_then_fails_closed() {
     let f = fixture();
-    let primary = mirror(&f.candidate, UpdateSource::Hk);
-    for mismatch in ["none", "hash", "version", "platform", "size", "signature"] {
+    let unused_alternative = Server::new(vec![(200, Duration::ZERO)], f.bytes.clone());
+    for (status, expected) in [(404, 1), (503, 2)] {
         let m = AppUpdateManager::default();
-        let s = Server::new(vec![(404, Duration::ZERO)], vec![]);
-        let found = AtomicUsize::new(0);
-        let r = tauri::async_runtime::block_on(recover(
+        let center = Server::new(vec![(status, Duration::ZERO)], vec![]);
+        let result = tauri::async_runtime::block_on(recover(
             &m,
-            vec![primary.clone()],
-            true,
+            vec![f.candidate.clone()],
             policy(),
-            |source| {
-                found.fetch_add(1, Ordering::SeqCst);
-                let mut c = mirror(&f.candidate, source);
-                match mismatch {
-                    "hash" => c.sha256 = "0".repeat(64),
-                    "version" => c.version = StableVersion(9, 0, 2),
-                    "platform" => c.platform_key = "other-platform".into(),
-                    "size" => c.size += 1,
-                    "signature" => c.update.signature = "other-signature".into(),
-                    _ => {}
-                }
-                async move {
-                    if source == UpdateSource::Gitee {
-                        Err(failure("HTTP 404"))
-                    } else {
-                        Ok(c)
-                    }
-                }
-            },
-            |c| {
-                let mut t = f.transport.clone();
-                if c.source == UpdateSource::Hk {
-                    t.download_url = s.url.clone();
-                }
-                t
+            |candidate| {
+                assert!(same_build(candidate, &f.candidate));
+                assert_eq!(
+                    candidate.update.download_url,
+                    f.candidate.update.download_url
+                );
+                let mut transport = f.transport.clone();
+                transport.download_url = center.url.clone();
+                transport
             },
         ));
-        assert_eq!(s.calls.load(Ordering::SeqCst), 1, "404 must not retry");
-        assert!(found.load(Ordering::SeqCst) > 0);
-        if mismatch != "none" {
-            assert!(r.is_err());
-            assert!(m.lock().unwrap().ready.is_none());
-        } else {
-            assert_eq!(r.unwrap().phase, "ready");
-            let session = m.lock().unwrap();
-            assert_eq!(session.candidates[0].source, UpdateSource::Github);
-            assert!(same_build(&primary, &session.ready.as_ref().unwrap().0));
-        }
+        assert!(result.unwrap_err().to_string().contains("请稍后重试"));
+        assert_eq!(center.calls.load(Ordering::SeqCst), expected);
+        assert_eq!(unused_alternative.calls.load(Ordering::SeqCst), 0);
+        assert!(m.lock().unwrap().ready.is_none());
+        assert!(m
+            .lock()
+            .unwrap()
+            .status
+            .attempts
+            .iter()
+            .all(|attempt| attempt.source == UpdateSource::Hk));
+    }
+    for candidates in [vec![], vec![f.candidate.clone(), f.candidate.clone()]] {
+        assert!(tauri::async_runtime::block_on(recover(
+            &AppUpdateManager::default(),
+            candidates,
+            policy(),
+            |_| panic!("ambiguous targets must fail before connecting"),
+        ))
+        .is_err());
     }
 }
+
+#[test]
+fn updater_center_redirects_never_follow_external_or_mirror_locations() {
+    let f = fixture();
+    let alternative = Server::new(vec![(200, Duration::ZERO)], f.bytes.clone());
+    for location in [
+        alternative.url.to_string(),
+        "https://github.com/CMMUU/serylane/releases/latest".into(),
+        "https://gitee.com/cmmuu/serylane/releases/latest".into(),
+    ] {
+        let redirect = Server::with_redirect(vec![(302, Duration::ZERO)], vec![], Some(location));
+        let m = AppUpdateManager::default();
+        let result = tauri::async_runtime::block_on(recover(
+            &m,
+            vec![f.candidate.clone()],
+            policy(),
+            |_| {
+                let mut transport = f.transport.clone();
+                transport.download_url = redirect.url.clone();
+                transport
+            },
+        ));
+        assert!(result.is_err());
+        assert_eq!(redirect.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(alternative.calls.load(Ordering::SeqCst), 0);
+        assert!(m.lock().unwrap().ready.is_none());
+    }
+}
+
 #[test]
 fn updater_recovery_idle_budget_and_cancel_are_bounded_without_ready_bytes() {
     let f = fixture();
-    for mode in ["idle", "budget", "cancel-backoff", "cancel-discovery"] {
+    for mode in ["idle", "budget", "cancel-backoff", "cancel-download"] {
         let m = AppUpdateManager::default();
         let s = Server::new(
             vec![(
-                if mode == "cancel-discovery" {
-                    404
-                } else if mode == "cancel-backoff" {
-                    503
-                } else {
-                    200
-                },
-                if mode == "idle" || mode == "budget" {
+                if mode == "cancel-backoff" { 503 } else { 200 },
+                if mode == "idle" || mode == "budget" || mode == "cancel-download" {
                     Duration::from_millis(350)
                 } else {
                     Duration::ZERO
@@ -233,21 +243,11 @@ fn updater_recovery_idle_budget_and_cancel_are_bounded_without_ready_bytes() {
         let began = std::time::Instant::now();
         let (r, _) = tauri::async_runtime::block_on(async {
             tokio::join!(
-                recover(
-                    &m,
-                    vec![f.candidate.clone()],
-                    mode == "cancel-discovery",
-                    p,
-                    |_| async {
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        Err(failure("late discovery"))
-                    },
-                    |_| {
-                        let mut t = f.transport.clone();
-                        t.download_url = s.url.clone();
-                        t
-                    }
-                ),
+                recover(&m, vec![f.candidate.clone()], p, |_| {
+                    let mut t = f.transport.clone();
+                    t.download_url = s.url.clone();
+                    t
+                }),
                 async {
                     if mode.starts_with("cancel") {
                         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -283,34 +283,29 @@ fn updater_recovery_signature_or_identity_failure_never_retries_or_falls_back() 
         if mode == "size" {
             c.size += 1;
         }
-        let r = tauri::async_runtime::block_on(recover(
-            &m,
-            vec![c],
-            true,
-            policy(),
-            |_| async { panic!("security failure must not fall back") },
-            |_| {
-                let mut t = f.transport.clone();
-                t.download_url = s.url.clone();
-                if mode == "signature" {
-                    t.signature = "invalid".into();
-                }
-                t
-            },
-        ));
+        let r = tauri::async_runtime::block_on(recover(&m, vec![c], policy(), |_| {
+            let mut t = f.transport.clone();
+            t.download_url = s.url.clone();
+            if mode == "signature" {
+                t.signature = "invalid".into();
+            }
+            t
+        }));
         assert!(r.is_err());
-        assert_eq!(s.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            s.calls.load(Ordering::SeqCst),
+            if mode == "signature" { 1 } else { 0 }
+        );
         assert!(m.lock().unwrap().ready.is_none());
     }
 }
 #[test]
 fn updater_recovery_fixed_manifest_urls_and_status_policy_are_strict() {
-    for source in [UpdateSource::Hk, UpdateSource::Github, UpdateSource::Gitee] {
-        let m = manifest_location(source, Some("v0.7.29")).unwrap();
-        assert_eq!(m.expected_version, Some(StableVersion(0, 7, 29)));
-        assert!(m.endpoints.iter().all(|u| u.path().contains("/v0.7.29/")));
-        assert!(manifest_location(source, Some("v0.7.29?token=secret")).is_err());
-    }
+    let source = UpdateSource::Hk;
+    let m = manifest_location(source, Some("v0.7.29")).unwrap();
+    assert_eq!(m.expected_version, Some(StableVersion(0, 7, 29)));
+    assert!(m.endpoints.iter().all(|u| u.path().contains("/v0.7.29/")));
+    assert!(manifest_location(source, Some("v0.7.29?token=secret")).is_err());
     for status in [401, 403, 404, 410] {
         let e = TransportFailure::from_updater(tauri_plugin_updater::Error::Network(format!(
             "Download request failed with status: {status} Error"

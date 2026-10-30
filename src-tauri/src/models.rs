@@ -168,7 +168,7 @@ impl Default for AppSettings {
             controller_secret,
             update_channel: "stable".to_string(),
             auto_check_updates: true,
-            update_source: crate::app_update::UpdateSource::Auto,
+            update_source: crate::app_update::UpdateSource::Hk,
             auto_download_updates: false,
             diagnostics_retention_days: 7,
             app_log_retention_days: default_app_log_retention_days(),

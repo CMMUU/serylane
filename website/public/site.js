@@ -59,26 +59,17 @@
     });
     const target = `${selectedSystem}-${selectedArchitecture}`;
     const asset = release?.assets[target];
-    const domesticAvailable = asset?.hkAvailable === true;
-    const github = document.querySelector("#download-github");
-    const gitee = document.querySelector("#download-gitee");
-    // These URLs always resolve again on click, even if this page was left open before a release.
-    github.href = `/download/${target}?channel=github`;
-    gitee.href = `https://downloads.cmmuu.com/download/serylane/latest/${target}`;
-    github.querySelector("span").textContent = "GitHub 备用";
-    gitee.querySelector("span").textContent = `下载最新版 · ${system.format}`;
-    const links = document.querySelector(".release-links");
-    links.append(gitee, github);
-    for (const [link, channelName] of [[gitee, "下载中心优先、GitHub 备用"], [github, "GitHub"]]) {
-      link.dataset.system = selectedSystem;
-      link.dataset.architecture = selectedArchitecture;
-      link.setAttribute("aria-label", `下载最新正式版 Serylane ${system.short} ${architecture} ${system.format} 安装包，${channelName}，点击时重新核对版本`);
-    }
-    const note = !release
-      ? "默认使用下载中心；点击时核对最新正式版。连接异常可选择 GitHub 备用。"
-      : domesticAvailable
-        ? `已核对下载中心 ${system.short} ${architecture} ${system.format} 包；点击时再次确认；连接异常可选择 GitHub 备用。`
-        : `暂未确认下载中心 ${system.short} ${architecture} ${system.format} 包；点击时重新检查，未就绪则转 GitHub 同版本包。`;
+    const center = document.querySelector("#download-center");
+    // The same-origin adapter enforces center-only resolution, including no-JS
+    // and modified clicks. A page left open across releases resolves afresh.
+    center.href = `/download/${target}`;
+    center.querySelector("span").textContent = `下载最新版 · ${system.format}`;
+    center.dataset.system = selectedSystem;
+    center.dataset.architecture = selectedArchitecture;
+    center.setAttribute("aria-label", `从下载中心下载最新正式版 Serylane ${system.short} ${architecture} ${system.format} 安装包，点击时重新核对版本`);
+    const note = asset
+      ? `已核对下载中心 ${system.short} ${architecture} ${system.format} 包；点击时再次确认最新正式版。`
+      : "仅使用下载中心，暂时不可用时请稍后重试。";
     document.querySelector("#release-status").textContent = loading ? "正在查询最新正式版…"
       : release ? `当前最新正式版 ${release.version}。点击时再次核对版本。`
         : "暂时无法确认最新正式版。可重试查询，或点击下载重新检查；不会静默下载旧版。";
@@ -111,7 +102,7 @@
     updateDownloadSelection();
   }));
   let resolvingDownload = false;
-  for (const id of ["download-gitee", "download-github"]) {
+  for (const id of ["download-center"]) {
     document.querySelector(`#${id}`).addEventListener("click", async event => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
@@ -119,18 +110,21 @@
       resolvingDownload = true;
       const target = `${selectedSystem}-${selectedArchitecture}`;
       const status = document.querySelector("#download-progress");
-      status.textContent = `正在核对 ${target} 最新安装包与实际下载来源…`;
+      status.textContent = `正在核对下载中心 ${target} 最新安装包…`;
       try {
-        const reply = await fetch(`/api/download/${target}${id === "download-github" ? "?channel=github" : ""}`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(20000) });
+        const reply = await fetch(`/api/download/${target}`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(20000) });
         if (!reply.ok) throw new Error("Unavailable");
         const data = await reply.json();
-        const source = { hk: "下载中心", gitee: "Gitee 备用", github: "GitHub 备用" }[data.channel];
-        const destination = new URL(data.url);
-        if (!source || !/^v\d+\.\d+\.\d+$/.test(data.version) || destination.protocol !== "https:" || !["files.cmmuu.com", "github.com", "gitee.com"].includes(destination.hostname) || destination.username || destination.password) throw new Error("Invalid download");
-        status.textContent = `本次下载：${source} · ${data.version} · ${target}。已交给浏览器下载；网络连接使用浏览器当前设置。`;
+        const suffix = { "windows-x64": "x64-setup.exe", "windows-arm64": "arm64-setup.exe", "macos-x64": "x64.dmg", "macos-arm64": "aarch64.dmg", "linux-x64": "amd64.AppImage", "linux-arm64": "aarch64.AppImage" }[target];
+        if (data.channel !== "hk" || !/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(data.version)) throw new Error("Invalid release");
+        const [major, minor, patch] = data.version.slice(1).split(".").map(Number);
+        const brand = major === 0 && (minor < 7 || (minor === 7 && patch < 7)) ? "RouteDeck" : "Serylane";
+        const expected = `https://files.cmmuu.com/releases/serylane/${data.version}/${brand}_${data.version.slice(1)}_${suffix}`;
+        if (data.url !== expected) throw new Error("Invalid download");
+        status.textContent = `本次下载：下载中心 · ${data.version} · ${target}。已交给浏览器下载；网络连接使用浏览器当前设置。`;
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        window.location.assign(destination.href);
-      } catch { status.textContent = "本次安装包尚未核对完成，请重试或选择备用入口；未转向旧版本。"; }
+        window.location.assign(expected);
+      } catch { status.textContent = "下载中心暂时无法确认本次安装包，请稍后再次点击下载重试。本次没有开始下载。"; }
       finally { resolvingDownload = false; }
     });
   }
@@ -146,7 +140,7 @@
       const data = await response.json();
       if (!/^v\d+\.\d+\.\d+$/.test(data.version) || !data.assets) throw new Error("Invalid release");
       for (const system of Object.keys(systems)) for (const architecture of ["x64", "arm64"]) {
-        if (typeof data.assets[`${system}-${architecture}`]?.domesticAvailable !== "boolean") throw new Error("Incomplete release");
+        if (data.assets[`${system}-${architecture}`]?.channel !== "hk") throw new Error("Incomplete release");
       }
       release = data;
     } catch { release = null; }

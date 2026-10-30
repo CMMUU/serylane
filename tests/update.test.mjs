@@ -7,11 +7,16 @@ import test from "node:test";
 import ts from "typescript";
 import { verifyUpdateSignature } from "../scripts/verify-update-signature.mjs";
 import { root, verifyVersions, setVersion, verifyReleaseReady } from "../scripts/version.mjs";
+import { verifyProductDocs } from "../scripts/product-docs.mjs";
+
+test("current product documentation matches actual version, capabilities and node constraints", () => {
+  verifyProductDocs();
+});
 
 const source = readFileSync(new URL("../src/app-update.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
 const { describeAppUpdate, updateSourceLabel, shouldAcceptUpdatePoll } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
-const status = (phase, available = true) => ({ phase, info: { available, source: "gitee", latestVersion: "v1.0.0" }, downloadedBytes: 50, totalBytes: 100, error: "HTTP 403" });
+const status = (phase, available = true) => ({ phase, info: { available, source: "hk", latestVersion: "v1.0.0" }, downloadedBytes: 50, totalBytes: 100, error: "HTTP 403" });
 
 test("installation only becomes available after native verification of a newer release", () => {
   for (const phase of ["idle", "checking", "current", "ahead", "available", "downloading", "installing", "cancelled", "failed"]) assert.equal(describeAppUpdate(status(phase)).canInstall, false, phase);
@@ -22,23 +27,23 @@ test("installation only becomes available after native verification of a newer r
 test("failure and cancel can retry, but active operations cannot start another download", () => {
   for (const phase of ["available", "failed", "cancelled"]) assert.equal(describeAppUpdate(status(phase)).canDownload, true);
   for (const phase of ["checking", "downloading", "installing", "ready"]) assert.equal(describeAppUpdate(status(phase)).canDownload, false);
-  assert.match(describeAppUpdate(status("available")).detail, /Gitee/);
+  assert.match(describeAppUpdate(status("available")).detail, /下载中心/);
   assert.match(describeAppUpdate(status("ahead", false)).detail, /不会自动降级/);
-  assert.equal(describeAppUpdate(status("failed")).detail, "HTTP 403");
+  assert.match(describeAppUpdate(status("failed")).detail, /HTTP 403.*重试/);
 });
 test("download progress is bounded and never NaN", () => {
   assert.equal(describeAppUpdate(status("downloading")).progress, 50);
   assert.equal(describeAppUpdate({ ...status("downloading"), downloadedBytes: 500 }).progress, 100);
   assert.equal(describeAppUpdate({ ...status("downloading"), totalBytes: 0 }).progress, 0);
 });
-test("automatic update preferences clearly describe the download-center-first fallback policy", () => {
+test("update preferences expose only the download center and retry on failure", () => {
   const settings = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
-  assert.match(settings, /value="auto">自动（下载中心优先）/);
-  assert.match(settings, /自动：下载中心 → Gitee → GitHub/);
-  assert.match(settings, /value="hk">下载中心/);
+  assert.doesNotMatch(settings + source, /GitHub|Gitee|settings-update-source|备用源/);
+  assert.match(settings, /仅使用下载中心/);
   assert.match(describeAppUpdate({ ...status("available"), info: { ...status("available").info, source: "hk" } }).detail, /下载中心/);
-  assert.match(settings, /下载中心或 Gitee 尚未同步新版时使用已核验的最新渠道/);
-  assert.match(describeAppUpdate(status("idle")).detail, /优先下载中心，同版本 Gitee \/ GitHub 备用/);
+  assert.match(settings, /稍后可重新检查或下载/);
+  assert.match(describeAppUpdate(status("idle")).detail, /仅使用下载中心/);
+  assert.match(describeAppUpdate({ ...status("failed"), error: null }).detail, /下载中心暂不可用.*重试/);
 });
 test("updater uses confirmed native installation and separately saved non-network preferences", () => {
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
@@ -112,10 +117,8 @@ test("release notes are present and checked before the bundle/tag pipeline", () 
   assert.match(sourceJob, /node scripts\/version\.mjs --release-ready/);
 });
 
-test("all channel labels use one map, including HK and absent status", () => {
+test("download center and absent status have distinct labels", () => {
   assert.equal(updateSourceLabel("hk"), "下载中心");
-  assert.equal(updateSourceLabel("github"), "GitHub");
-  assert.equal(updateSourceLabel("gitee"), "Gitee");
   assert.equal(updateSourceLabel(undefined), "—");
 });
 
@@ -131,7 +134,7 @@ test("desktop update copy uses region-neutral source labels in every phase", () 
 });
 
 test("download source, current network path and installation stages are not confused", () => {
-  for (const [source, label] of [["hk", "下载中心"], ["gitee", "Gitee"], ["github", "GitHub"]]) {
+  for (const [source, label] of [["hk", "下载中心"]]) {
     const view = describeAppUpdate({ ...status("downloading"), info: { ...status("downloading").info, source }, networkPath: "经 Serylane 当前代理" });
     assert.match(view.label, new RegExp(label));
     assert.match(view.detail, /经 Serylane 当前代理/);
@@ -201,8 +204,8 @@ test("release gates execute the shared product coordinator and a new-process pro
 
 test("download recovery distinguishes retries, sources and history without enabling install", () => {
   for (const stage of ["retrying", "recovering"]) {
-    const view = describeAppUpdate({ ...status("downloading"), stage, message: "正在确认同版本备用包", networkPath: "经 Serylane 当前代理" });
-    assert.equal(view.label, "正在确认同版本备用包");
+    const view = describeAppUpdate({ ...status("downloading"), stage, message: "正在重新确认下载中心同版本更新包", networkPath: "经 Serylane 当前代理" });
+    assert.equal(view.label, "正在重新确认下载中心同版本更新包");
     assert.match(view.detail, /经 Serylane 当前代理/);
     assert.equal(view.canInstall, false); assert.equal(view.canDownload, false); assert.equal(view.busy, true);
   }

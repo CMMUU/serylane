@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.34 - 2026-10-30
+
+- Use only the download center in desktop updates and all six website download routes. Migrate legacy preferences; fail with retry on unavailable or invalid center data, without alternate sources or redirects.
+- Keep signed package verification, bounded retries, cancellation and independent installation confirmation.
+- Reconcile current documentation with backend capability gates and single-node eligibility; verify generated source facts in tests. Add a three-platform TUN stability plan, without changing current TUN availability.
+
+Historical entries below describe their release at that time. Current behavior is documented in [the business contract](docs/当前实现与业务契约.md).
+
 ## 0.7.30 - 2026-10-16
 
 - Bound update connection, idle and shared recovery budgets; retry transient failures and rediscover only the frozen version/build on missing mirror sources. Never silently change the user’s network path.

@@ -56,25 +56,26 @@ test('online verification requires marker AND actual bytes, never a marker alone
   await assert.rejects(verifyStatic(expected, fetcher('expected', expected, 'public')));
 });
 
-test('download verification covers all six primary and explicit fallback routes with exact identities', async () => {
+test('download verification covers six center-only routes and rejects retired overrides', async () => {
   const targets = ['windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64', 'linux-x64', 'linux-arm64'];
-  const release = { version: 'v0.7.18', assets: Object.fromEntries(targets.map(t => [t, { filename: `package-${t}` }])) };
+  const release = { version: 'v0.7.18', assets: Object.fromEntries(targets.map(t => [t, { filename: `package-${t}`, size: 1000, sha256: 'a'.repeat(64), channel: 'hk' }])) };
   const calls = [];
   const fetcher = async (url, init) => {
     if (url.endsWith('/api/releases/latest')) return Response.json(release);
     calls.push({ url, method: init.method });
     const parsed = new URL(url);
     const target = parsed.pathname.startsWith('/download/serylane/latest/') ? parsed.pathname.slice('/download/serylane/latest/'.length) : parsed.pathname.slice('/download/'.length);
-    const github = parsed.search === '?channel=github';
+    if (parsed.search) return new Response(null, { status: 400 });
     return new Response(null, { status: 302, headers: {
-      'x-serylane-version': release.version, 'x-serylane-channel': github ? 'github' : 'hk', 'cache-control': 'no-store',
-      location: `${github ? 'https://github.com/CMMUU/serylane/releases/download' : 'https://files.cmmuu.com/releases/serylane'}/${release.version}/${release.assets[target].filename}`,
+      'x-serylane-version': release.version, 'x-serylane-channel': 'hk', 'x-serylane-resolver': 'download-center', 'cache-control': 'no-store',
+      location: `https://files.cmmuu.com/releases/serylane/${release.version}/${release.assets[target].filename}`,
     } });
   };
   await verifyDownloads(fetcher);
-  assert.equal(calls.length, 18);
+  assert.equal(calls.length, 8);
+  assert.equal(calls.filter(c => !new URL(c.url).search).length, 6);
   assert.ok(calls.every(c => c.method === 'HEAD'));
-  for (const bad of ['version', 'architecture', 'host', 'query', 'channel']) {
+  for (const bad of ['version', 'architecture', 'host', 'query', 'channel', 'fallback', 'override']) {
     await assert.rejects(verifyDownloads(async (url, init) => {
       const response = await fetcher(url, init);
       if (!url.includes('/download/')) return response;
@@ -84,6 +85,9 @@ test('download verification covers all six primary and explicit fallback routes 
       if (bad === 'host') headers.set('location', headers.get('location').replace('files.cmmuu.com', 'evil.example'));
       if (bad === 'query') headers.set('location', headers.get('location') + '?token=unexpected');
       if (bad === 'channel') headers.set('x-serylane-channel', 'unknown');
+      if (bad === 'fallback') headers.set('x-serylane-channel', 'github');
+      if (bad === 'override' && new URL(url).search) return new Response(null, { status: 302, headers: { location: 'https://github.com/CMMUU/serylane/releases/latest' } });
+      if (new URL(url).search) return response;
       return new Response(null, { status: 302, headers });
     }), bad);
   }

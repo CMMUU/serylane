@@ -1,9 +1,14 @@
 //! Bounded transport recovery. Never changes the user's network or trusts another build.
 use super::*;
 use std::error::Error;
-use std::future::Future;
 use std::sync::atomic::AtomicU64;
 use tokio::time::Instant;
+
+// The center serves direct metadata and artifacts. Redirects must not escape
+// to a mirror (or any other host), including through a trusted metadata URL.
+pub(super) fn redirect_policy() -> updater_http::redirect::Policy {
+    updater_http::redirect::Policy::none()
+}
 
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(25);
@@ -132,6 +137,38 @@ pub(super) async fn download_once(
             true,
         ));
     }
+    // Validate the immutable center identity before any bytes are requested.
+    let (hash, size) = validate_asset(
+        candidate.source,
+        &candidate.platform_key,
+        &candidate.update.version,
+        &candidate.update.download_url,
+        &candidate.update.raw_json,
+    )
+    .map_err(|e| TransportFailure::new("identity", e.to_string(), false, true))?;
+    if hash != candidate.sha256
+        || size != candidate.size
+        || parse_version(&candidate.update.version).ok() != Some(candidate.version)
+    {
+        return Err(TransportFailure::new(
+            "identity",
+            "更新目标身份已变化，请重新检查下载中心",
+            false,
+            true,
+        ));
+    }
+    // The local signed-fixture transport override exists only in test builds.
+    #[cfg(not(test))]
+    if transport.download_url != candidate.update.download_url
+        || transport.signature != candidate.update.signature
+    {
+        return Err(TransportFailure::new(
+            "identity",
+            "更新下载地址或签名已变化，请重新检查下载中心",
+            false,
+            true,
+        ));
+    }
     let oversized = AtomicBool::new(false);
     let received = AtomicU64::new(0);
     let progress = AtomicU64::new(0);
@@ -219,184 +256,93 @@ fn record(
     Ok(())
 }
 
-/// The same coordinator drives IPC and fault-injection tests. Discovery may only
-/// supply a source for the frozen build, never silently follow a newer latest.
-pub(super) async fn recover<F, Fut, T>(
+/// Retry only the frozen, verified download-center candidate. There is no
+/// discovery callback or alternate-source traversal in the production path.
+pub(super) async fn recover<T>(
     state: &AppUpdateManager,
     candidates: Vec<Candidate>,
-    auto: bool,
     policy: Policy,
-    mut discover: F,
     transport: T,
 ) -> AppResult<AppUpdateStatus>
 where
-    F: FnMut(UpdateSource) -> Fut,
-    Fut: Future<Output = AppResult<Candidate>>,
     T: Fn(&Candidate) -> Update,
 {
-    let selected = candidates
-        .first()
-        .cloned()
-        .ok_or_else(|| failure("缺少已确认的更新目标，请重新检查"))?;
-    let mut sources: Vec<_> = candidates.iter().map(|c| c.source).collect();
-    if auto {
-        for s in [UpdateSource::Hk, UpdateSource::Gitee, UpdateSource::Github] {
-            if !sources.contains(&s) {
-                sources.push(s);
-            }
-        }
+    if candidates.len() != 1 {
+        return Err(failure("更新目标不唯一，请重新检查下载中心"));
     }
+    let candidate = candidates.into_iter().next().unwrap();
+    let source = candidate.source;
     let task = async {
-        let mut last = "所有下载来源暂不可用，请稍后重试；当前应用与代理保持运行".to_string();
-        for source in sources {
-            let candidate = if let Some(c) = candidates.iter().find(|c| c.source == source) {
-                c.clone()
-            } else {
-                {
+        let mut last = "下载中心暂不可用，请稍后重试；当前应用与代理保持运行".to_string();
+        for number in 1..=policy.attempts {
+            let started = Instant::now();
+            {
+                let mut session = state.lock()?;
+                session.status.stage = "download".into();
+                session.status.message = Some(format!(
+                    "正在从下载中心下载（第 {number}/{} 次）",
+                    policy.attempts
+                ));
+                session.status.attempt = number;
+                session.status.max_attempts = policy.attempts;
+                session.status.downloaded_bytes = 0;
+                session.status.total_bytes = candidate.size;
+                if let Some(info) = &mut session.status.info {
+                    info.source = source;
+                    info.release_url =
+                        official_release_url(source, &format!("v{}", candidate.update.version))?;
+                }
+            }
+            let transport = transport(&candidate);
+            match download_once(&candidate, &transport, state, policy).await {
+                Ok(bytes) => {
+                    record(
+                        state,
+                        source,
+                        number,
+                        "verified",
+                        started,
+                        None,
+                        "更新签名与 SHA-256 验证通过",
+                    )?;
                     let mut session = state.lock()?;
-                    session.status.stage = "recovering".into();
-                    session.status.message =
-                        Some(format!("正在重新确认 {} 的同版本备用包", source.label()));
-                    session.status.attempt = 0;
-                    session.status.downloaded_bytes = 0;
+                    session.candidates = vec![candidate.clone()];
+                    session.ready = Some((candidate, bytes));
+                    session.status.phase = "ready".into();
+                    session.status.stage = "verified".into();
+                    session.status.message = None;
+                    session.status.error_kind = None;
+                    return Ok(session.status.clone());
                 }
-                let start = Instant::now();
-                match discover(source).await {
-                    Ok(c) if same_build(&selected, &c) => {
-                        if let Some(info) = &mut state.lock()?.status.info {
-                            if let Some(channel) = info
-                                .channels
-                                .iter_mut()
-                                .find(|channel| channel.source == source)
-                            {
-                                channel.version = Some(format!("v{}", c.update.version));
-                                channel.error = None;
-                            } else {
-                                info.channels.push(UpdateChannelStatus {
-                                    source,
-                                    version: Some(format!("v{}", c.update.version)),
-                                    error: None,
-                                });
-                            }
-                        }
-                        record(
-                            state,
-                            source,
-                            0,
-                            "recovering",
-                            start,
-                            None,
-                            "已确认同版本、同平台和同内容的备用包",
-                        )?;
-                        c
+                Err(e) => {
+                    let stage = if matches!(e.kind, "signature" | "integrity" | "identity") {
+                        "verify"
+                    } else {
+                        "download"
+                    };
+                    state.lock()?.status.stage = stage.into();
+                    record(state, source, number, stage, started, Some(&e), &e.message)?;
+                    last = format!(
+                        "下载中心：{}；请稍后重试。尚未开始安装，当前应用与代理保持运行",
+                        e.message
+                    );
+                    if e.fatal {
+                        return Err(e.app_error());
                     }
-                    Ok(_) => {
-                        let e = TransportFailure::new(
-                            "identity",
-                            "备用源版本、架构或内容不一致，已排除",
-                            false,
-                            false,
-                        );
-                        record(state, source, 0, "recovering", start, Some(&e), &e.message)?;
-                        continue;
+                    if !e.retryable || number == policy.attempts {
+                        break;
                     }
-                    Err(e) => {
-                        let mut error = TransportFailure::new(
-                            "metadata",
-                            "此备用源暂不可用，已跳过",
-                            false,
-                            false,
-                        );
-                        error.detail = crate::app_log::sanitize(&e.to_string());
-                        record(
-                            state,
-                            source,
-                            0,
-                            "recovering",
-                            start,
-                            Some(&error),
-                            &error.message,
-                        )?;
-                        continue;
-                    }
-                }
-            };
-            for number in 1..=policy.attempts {
-                let started = Instant::now();
-                {
-                    let mut session = state.lock()?;
-                    session.status.stage = "download".into();
-                    session.status.message = Some(format!(
-                        "正在从 {} 下载（第 {number}/{} 次）",
-                        source.label(),
-                        policy.attempts
-                    ));
-                    session.status.attempt = number;
-                    session.status.max_attempts = policy.attempts;
-                    session.status.downloaded_bytes = 0;
-                    session.status.total_bytes = candidate.size;
-                    if let Some(info) = &mut session.status.info {
-                        info.source = source;
-                        info.release_url = official_release_url(
-                            source,
-                            &format!("v{}", candidate.update.version),
-                        )?;
-                    }
-                }
-                let transport = transport(&candidate);
-                match download_once(&candidate, &transport, state, policy).await {
-                    Ok(bytes) => {
-                        record(
-                            state,
-                            source,
-                            number,
-                            "verified",
-                            started,
-                            None,
-                            "更新签名与 SHA-256 验证通过",
-                        )?;
+                    {
                         let mut session = state.lock()?;
-                        // Installation must compare against this recovered candidate too.
-                        session.candidates = vec![candidate.clone()];
-                        session.ready = Some((candidate, bytes));
-                        session.status.phase = "ready".into();
-                        session.status.stage = "verified".into();
-                        session.status.message = None;
-                        session.status.error_kind = None;
-                        return Ok(session.status.clone());
+                        session.status.stage = "retrying".into();
+                        session.status.message = Some(format!(
+                            "{}，即将重试下载中心（{}/{}）",
+                            e.message,
+                            number + 1,
+                            policy.attempts
+                        ));
                     }
-                    Err(e) => {
-                        let stage = if matches!(e.kind, "signature" | "integrity") {
-                            "verify"
-                        } else {
-                            "download"
-                        };
-                        state.lock()?.status.stage = stage.into();
-                        record(state, source, number, stage, started, Some(&e), &e.message)?;
-                        last = format!(
-                            "{}：{}；尚未开始安装，当前应用与代理保持运行",
-                            source.label(),
-                            e.message
-                        );
-                        if e.fatal {
-                            return Err(e.app_error());
-                        }
-                        if !e.retryable || number == policy.attempts {
-                            break;
-                        }
-                        {
-                            let mut session = state.lock()?;
-                            session.status.stage = "retrying".into();
-                            session.status.message = Some(format!(
-                                "{}，即将重试 {}（{}/{}）",
-                                e.message,
-                                source.label(),
-                                number + 1,
-                                policy.attempts
-                            ));
-                        }
-                        tokio::time::sleep(policy.backoff * u32::from(number)).await;
-                    }
+                    tokio::time::sleep(policy.backoff * u32::from(number)).await;
                 }
             }
         }

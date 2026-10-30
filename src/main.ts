@@ -45,7 +45,6 @@ import type {
   AppSettings,
   AppUpdateInfo,
   AppUpdateStatus,
-  UpdateSource,
   BinaryInfo,
   CurrentNodeDetails,
   GlobalTrafficSnapshot,
@@ -1140,7 +1139,6 @@ function renderSettings() {
   ($("#settings-auto-check-updates") as HTMLInputElement).checked =
     store.settings.autoCheckUpdates;
   ($("#settings-auto-download-updates") as HTMLInputElement).checked = store.settings.autoDownloadUpdates;
-  ($("#settings-update-source") as HTMLSelectElement).value = store.settings.updateSource;
   ($("#settings-retention") as HTMLInputElement).value = String(
     store.settings.diagnosticsRetentionDays,
   );
@@ -1325,7 +1323,7 @@ function renderTunHelper() {
   $("#network-mode-help")!.textContent = windows
     ? "Windows TUN 需要先从托盘退出应用，再右键以管理员身份运行。关闭窗口会保留托盘运行；停止内核或退出应用才会关闭 TUN。使用系统代理前，请先关闭其他代理客户端的系统代理。"
     : macos ? "首次使用需安装并批准 TUN 权限服务；预检通过后才切换模式。服务正在检查时请稍候；升级后若提示重新关联，请先停止代理，再点击“重新关联辅助服务”；系统拒绝授权时请在登录项与扩展中允许。"
-    : "Linux 暂未提供 TUN 网络接管。可使用本地端口、系统代理或程序代理；已安装应用快选不代表已支持 TUN。";
+    : "Linux 暂未提供 TUN 网络接管。可使用本地端口或系统代理。";
   $("#tun-helper-title")!.textContent = windows
     ? state === "ready" ? "管理员会话已就绪" : "以管理员身份运行后可开启 TUN"
     : !macos ? "此平台尚未提供 TUN 网络接管" : state === "ready" ? "TUN 辅助服务已就绪" : tunHelperStateLabel(state);
@@ -3037,7 +3035,7 @@ $("#app-update-check")!.addEventListener("click", () => {
 $("#app-update-open")!.addEventListener("click", async () => {
   const update = store.appUpdate;
   if (!update) return;
-  await action("已打开 Serylane 官方更新页面", () =>
+  await action("已打开 Serylane 下载中心", () =>
     api.openOfficialRelease(update.source, update.latestVersion),
   );
 });
@@ -3049,7 +3047,7 @@ $("#update-preferences-form")!.addEventListener("submit", async (event) => {
   renderAppUpdate();
   try {
     store.settings = await api.saveUpdatePreferences(
-      ($("#settings-update-source") as HTMLSelectElement).value as UpdateSource,
+      "hk",
       ($("#settings-auto-check-updates") as HTMLInputElement).checked,
       ($("#settings-auto-download-updates") as HTMLInputElement).checked,
     );

@@ -98,20 +98,15 @@ assert.deepEqual(readFileSync(join(root, "src-tauri/icons/128x128.png")),
   readFileSync(join(root, "assets/brand/app-icon-128.png")), "Sidebar and tray must use identical app artwork");
 const updater = read("src-tauri/src/app_update.rs");
 for (const endpoint of [
-  "https://github.com/CMMUU/serylane/releases/latest/download/latest-serylane.json",
-  "https://github.com/CMMUU/serylane/releases/latest/download/latest.json",
-  "https://gitee.com/api/v5/repos/cmmuu/serylane/releases/latest",
-  "https://github.com/CMMUU/routedeck/releases",
-  "https://gitee.com/cmmuu/serylane/releases",
-]) assert.ok(updater.includes(`"${endpoint}"`), `Retain updater endpoint: ${endpoint}`);
+  "https://downloads.cmmuu.com/api/releases/serylane/latest",
+  "https://downloads.cmmuu.com/projects/serylane",
+]) assert.ok(updater.includes(`"${endpoint}"`), `Only download-center product endpoint: ${endpoint}`);
 assert.ok(updater.includes('format!("RouteDeck_{version}_{suffix}")'));
-assert.match(updater, /if url\.as_str\(\) != expected\s*&& url\.as_str\(\) != legacy_channel\s*&& !legacy_github\s*&& !legacy_gitee/);
+assert.doesNotMatch(updater.split("mod tests {")[0], /https:\/\/(?:github|gitee)\.com/);
 assert.ok(read(".github/workflows/sync-gitee.yml").includes("--repo serylane"));
 assert.ok(read("scripts/sync_gitee.py").includes('SOURCE_REPOS = {"serylane": "serylane"}'));
-assert.ok(updater.includes('format!("{base}/download/{tag}/latest-serylane-gitee.json")'));
 assert.ok(read("scripts/updater_release.py").includes('("latest-serylane.json", "https://github.com/CMMUU/serylane")'));
 assert.ok(read("scripts/updater_release.py").includes('("latest-serylane-gitee.json", "https://gitee.com/cmmuu/serylane")'));
-assert.ok(updater.includes('"https://github.com/CMMUU/serylane/releases"'));
 for (const path of [".github/workflows/release.yml", ".github/workflows/sync-gitee.yml"]) {
   assert.ok(read(path).includes("github.repository == 'CMMUU/serylane'"));
   assert.ok(!read(path).includes("github.repository == 'CMMUU/routedeck'"));

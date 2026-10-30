@@ -121,7 +121,7 @@ function fixtureCatalog(refresh: boolean) {
 let programLaunches = 0;
 let failProgramSave = false;
 let cancelProgramPicker = false;
-let updatePreferences = { updateSource: "auto" as UpdateSource, autoCheckUpdates: false, autoDownloadUpdates: false };
+let updatePreferences = { updateSource: "hk" as UpdateSource, autoCheckUpdates: false, autoDownloadUpdates: false };
 let fixtureUpdate: AppUpdateStatus = { phase: "idle", info: null, downloadedBytes: 0, totalBytes: 0, error: null };
 let updateScenario = previewQuery.get("updateScenario") ?? "available";
 let cancelUpdateDownload = false;
@@ -1312,7 +1312,7 @@ mockIPC(async (command, payload) => {
     return profileDetails(profile.id);
   }
   if (command === "save_update_preferences") {
-    const source = args.source as UpdateSource;
+    const source: UpdateSource = "hk";
     if (source !== updatePreferences.updateSource) fixtureUpdate = { phase: "idle", info: null, downloadedBytes: 0, totalBytes: 0, error: null };
     updatePreferences = { updateSource: source, autoCheckUpdates: Boolean(args.autoCheck), autoDownloadUpdates: Boolean(args.autoDownload) };
     return settings();
@@ -1320,15 +1320,15 @@ mockIPC(async (command, payload) => {
   if (command === "check_app_update") {
     await new Promise((resolve) => window.setTimeout(resolve, 180));
     if (updateScenario === "failed") {
-      fixtureUpdate = { ...fixtureUpdate, info: null, phase: "failed", error: "合成状态：下载中心 HTTP 503；Gitee HTTP 503；GitHub HTTP 403" };
+      fixtureUpdate = { ...fixtureUpdate, info: null, phase: "failed", error: "合成状态：下载中心 HTTP 503，请稍后重试" };
       throw new Error(fixtureUpdate.error!);
     }
     const latestVersion = updateScenario === "ahead" ? "v0.1.0" : updateScenario === "current" ? `v${packageInfo.version}` : "v9.0.0";
-    const source = updatePreferences.updateSource === "auto" ? "hk" : updatePreferences.updateSource;
+    const source: UpdateSource = "hk";
     fixtureUpdate = { lastInstall: "历史安装目标 v0.7.27 未完成；与本次下载分开记录。", phase: updateScenario === "ahead" ? "ahead" : updateScenario === "current" ? "current" : "available", downloadedBytes: 0, totalBytes: 0, error: null,
-      info: { currentVersion: packageInfo.version, latestVersion, available: !["ahead", "current"].includes(updateScenario), ahead: updateScenario === "ahead", notes: "合成更新说明：演示下载中心优先与确认安装。未访问真实发布服务。", publishedAt: stamp, source,
-        releaseUrl: `https://github.com/CMMUU/serylane/releases/tag/${latestVersion}`,
-        channels: updatePreferences.updateSource === "auto" ? [{ source: "hk", version: latestVersion, error: null }, { source: "gitee", version: latestVersion, error: null }, { source: "github", version: null, error: "合成 HTTP 403；已使用下载中心" }] : [{ source, version: latestVersion, error: null }],
+      info: { currentVersion: packageInfo.version, latestVersion, available: !["ahead", "current"].includes(updateScenario), ahead: updateScenario === "ahead", notes: "合成更新说明：仅使用下载中心，安装需要确认。未访问真实发布服务。", publishedAt: stamp, source,
+        releaseUrl: "https://downloads.cmmuu.com/projects/serylane",
+        channels: [{ source, version: latestVersion, error: null }],
       } };
     return structuredClone(fixtureUpdate);
   }
@@ -1343,10 +1343,10 @@ mockIPC(async (command, payload) => {
       fixtureUpdate.attempts = [{ source: "hk", result: "连接或传输超时", number: 1, stage: "download", elapsedMs: 15000, errorKind: "timeout" }];
       await new Promise(resolve => window.setTimeout(resolve, 1400));
       if (cancelUpdateDownload) { fixtureUpdate.phase = "cancelled"; fixtureUpdate.error = "合成下载已取消"; throw new Error(fixtureUpdate.error); }
-      fixtureUpdate.stage = "recovering"; fixtureUpdate.message = "正在重新确认 GitHub 的同版本备用包";
+      fixtureUpdate.stage = "recovering"; fixtureUpdate.message = "正在重新确认下载中心的同版本更新包";
       await new Promise(resolve => window.setTimeout(resolve, 1400));
       if (cancelUpdateDownload) { fixtureUpdate.phase = "cancelled"; fixtureUpdate.error = "合成下载已取消"; throw new Error(fixtureUpdate.error); }
-      fixtureUpdate.info!.source = "github"; fixtureUpdate.info!.channels = [{ source: "github", version: fixtureUpdate.info!.latestVersion, error: null }]; fixtureUpdate.stage = "download"; fixtureUpdate.message = "正在从 GitHub 下载（第 1/2 次）";
+      fixtureUpdate.stage = "download"; fixtureUpdate.message = "正在从下载中心重试下载";
     }
     for (let step = 1; step <= 8; step++) {
       await new Promise((resolve) => window.setTimeout(resolve, 180));

@@ -1,6 +1,6 @@
 [package]
 name = "serylane"
-version = "0.7.33"
+version = "0.7.34"
 license = "GPL-3.0-only"
 description = "Serylane: lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]
@@ -49,6 +49,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "socks"] }
+updater-http = { package = "reqwest", version = "0.13", default-features = false }
 bytes = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio", "client-legacy"] }
