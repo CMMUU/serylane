@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::watch;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(not(windows), allow(dead_code))]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     #[default]
@@ -21,6 +22,10 @@ pub enum Phase {
     Validating,
     Starting,
     Applying,
+    TunInterface,
+    TunRoute,
+    TunDns,
+    TunInternet,
     Enabled,
     Failed,
 }
@@ -141,7 +146,13 @@ impl State {
         let mut result = self.value.clone();
         if matches!(
             result.phase,
-            Phase::Validating | Phase::Starting | Phase::Applying
+            Phase::Validating
+                | Phase::Starting
+                | Phase::Applying
+                | Phase::TunInterface
+                | Phase::TunRoute
+                | Phase::TunDns
+                | Phase::TunInternet
         ) || result.health == Health::Checking
         {
             result.elapsed_ms = self
@@ -206,6 +217,45 @@ impl ConnectionFeedback {
     pub fn starting(&self, app: &AppHandle) {
         let id = self.snapshot().operation;
         self.advance(app, id, Phase::Starting);
+    }
+    pub fn tun_attempt(&self, app: &AppHandle, operation: u64, retrying: bool) {
+        if self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .update(operation, |s| {
+                s.phase = Phase::TunInternet;
+                s.retrying = retrying;
+            })
+        {
+            self.emit(app);
+        }
+    }
+    pub fn tun_report(&self, app: &AppHandle, operation: u64, report: &NetworkSafetyReport) {
+        let context = Context::read(app).ok();
+        let changed = {
+            let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let changed = state.update(operation, |s| {
+                s.retrying = false;
+                s.health = if context.is_some() {
+                    classify(report)
+                } else {
+                    Health::Unchecked
+                };
+                s.checks = if context.is_some() {
+                    report.checks.clone()
+                } else {
+                    vec![]
+                };
+            });
+            if changed {
+                state.context = context;
+            }
+            changed
+        };
+        if changed {
+            self.emit(app);
+        }
     }
     pub fn fail(&self, app: &AppHandle, operation: u64, error: &AppErrorDto) {
         if self

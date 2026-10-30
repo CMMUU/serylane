@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.35 - 2026-10-30
+
+- Enable and validate internal DNS in generated TUN configurations without rewriting subscription source or changing other modes' DNS settings.
+- Separate Windows interface, route and DNS readiness from external health; replace the fixed startup delay with bounded observation and recheck local takeover after external probes.
+- Retry transient probe failures, including interrupted TLS handshakes, for at most three rounds within a shared 30-second budget. Preserve certificate verification, distinguish failure stages and retain rollback on persistent failure.
+- Windows TUN remains experimental and administrator-only. macOS signing and Linux support limits remain; automated checks do not replace physical network acceptance.
+
 ## 0.7.34 - 2026-10-30
 
 - Use only the download center in desktop updates and all six website download routes. Migrate legacy preferences; fail with retry on unavailable or invalid center data, without alternate sources or redirects.

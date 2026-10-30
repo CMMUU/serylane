@@ -80,6 +80,16 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
         env:
           SERYLANE_NATIVE_TRAY_SNAPSHOT_DIR: ${{ runner.temp }}/native-tray
+      - name: Verify Windows TUN adapter, selected routes, DNS and cleanup on isolated runner
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = (rustc -vV | Select-String '^host: ').ToString().Substring(6).Trim()
+          if ($target -notin @('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')) { throw 'Unexpected Windows target' }
+          $env:MIHOMO_TEST_BINARY = (Resolve-Path "src-tauri/binaries/mihomo-$target.exe").Path
+          $env:SERYLANE_NATIVE_TUN_TEST = '1'
+          cargo test --manifest-path src-tauri/Cargo.toml --lib tun_readiness::windows::tests::native_windows_tun_dns_route_lifecycle -- --ignored --exact --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify product updater contract and transaction on this platform
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib updater_ -- --nocapture
       - name: Verify macOS native updater success and failure paths

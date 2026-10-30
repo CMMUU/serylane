@@ -44,6 +44,8 @@ mod subscription_edit;
 mod subscription_quota;
 mod subscription_task;
 mod traffic_monitor;
+#[cfg(any(windows, test))]
+mod tun_readiness;
 pub mod tun_service;
 mod update_probe;
 mod update_receipt;
@@ -519,6 +521,13 @@ async fn start_runtime_for_settings(
             }
         }
         Err(error) => {
+            if settings.network_mode == NetworkMode::Tun {
+                app_log::record(
+                    2,
+                    app_log::Area::Runtime,
+                    &format!("TUN 启动未完成：阶段={}；{}", error.stage, error.message),
+                );
+            }
             if app
                 .state::<session_resume::SessionResumeManager>()
                 .is_shutting_down()
@@ -542,6 +551,14 @@ async fn start_runtime_inner(
 ) -> Result<(), AppErrorDto> {
     let storage = AppStorage::from_app(app).map_err(dto)?;
     let effective = active_effective_config(app, settings).map_err(dto)?;
+    for warning in effective
+        .summary
+        .warnings
+        .iter()
+        .filter(|warning| warning.starts_with("TUN "))
+    {
+        app_log::record(0, app_log::Area::Runtime, warning);
+    }
     app_log::record(
         0,
         app_log::Area::Runtime,
@@ -564,7 +581,34 @@ async fn start_runtime_inner(
             }
         })
         .map_err(dto)?;
-    finish_runtime_start(app, state, settings, automatic_proxy).await?;
+    let run = state.running_identity();
+    let finish = finish_runtime_start(app, state, settings, automatic_proxy);
+    let result = if settings.network_mode == NetworkMode::Tun {
+        // Shutdown/another run invalidates every outstanding probe. Dropping
+        // the future cancels its HTTP/DNS work; cleanup never targets a new run.
+        tokio::select! { biased;
+            result = finish => result,
+            _ = async {
+                loop {
+                    if app.state::<session_resume::SessionResumeManager>().is_shutting_down()
+                        || state.running_identity() != run {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            } => Err(dto(AppError::TunStartup {
+                stage: error::TunStage::Cancelled,
+                detail: "启动验收所属会话已结束".into(),
+                retryable: false,
+            })),
+        }
+    } else {
+        finish.await
+    };
+    if result.is_err() && state.running_identity() == run && run.is_some() {
+        let _ = state.stop(Some(app));
+    }
+    result?;
     app_log::record(
         0,
         app_log::Area::Runtime,
@@ -592,7 +636,6 @@ async fn finish_runtime_start(
         Duration::from_secs(8)
     };
     if let Err(error) = api.wait_ready(ready_timeout).await {
-        let _ = state.stop(Some(app));
         return Err(dto(AppError::startup(
             StartupReason::CoreNotReady,
             error,
@@ -627,31 +670,26 @@ async fn finish_runtime_start(
                 }),
             });
         if let Err(error) = proxy_result {
-            let _ = state.stop(Some(app));
             return Err(dto(error));
         }
         // Internet health is observed after local enablement; it never gates
         // this command or tears down an already enabled system proxy.
     } else if settings.network_mode == NetworkMode::Tun {
-        tokio::time::sleep(Duration::from_millis(900)).await;
+        let feedback = app.state::<ConnectionFeedback>();
+        let operation = feedback.snapshot().operation;
         #[cfg(not(windows))]
         {
             // Concurrent readers share the same probe. Pending is not a
             // failed Helper; give it a bounded chance to finish before rollback.
-            let mut helper = read_tun_helper_status().await.inspect_err(|_| {
-                let _ = state.stop(Some(app));
-            })?;
+            let mut helper = read_tun_helper_status().await?;
             for _ in 0..3 {
                 if helper.state != tun_service::TunHelperState::Checking {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
-                helper = read_tun_helper_status().await.inspect_err(|_| {
-                    let _ = state.stop(Some(app));
-                })?;
+                helper = read_tun_helper_status().await?;
             }
             if !helper.ready() || !helper.runtime_running {
-                let _ = state.stop(Some(app));
                 return Err(dto(AppError::Runtime(
                     helper
                         .last_error
@@ -663,7 +701,6 @@ async fn finish_runtime_start(
         {
             let status = state.status(Some(app));
             if status.phase != models::RuntimePhase::Running {
-                let _ = state.stop(Some(app));
                 return Err(dto(AppError::Runtime(status.message)));
             }
         }
@@ -675,16 +712,96 @@ async fn finish_runtime_start(
                     || log.message.to_lowercase().contains("permission")
                     || log.message.to_lowercase().contains("route"))
         }) {
-            let _ = state.stop(Some(app));
             return Err(dto(AppError::Runtime(error_log.message)));
         }
-        match network_safety::verify_tun_route().await {
+        #[cfg(windows)]
+        let require_ipv6 = {
+            feedback.advance(app, operation, ConnectionPhase::TunInterface);
+            let local_deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+            let config = api
+                .wait_tun_config(effective::WINDOWS_TUN_DEVICE, local_deadline)
+                .await
+                .map_err(dto)?;
+            // The core removes IPv6 addresses when the OS cannot use IPv6.
+            // Validate the actual active family, not a YAML default alone.
+            let require_ipv6 = config["tun"]["inet6-address"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty());
+            let run = state.running_identity();
+            tun_readiness::wait_ready_until(
+                effective::WINDOWS_TUN_DEVICE,
+                require_ipv6,
+                local_deadline,
+                || {
+                    app.state::<session_resume::SessionResumeManager>()
+                        .is_shutting_down()
+                        || state.running_identity() != run
+                },
+                |stage| {
+                    let phase = match stage {
+                        error::TunStage::Interface => ConnectionPhase::TunInterface,
+                        error::TunStage::Route => ConnectionPhase::TunRoute,
+                        error::TunStage::Dns => ConnectionPhase::TunDns,
+                        _ => ConnectionPhase::TunInternet,
+                    };
+                    feedback.advance(app, operation, phase);
+                },
+            )
+            .await
+            .map_err(dto)?;
+            app_log::record(
+                0,
+                app_log::Area::Runtime,
+                if require_ipv6 {
+                    "TUN 本地验收通过：网卡、IPv4/IPv6 路由、DNS"
+                } else {
+                    "TUN 本地验收通过：网卡、IPv4 路由、DNS；核心未启用 IPv6 接管"
+                },
+            );
+            require_ipv6
+        };
+        feedback.advance(app, operation, ConnectionPhase::TunInternet);
+        match network_safety::verify_tun_route_with_progress(|_, retrying| {
+            feedback.tun_attempt(app, operation, retrying);
+        })
+        .await
+        {
             Ok(report) => {
+                #[cfg(windows)]
+                tokio::time::timeout(
+                    Duration::from_secs(3),
+                    tokio::task::spawn_blocking(move || {
+                        tun_readiness::verify_current_routes(
+                            effective::WINDOWS_TUN_DEVICE,
+                            require_ipv6,
+                        )
+                    }),
+                )
+                .await
+                .map_err(|_| {
+                    dto(AppError::TunStartup {
+                        stage: error::TunStage::Route,
+                        detail: "外网检测后的路由复核超时".into(),
+                        retryable: true,
+                    })
+                })?
+                .map_err(|_| {
+                    dto(AppError::TunStartup {
+                        stage: error::TunStage::Route,
+                        detail: "外网检测后的路由复核未完成".into(),
+                        retryable: true,
+                    })
+                })?
+                .map_err(dto)?;
+                feedback.tun_report(app, operation, &report);
                 let _ = app.emit("network-safety-report", &report);
             }
             Err(error) => {
-                let _ = state.stop(Some(app));
-                return Err(dto(error));
+                return Err(dto(AppError::TunStartup {
+                    stage: error::TunStage::Internet,
+                    retryable: error.retryable(),
+                    detail: error.to_string(),
+                }));
             }
         }
     }

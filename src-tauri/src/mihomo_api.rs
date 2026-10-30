@@ -123,6 +123,42 @@ impl MihomoApiClient {
         self.get("proxies").await
     }
 
+    #[cfg(windows)]
+    pub(crate) async fn wait_tun_config(
+        &self,
+        device: &str,
+        deadline: tokio::time::Instant,
+    ) -> AppResult<Value> {
+        // The controller starts before the TUN listener. A first successful
+        // /configs response may still contain the disabled default listener.
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            if let Ok(Ok(config)) = tokio::time::timeout_at(deadline, self.get("configs")).await {
+                if config["tun"]["enable"].as_bool() == Some(true) {
+                    if config["tun"]["device"].as_str() == Some(device) {
+                        return Ok(config);
+                    }
+                    return Err(AppError::TunStartup {
+                        stage: crate::error::TunStage::Interface,
+                        detail: "核心启用的 TUN 网卡与本次配置不一致".into(),
+                        retryable: false,
+                    });
+                }
+            }
+            tokio::time::sleep_until(
+                deadline.min(tokio::time::Instant::now() + Duration::from_millis(150)),
+            )
+            .await;
+        }
+        Err(AppError::TunStartup {
+            stage: crate::error::TunStage::Interface,
+            detail: "核心未在本地就绪总时限内确认 TUN 网卡；请查看内核初始化或驱动日志".into(),
+            retryable: true,
+        })
+    }
+
     pub async fn proxy_providers(&self) -> AppResult<Value> {
         let url = self.path_url(&["providers", "proxies"])?;
         self.get_url(url).await
@@ -428,6 +464,60 @@ fn ensure_success(status: reqwest::StatusCode) -> AppResult<()> {
 #[cfg(test)]
 mod readiness_deadline_tests {
     use super::*;
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn tun_config_waits_for_listener_and_shares_the_supplied_deadline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for eventually_ready in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let client = MihomoApiClient::from_endpoint(
+                listener.local_addr().unwrap().port(),
+                "fixture".into(),
+            )
+            .unwrap();
+            let server = tokio::spawn(async move {
+                let mut round = 0;
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut bytes = [0; 2048];
+                    let size = stream.read(&mut bytes).await.unwrap();
+                    assert!(String::from_utf8_lossy(&bytes[..size]).starts_with("GET /configs "));
+                    let ready = eventually_ready && round > 0;
+                    round += 1;
+                    let body = serde_json::json!({"tun": {"enable": ready, "device": if ready { "Serylane" } else { "" }}}).to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    if stream.write_all(response.as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let budget = if eventually_ready {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(80)
+            };
+            let started = tokio::time::Instant::now();
+            let result = client.wait_tun_config("Serylane", started + budget).await;
+            if eventually_ready {
+                assert_eq!(result.unwrap()["tun"]["enable"], true);
+                assert!(
+                    started.elapsed() >= Duration::from_millis(100),
+                    "first HTTP 200 must not pass"
+                );
+            } else {
+                assert_eq!(result.unwrap_err().stage(), "tun_interface");
+                assert!(
+                    started.elapsed() < Duration::from_millis(800),
+                    "shared budget bounds controller wait"
+                );
+            }
+            server.abort();
+        }
+    }
     #[tokio::test]
     async fn readiness_deadline_bounds_a_silent_controller_request() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -6,6 +6,9 @@ use std::collections::BTreeSet;
 
 pub const OPENAI_GROUP_NAME: &str = "🤖 OpenAI 自动灾备";
 
+#[cfg(windows)]
+pub(crate) const WINDOWS_TUN_DEVICE: &str = "Serylane";
+
 const OPENAI_RULES: &[(&str, &str)] = &[
     ("DOMAIN-SUFFIX", "openai.com"),
     ("DOMAIN-SUFFIX", "chatgpt.com"),
@@ -118,10 +121,31 @@ pub fn build_effective_config_with_policy(
     let mut tun = Mapping::new();
     match settings.network_mode {
         NetworkMode::Tun => {
+            prepare_tun_dns(root, &mut summary)?;
             insert(&mut tun, "enable", Value::Bool(true));
+            #[cfg(windows)]
+            insert(&mut tun, "device", Value::String(WINDOWS_TUN_DEVICE.into()));
             insert(&mut tun, "stack", Value::String("mixed".to_string()));
             insert(&mut tun, "auto-route", Value::Bool(true));
             insert(&mut tun, "auto-detect-interface", Value::Bool(true));
+            let ipv6 = match root.get(Value::String("ipv6".into())) {
+                Some(Value::Bool(enabled)) => *enabled,
+                None | Some(Value::Null) => true, // Mihomo's default.
+                _ => {
+                    return Err(AppError::Config(
+                        "TUN 预检失败：ipv6 必须为 true 或 false".into(),
+                    ))
+                }
+            };
+            insert(
+                &mut tun,
+                "inet6-address",
+                Value::Sequence(if ipv6 {
+                    vec![Value::String("fdfe:dcba:9876::1/126".into())]
+                } else {
+                    Vec::new()
+                }),
+            );
             insert(
                 &mut tun,
                 "dns-hijack",
@@ -156,6 +180,128 @@ pub fn build_effective_config_with_policy(
     let yaml =
         serde_yaml::to_string(&document).map_err(|error| AppError::Config(error.to_string()))?;
     Ok(EffectiveConfig { yaml, summary })
+}
+
+// TUN's DNS hijacker calls the core's internal DNS service. With enable=false
+// Mihomo 1.19.30 returns SERVFAIL here; unlike ordinary outbound resolution,
+// this path does not fall back to the system resolver. Only the derived runtime
+// document is changed: the subscription source remains untouched.
+fn prepare_tun_dns(root: &mut Mapping, summary: &mut ProfileSummary) -> AppResult<()> {
+    let value = root
+        .entry(Value::String("dns".into()))
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    if value.is_null() {
+        *value = Value::Mapping(Mapping::new());
+    }
+    let dns = value
+        .as_mapping_mut()
+        .ok_or_else(|| AppError::Config("TUN DNS 预检失败：dns 必须是对象".into()))?;
+    for field in ["enable", "respect-rules"] {
+        if dns
+            .get(Value::String(field.into()))
+            .is_some_and(|value| !value.is_null() && value.as_bool().is_none())
+        {
+            return Err(AppError::Config(format!(
+                "TUN DNS 预检失败：dns.{field} 必须为 true 或 false"
+            )));
+        }
+    }
+    if dns
+        .get(Value::String("enable".into()))
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        summary
+            .warnings
+            .push("TUN 运行配置已启用内置 DNS 以处理 DNS 劫持；原始订阅未修改".into());
+    }
+    insert(dns, "enable", Value::Bool(true));
+
+    // Match the bundled core's existing defaults, rather than replacing an
+    // explicit upstream with a new provider. Native `mihomo -t` remains the
+    // authority for URI syntax, rule/provider references and DNS option types.
+    for (field, defaults) in [
+        (
+            "nameserver",
+            &["https://doh.pub/dns-query", "tls://223.5.5.5:853"][..],
+        ),
+        (
+            "default-nameserver",
+            &["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"][..],
+        ),
+    ] {
+        if dns_server_list(dns, field)?.is_empty() {
+            insert(
+                dns,
+                field,
+                Value::Sequence(
+                    defaults
+                        .iter()
+                        .map(|entry| Value::String((*entry).into()))
+                        .collect(),
+                ),
+            );
+            summary.warnings.push(format!(
+                "TUN DNS 的 {field} 未配置，运行配置采用内核默认解析器；原始订阅未修改"
+            ));
+        }
+    }
+    for field in ["fallback", "proxy-server-nameserver", "direct-nameserver"] {
+        dns_server_list(dns, field)?;
+    }
+    if dns
+        .get(Value::String("respect-rules".into()))
+        .and_then(Value::as_bool)
+        == Some(true)
+        && dns_server_list(dns, "proxy-server-nameserver")?.is_empty()
+    {
+        return Err(AppError::Config(
+            "TUN DNS 预检失败：respect-rules 已启用，请配置独立的 proxy-server-nameserver，避免节点域名解析依赖代理自身".into(),
+        ));
+    }
+    // A subscription may have kept an all-interface listener dormant behind
+    // enable=false. Enabling internal DNS must not expose that listener. TUN
+    // interception needs no additional TCP/UDP DNS socket on the host.
+    if let Some(listen) = dns.get(Value::String("listen".into())) {
+        if !listen.is_null() && listen.as_str().is_none() {
+            return Err(AppError::Config(
+                "TUN DNS 预检失败：dns.listen 必须是字符串".into(),
+            ));
+        }
+        if listen.as_str().is_some_and(|listen| !listen.is_empty()) {
+            summary.warnings.push(
+                "TUN 仅使用内置 DNS 劫持，运行配置未开放额外 DNS 监听端口；原始订阅未修改".into(),
+            );
+        }
+    }
+    insert(dns, "listen", Value::String(String::new()));
+    Ok(())
+}
+
+fn dns_server_list<'a>(dns: &'a Mapping, field: &str) -> AppResult<Vec<&'a str>> {
+    let Some(value) = dns
+        .get(Value::String(field.into()))
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(Vec::new());
+    };
+    let entries = value
+        .as_sequence()
+        .ok_or_else(|| AppError::Config(format!("TUN DNS 预检失败：dns.{field} 必须是地址列表")))?;
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .filter(|entry| !entry.trim().is_empty())
+                .ok_or_else(|| {
+                    // Do not include DNS URLs, user info or provider parameters.
+                    AppError::Config(format!(
+                        "TUN DNS 预检失败：dns.{field} 包含空地址或非字符串值"
+                    ))
+                })
+        })
+        .collect()
 }
 
 fn enable_selection_cache(root: &mut Mapping) -> AppResult<()> {
@@ -527,6 +673,161 @@ rules:
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(document["dns"]["enable"], true);
+        assert_eq!(document["dns"]["listen"], "");
+        #[cfg(windows)]
+        assert_eq!(document["tun"]["device"], super::WINDOWS_TUN_DEVICE);
+        assert_eq!(document["tun"]["inet6-address"][0], "fdfe:dcba:9876::1/126");
+    }
+
+    #[test]
+    fn tun_dns_enables_internal_resolver_without_rewriting_subscription_choices() {
+        let source = format!("{SOURCE}\ndns:\n  enable: false\n  listen: 0.0.0.0:1053\n  nameserver: ['https://dns.alidns.com/dns-query']\n  default-nameserver: [223.5.5.5]\n  fallback: ['tls://1.1.1.1:853']\n  nameserver-policy: {{'example.org': 119.29.29.29}}\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.19.0.1/16\n  use-hosts: false\n  ipv6: false\n");
+        let original = source.clone();
+        let before: Value = serde_yaml::from_str(&source).unwrap();
+        let settings = AppSettings {
+            network_mode: NetworkMode::Tun,
+            ..Default::default()
+        };
+        let effective = build_effective_config(&source, &settings, RoutingMode::Rule).unwrap();
+        let after: Value = serde_yaml::from_str(&effective.yaml).unwrap();
+        assert_eq!(source, original);
+        assert_eq!(after["dns"]["enable"], true);
+        assert_eq!(after["dns"]["listen"], "");
+        for field in [
+            "nameserver",
+            "default-nameserver",
+            "fallback",
+            "nameserver-policy",
+            "enhanced-mode",
+            "fake-ip-range",
+            "use-hosts",
+            "ipv6",
+        ] {
+            assert_eq!(
+                after["dns"][field], before["dns"][field],
+                "preserve {field}"
+            );
+        }
+        assert!(effective
+            .summary
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("原始订阅未修改")));
+        for network_mode in [NetworkMode::Manual, NetworkMode::SystemProxy] {
+            let settings = AppSettings {
+                network_mode,
+                ..Default::default()
+            };
+            let other = build_effective_config(&source, &settings, RoutingMode::Rule).unwrap();
+            let other: Value = serde_yaml::from_str(&other.yaml).unwrap();
+            assert_eq!(other["dns"], before["dns"]);
+        }
+    }
+
+    #[test]
+    fn tun_dns_absent_or_empty_upstreams_use_core_defaults_and_native_validation() {
+        let settings = AppSettings {
+            network_mode: NetworkMode::Tun,
+            ..Default::default()
+        };
+        for suffix in [
+            "",
+            "dns: null",
+            "dns: {}",
+            "dns: {enable: false, nameserver: [], default-nameserver: []}",
+        ] {
+            let source = format!("{SOURCE}\n{suffix}\n");
+            let first = build_effective_config(&source, &settings, RoutingMode::Rule).unwrap();
+            let document: Value = serde_yaml::from_str(&first.yaml).unwrap();
+            assert_eq!(document["dns"]["enable"], true);
+            assert_eq!(
+                document["dns"]["nameserver"][0],
+                "https://doh.pub/dns-query"
+            );
+            assert_eq!(
+                document["dns"]["default-nameserver"]
+                    .as_sequence()
+                    .unwrap()
+                    .len(),
+                4
+            );
+            assert!(document["dns"]["respect-rules"].is_null());
+            assert!(document["dns"]["skip-cert-verify"].is_null());
+            let second = build_effective_config(&first.yaml, &settings, RoutingMode::Rule).unwrap();
+            assert_eq!(first.yaml, second.yaml);
+            if let Some(binary) = std::env::var_os("MIHOMO_TEST_BINARY") {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("tun-dns.yaml");
+                std::fs::write(&path, &first.yaml).unwrap();
+                crate::runtime::validate_file(std::path::Path::new(&binary), dir.path(), &path)
+                    .expect("native TUN DNS config validation only");
+            }
+        }
+    }
+
+    #[test]
+    fn tun_dns_rejects_malformed_values_without_echoing_credentials() {
+        let settings = AppSettings {
+            network_mode: NetworkMode::Tun,
+            ..Default::default()
+        };
+        for dns in [
+            "false",
+            "[]",
+            "{enable: wrong}",
+            "{nameserver: not-a-list}",
+            "{nameserver: [null]}",
+            "{nameserver: ['  ']}",
+            "{default-nameserver: 123}",
+            "{fallback: false}",
+            "{listen: 53}",
+            "{respect-rules: true}",
+            "{proxy-server-nameserver: {token: private-token}}",
+        ] {
+            let source = format!("{SOURCE}\ndns: {dns}\n");
+            let error = build_effective_config(&source, &settings, RoutingMode::Rule)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("TUN DNS 预检失败"), "{dns}: {error}");
+            assert!(!error.contains("private-token"));
+        }
+    }
+
+    #[test]
+    fn tun_dns_keeps_explicit_independent_proxy_resolution() {
+        let settings = AppSettings {
+            network_mode: NetworkMode::Tun,
+            ..Default::default()
+        };
+        let source = format!("{SOURCE}\ndns:\n  enable: false\n  respect-rules: true\n  nameserver: ['https://dns.example.org/dns-query#PROXY']\n  proxy-server-nameserver: ['tls://1.1.1.1:853']\n  default-nameserver: [1.1.1.1]\n");
+        let before: Value = serde_yaml::from_str(&source).unwrap();
+        let effective = build_effective_config(&source, &settings, RoutingMode::Rule).unwrap();
+        let after: Value = serde_yaml::from_str(&effective.yaml).unwrap();
+        assert_eq!(after["dns"]["respect-rules"], true);
+        assert_eq!(after["dns"]["nameserver"], before["dns"]["nameserver"]);
+        assert_eq!(
+            after["dns"]["proxy-server-nameserver"],
+            before["dns"]["proxy-server-nameserver"]
+        );
+    }
+
+    #[test]
+    fn tun_address_family_follows_global_ipv6_without_enabling_dns_aaaa() {
+        let settings = AppSettings {
+            network_mode: NetworkMode::Tun,
+            ..Default::default()
+        };
+        for enabled in [false, true] {
+            let source = format!("{SOURCE}\nipv6: {enabled}\ndns: {{ipv6: false}}\n");
+            let effective = build_effective_config(&source, &settings, RoutingMode::Rule).unwrap();
+            let doc: Value = serde_yaml::from_str(&effective.yaml).unwrap();
+            assert_eq!(
+                doc["tun"]["inet6-address"].as_sequence().unwrap().len(),
+                usize::from(enabled)
+            );
+            assert_eq!(doc["dns"]["ipv6"], false);
+        }
     }
 
     #[test]
