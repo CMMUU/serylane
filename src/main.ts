@@ -881,6 +881,7 @@ function renderHeader() {
   const running = store.runtime?.phase === "running";
   const mode = store.settings?.networkMode;
   const controlsBusy = networkModeSwitching || runtimeActionInFlight || settingsSaving || manualModeSwitching || domainRouteChanging;
+  const restoring = sessionResumePresentation(sessionResumeStatus).busy;
   localRouting.render();
   const presentation = currentProxyPresentation();
   ($("#global-refresh") as HTMLButtonElement).disabled = controlsBusy || baseLoading;
@@ -908,12 +909,12 @@ function renderHeader() {
   const tunButton = $("#global-tun") as HTMLButtonElement;
   systemProxyButton.classList.toggle("is-active", systemProxyActive);
   systemProxyButton.setAttribute("aria-pressed", String(systemProxyActive));
-  systemProxyButton.disabled = controlsBusy || !store.settings || !store.activeProfile;
+  systemProxyButton.disabled = controlsBusy || restoring || !store.settings || !store.activeProfile;
   tunButton.classList.toggle("is-active", tunActive);
   tunButton.setAttribute("aria-pressed", String(tunActive));
   tunButton.title = store.tunHelper?.message ?? "TUN 使用最小权限 Helper 接管系统流量";
-  tunButton.disabled = controlsBusy || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
-  ($("#global-start") as HTMLButtonElement).disabled = !canStartRuntime(store.runtime) || !store.settings || !store.activeProfile || Boolean(proxyReadIssue) || controlsBusy;
+  tunButton.disabled = controlsBusy || restoring || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
+  ($("#global-start") as HTMLButtonElement).disabled = !canStartRuntime(store.runtime) || !store.settings || !store.activeProfile || Boolean(proxyReadIssue) || controlsBusy || restoring;
   ($("#global-stop") as HTMLButtonElement).disabled = !(canStopSession(store.runtime?.phase, sessionResumeStatus, startupStatus) || store.systemProxy?.active || proxyStopIssue) || controlsBusy;
   $("#about-app")!.textContent = store.appInfo?.version ?? "—";
   $("#about-core")!.textContent = store.binary?.version ?? "未找到";
@@ -946,10 +947,11 @@ function renderOverview() {
   $("#control-runtime-pill")!.classList.toggle("is-running", presentation.active);
   const systemProxySwitch = $("#home-system-proxy") as HTMLInputElement;
   const tunSwitch = $("#home-tun") as HTMLInputElement;
+  const restoring = sessionResumePresentation(sessionResumeStatus).busy;
   systemProxySwitch.checked = presentation.systemProxyActive;
   tunSwitch.checked = presentation.tunActive;
-  systemProxySwitch.disabled = networkModeSwitching || runtimeActionInFlight || settingsSaving || manualModeSwitching || domainRouteChanging || !store.settings || !store.activeProfile;
-  tunSwitch.disabled = networkModeSwitching || runtimeActionInFlight || settingsSaving || manualModeSwitching || domainRouteChanging || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
+  systemProxySwitch.disabled = networkModeSwitching || runtimeActionInFlight || settingsSaving || manualModeSwitching || domainRouteChanging || restoring || !store.settings || !store.activeProfile;
+  tunSwitch.disabled = networkModeSwitching || runtimeActionInFlight || settingsSaving || manualModeSwitching || domainRouteChanging || restoring || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
   tunSwitch.title = store.tunHelper?.message ?? "正在读取此平台的 TUN 支持情况";
   const routingMode = store.activeProfile?.profile.routingMode ?? "rule";
   $$("#home-routing-mode button").forEach((button) => {
@@ -2627,10 +2629,10 @@ const localRouting = mountDomainRouting($("#routing-view")!, {
   api, confirm: confirmAction, error: errorMessage,
   globalToggle: $("#global-domain-route") as HTMLButtonElement,
   openSetup: () => { if (store.view !== "routing") navigate("routing"); },
-  isBlocked: () => runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching,
+  isBlocked: () => runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching || sessionResumePresentation(sessionResumeStatus).busy,
   contextKey: () => [runtimeMutationRevision, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, store.activeProfile?.profile.routingMode,
     store.runtime?.phase, store.runtime?.pid, store.runtime?.startedAt, store.settings?.networkMode,
-    store.systemProxy?.active, store.tunHelper?.state, store.tunHelper?.runtimeRunning].join('/'),
+    store.systemProxy?.active, store.tunHelper?.state, store.tunHelper?.runtimeRunning, sessionResumePresentation(sessionResumeStatus).busy].join('/'),
   onStatus: state => {
     verifiedIngress = state?.ingress ?? null;
     queueMicrotask(() => { renderHeader(); renderOverview(); });

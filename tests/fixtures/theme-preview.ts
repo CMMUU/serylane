@@ -131,6 +131,7 @@ let fixtureResumeStatus = { phase: "idle", message: "合成状态：上次核心
 window.addEventListener("routedeck-fixture-resume", event => {
   const detail = (event as CustomEvent).detail;
   if (["idle", "pending", "restoring", "waiting_network", "restored", "paused"].includes(detail.phase)) fixtureResumeStatus = { phase: detail.phase, message: String(detail.message) };
+  void emit('session-resume-status', fixtureResumeStatus);
 });
 let settingsSaveCount = 0;
 let fixtureStartupRegistered: boolean | null = false;

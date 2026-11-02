@@ -9,7 +9,7 @@ const compile = source => ts.transpileModule(source, {compilerOptions:{target:ts
 const {proxyPresentation} = await import(`data:text/javascript;base64,${Buffer.from(compile(read('proxy-state.ts'))).toString('base64')}`);
 const {canStartRuntime} = await import(`data:text/javascript;base64,${Buffer.from(compile(read('runtime-start.ts'))).toString('base64')}`);
 const {PageReads} = await import(`data:text/javascript;base64,${Buffer.from(compile(read('read-coordinator.ts'))).toString('base64')}`);
-const {canStopSession} = await import(`data:text/javascript;base64,${Buffer.from(compile(read('session-resume.ts'))).toString('base64')}`);
+const {canStopSession,sessionResumePresentation} = await import(`data:text/javascript;base64,${Buffer.from(compile(read('session-resume.ts'))).toString('base64')}`);
 const input = (mode='system_proxy', phase='running', active=true) => ({mode, runtime:{phase,message:'fixture',lastError:null},systemProxy:{active}});
 
 test('stopped service keeps the remembered mode without checked switches or running lights', () => {
@@ -97,7 +97,7 @@ function baseReadFixture() {
     runtimeActionInFlight:false,networkModeSwitching:false,domainRouteChanging:false,settingsSaving:false,manualModeSwitching:false,
     runtimeActivity:null,proxyReadIssue:'',proxyStopIssue:'',verifiedIngress:null,runtimeMutationRevision:0,baseReadSequence:0,runtimeReadSequence:0,proxyReadSequence:0,overviewNodeDetails:{},baseLoading:false,
     sessionResumeStatus:null,startupStatus:null,NAV_ITEMS:[{id:'overview',label:'概览'}],desiredRunning:true,
-    proxyPresentation,canStartRuntime,canStopSession,sessionResumePresentation:()=>({busy:false}),modeLabel:m=>m,
+    proxyPresentation,canStartRuntime,canStopSession,sessionResumePresentation,modeLabel:m=>m,
     document:{documentElement:{dataset:{}}},$:element,pageReads:new PageReads(),dataContext:()=>'',
     action:async(_message,run)=>run(),errorMessage:e=>e.message,friendlyError:e=>({title:e.message,description:'',action:'refresh',details:''}),
     localRouting:{render:noop,invalidate:()=>calls.push('invalidate'),refresh:async()=>calls.push('route-read')},
@@ -175,4 +175,19 @@ test('native Stop signals invalidate route state and read the current runtime wi
     env[busy]=true;calls.length=0;await env.refreshAfterNativeStop();assert.deepEqual(calls,[],busy);env[busy]=false;
   }
   env.appLifecycle.paused=true;calls.length=0;await env.refreshAfterNativeStop();assert.deepEqual(calls,[]);
+});
+
+test('automatic restoration keeps Stop cancellable while modes and Start wait for acceptance',()=>{
+  const f=baseReadFixture();f.environment.store.runtime.phase='stopped';f.environment.store.systemProxy.active=false;
+  for (const phase of ['pending','restoring','waiting_network']) {
+    f.environment.sessionResumeStatus={phase,message:'restoring'};f.environment.renderHeader();
+    assert.equal(f.control('#application-runtime-state').textContent,'正在恢复代理');
+    assert.equal(f.control('#global-start').disabled,true);
+    assert.equal(f.control('#global-stop').disabled,false);
+    assert.equal(f.control('#global-system-proxy').disabled,true);
+    assert.equal(f.control('#global-tun').disabled,true);
+  }
+  f.environment.sessionResumeStatus={phase:'idle',message:'stopped'};f.environment.renderHeader();
+  assert.equal(f.control('#application-runtime-state').textContent,'已关闭');
+  assert.equal(f.control('#global-start').disabled,false);
 });
