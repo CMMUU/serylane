@@ -59,7 +59,7 @@ mod windows_test_manifest;
 
 use config::{inspect_profile, ProfileSummary};
 use connection_feedback::{ConnectionFeedback, Phase as ConnectionPhase};
-use diagnostics::DiagnosticCheck;
+use diagnostics::{DiagnosticCheck, DiagnosticStage};
 use error::{AppError, AppErrorDto, StartupReason};
 use mihomo_api::MihomoApiClient;
 use models::{AppSettings, NetworkMode, PublicAppSettings, PublicProfileRecord, RoutingMode};
@@ -1401,6 +1401,31 @@ async fn run_connectivity_diagnostics(app: AppHandle) -> Result<Vec<DiagnosticCh
 }
 
 #[tauri::command]
+async fn run_connectivity_diagnostic_step(
+    app: AppHandle,
+    stage: DiagnosticStage,
+) -> Result<DiagnosticCheck, AppErrorDto> {
+    let lifecycle = &lifecycle::PROCESS_LIFECYCLE;
+    let ticket = lifecycle
+        .ticket()
+        .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
+    let settings = ui_read::run(move || {
+        AppStorage::from_app(&app)
+            .and_then(|storage| storage.settings())
+            .map_err(dto)
+    })
+    .await?;
+    lifecycle
+        .check(ticket)
+        .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
+    let result = diagnostics::run_step(&settings, stage).await;
+    lifecycle
+        .check(ticket)
+        .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
+    Ok(result)
+}
+
+#[tauri::command]
 async fn run_network_safety_check(
     app: AppHandle,
 ) -> Result<network_safety::NetworkSafetyReport, AppErrorDto> {
@@ -1762,6 +1787,7 @@ pub fn run() {
             openai_cost::save_openai_costs,
             close_connection,
             run_connectivity_diagnostics,
+            run_connectivity_diagnostic_step,
             run_network_safety_check,
         ])
         .build(tauri::generate_context!())

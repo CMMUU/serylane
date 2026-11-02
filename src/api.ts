@@ -5,6 +5,7 @@ import type { NodeTestScope, NodeTestSnapshot } from "./node-test";
 import type { DownloadOptions, SubscriptionTask } from "./subscription-task";
 import { invoke as nativeInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { ReadCoordinator } from "./read-coordinator";
+import type { ConnectivityCheck, DiagnosticStage } from "./diagnostics";
 import type { ProxyMode, ManualOutboundState } from "./manual-outbound";
 import type { CostSnapshot, CostInput } from "./openai-costs";
 import type { ThemePreference } from "./theme";
@@ -49,7 +50,7 @@ import type {
 } from "./types";
 
 const reads = new ReadCoordinator();
-const readCommands = new Set(["read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
+const readCommands = new Set(["run_connectivity_diagnostic_step", "read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
 async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
   if (command === "app_update_status") {
     appLifecycle.requireStatus();
@@ -226,10 +227,8 @@ export const api = {
     invoke<OpenAiPolicy>("disable_openai_policy", { profileId }),
   closeConnection: (connectionId: string) =>
     invoke<void>("close_connection", { connectionId }),
-  diagnostics: () =>
-    invoke<Array<{ stage: string; success: boolean; latencyMs: number | null; detail: string }>>(
-      "run_connectivity_diagnostics",
-    ),
+  diagnosticStep: (stage: DiagnosticStage) =>
+    invoke<ConnectivityCheck>("run_connectivity_diagnostic_step", { stage }),
   networkSafety: () =>
     invoke<NetworkSafetyReport>("run_network_safety_check"),
 };

@@ -746,6 +746,16 @@ td small { color: var(--muted); }
 .diagnostic-item p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
 .diagnostic-item.status-warn .diagnostic-icon { color: var(--warning); background: rgba(var(--accent-rgb), 0.1); }
 .diagnostic-item.status-fail .diagnostic-icon { color: var(--danger); background: rgba(var(--danger-rgb), 0.1); }
+.diagnostic-status { margin: -6px 0 16px; }
+.diagnostic-item > div { flex: 1; min-width: 0; }
+.diagnostic-item-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+.diagnostic-stage-status { color: var(--muted); font-size: 13px; }
+.diagnostic-item p { overflow-wrap: anywhere; }
+.diagnostic-item.status-running { border-color: rgba(var(--accent-rgb), 0.35); }
+.diagnostic-item.status-running .diagnostic-icon::after { content: ''; width: 12px; height: 12px; border: 2px solid rgba(var(--accent-rgb), 0.2); border-top-color: var(--accent); border-radius: 50%; animation: diagnostic-spin 0.8s linear infinite; }
+.diagnostic-item.status-skipped .diagnostic-icon { color: var(--muted); background: var(--panel-soft); }
+@keyframes diagnostic-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .diagnostic-item.status-running .diagnostic-icon::after { animation: none; } }
 
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .appearance-settings {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.37 - 2026-11-02
+
+- Show layered diagnostic checks as they execute, with one checking row, retained completed results and a final summary; remove the all-at-once result render.
+- Split local-proxy, controller and HTTP proxy probes into bounded read-only steps. Keep individual failures visible, skip network checks when the core is stopped and reject late results after navigation or runtime/context changes.
+- Coalesce duplicate diagnostic starts, preserve stable row DOM and escape error text; support reduced motion and keep proxy settings and existing platform limits unchanged.
+
 ## 0.7.36 - 2026-11-02
 
 - Make ordinary System Proxy/TUN off actions use the real Stop path, cancel pending restoration and preserve the saved network mode for the next Start. Retain explicitly configured Manual local-proxy use.
