@@ -1,6 +1,7 @@
 import { appLifecycle, type LifecycleSnapshot } from "./app-lifecycle";
 import { PageReads } from "./read-coordinator";
 import { stableMarkup } from "./stable-dom";
+import { createDiagnostics, diagnosticRowsMarkup } from "./diagnostics";
 import { createAiHealth, aiHealthMarkup } from "./ai-health";
 import { mountSubscriptionEditor } from "./subscription-editor";
 import { InteractionSession } from "./interaction-session";
@@ -448,7 +449,8 @@ app.innerHTML = `
       <section class="view-stack is-hidden" id="diagnostics-view">
         <article class="panel">
           <div class="panel-heading"><div><div class="section-label">DIAGNOSTICS</div><h2>分层诊断</h2></div><button class="button button-primary" id="run-diagnostics">立即诊断</button></div>
-          <div id="diagnostic-list" class="diagnostic-list"></div>
+          <p id="diagnostic-status" class="hint diagnostic-status" role="status" aria-live="polite" aria-atomic="true">按顺序检查核心、配置、端口与实际代理请求。</p>
+          <div id="diagnostic-list" class="diagnostic-list" role="list" aria-label="诊断结果" aria-busy="false"></div>
         </article>
       </section>
 
@@ -2558,64 +2560,24 @@ async function refreshLogs() {
 }
 
 function runDiagnostics() {
-  return pageRead('diagnostics', '#run-diagnostics', performDiagnostics);
+  return diagnosticsView.run();
 }
-async function performDiagnostics(current: () => boolean) {
-  const checks: Array<{ label: string; status: string; detail: string }> = [];
-  const binary = await action("", () => api.binary());
-  checks.push({
-    label: "Mihomo sidecar",
-    status: binary?.available ? "pass" : "fail",
-    detail: binary?.version ?? binary?.message ?? "未找到",
-  });
-  const runtime = await action("", () => api.runtime());
-  checks.push({
-    label: "运行状态",
-    status: runtime?.phase === "running" ? "pass" : "warn",
-    detail: runtime?.message ?? "未运行",
-  });
-  checks.push({
-    label: "活动配置",
-    status: store.activeProfile ? "pass" : "fail",
-    detail: store.activeProfile?.profile.displayName ?? "未激活配置",
-  });
-  checks.push({
-    label: "系统代理",
-    status:
-      store.settings?.networkMode !== "system_proxy" || store.systemProxy?.active
-        ? "pass"
-        : "warn",
-    detail: store.systemProxy?.active ? "已保存快照并接管" : "未接管",
-  });
-  if (runtime?.phase === "running") {
-    const proxyResult = await action("", () => api.proxies());
-    checks.push({
-      label: "Mihomo API",
-      status: proxyResult ? "pass" : "fail",
-      detail: proxyResult ? "控制接口可访问" : "控制接口请求失败",
-    });
-    if (!current()) return;
-    const networkChecks = await action("", () => api.diagnostics());
-    for (const check of networkChecks ?? []) {
-      checks.push({
-        label:
-          check.stage === "local_proxy"
-            ? "本地代理端口"
-            : check.stage === "controller"
-              ? "控制接口端口"
-              : "实际代理请求",
-        status: check.success ? "pass" : "fail",
-        detail:
-          check.detail +
-          (check.latencyMs != null ? " · " + check.latencyMs + " ms" : ""),
-      });
-    }
-  }
-  if (!current()) return;
-  $("#diagnostic-list")!.innerHTML = checks
-    .map((check) => `<div class="diagnostic-item status-${check.status}"><span class="diagnostic-icon">${check.status === "pass" ? "✓" : check.status === "warn" ? "!" : "×"}</span><div><strong>${escapeHtml(check.label)}</strong><p>${escapeHtml(check.detail)}</p></div></div>`)
-    .join("");
-}
+const diagnosticsView = createDiagnostics({
+  ...api, context: () => JSON.stringify([pageContext(), store.runtime?.startedAt, store.settings?.networkMode,
+    store.settings?.mixedPort, store.settings?.controllerPort, store.activeProfile?.profile.routingMode, appLifecycle.generation]),
+  allowed: () => store.view === 'diagnostics' && !appLifecycle.paused,
+  networkMode: () => store.settings?.networkMode,
+  error: errorMessage,
+  changed: snapshot => {
+    stableMarkup($("#diagnostic-list")!, diagnosticRowsMarkup(snapshot));
+    $("#diagnostic-list")!.setAttribute('aria-busy', String(snapshot.phase === 'running'));
+    $("#diagnostic-status")!.textContent = snapshot.message;
+    const button = $("#run-diagnostics") as HTMLButtonElement;
+    button.disabled = snapshot.pending;
+    button.textContent = snapshot.pending ? snapshot.phase === 'interrupted' ? '正在结束…' : '正在诊断…' : snapshot.phase === 'idle' ? '立即诊断' : '重新诊断';
+    button.setAttribute('aria-busy', String(snapshot.pending));
+  },
+});
 
 const logsView = mountLogs($("#logs-view")!, { api, confirm: confirmAction, visible: () => store.view === "logs" });
 const openAiCosts = mountOpenAiCosts({
@@ -2718,6 +2680,7 @@ function navigate(view: ViewName) {
   if (view === "programs") view = "overview";
   const previousView = store.view;
   if (previousView === view) return;
+  if (previousView === 'diagnostics') diagnosticsView.invalidate('已离开诊断页面，本次诊断已中断。');
   if (previousView !== view) { closeNodeDetails(); subscriptionEditor.close(); }
   if (previousView !== view) viewNavigationRevision++;
   const scroller = $("#page-scroll");
@@ -3298,6 +3261,8 @@ document.addEventListener('visibilitychange', () => {
 
 // Subscribe before the snapshot read; generation ordering handles their race.
 void (async () => {
-  await listen<LifecycleSnapshot>("app-lifecycle", event => { appLifecycle.update(event.payload); });
+  await listen<LifecycleSnapshot>("app-lifecycle", event => {
+    if (appLifecycle.update(event.payload) && appLifecycle.paused) diagnosticsView.invalidate('会话正在结束或安装更新，本次诊断已中断。');
+  });
   appLifecycle.update(await api.lifecycle());
 })().catch(() => { /* Native admission remains authoritative if the WebView is closing. */ });

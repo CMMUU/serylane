@@ -18,12 +18,21 @@ import type {
   SubscriptionMetadata, SubscriptionOverview, SubscriptionStatus, NetworkMode, OpenAiPolicyTask,
 } from "../../src/types";
 import type { ThemePreference } from "../../src/theme";
+import type { DiagnosticStage } from "../../src/diagnostics";
 import type { ProxyMap, NodeMetadata } from "../../src/node-selection";
 import type { CostSnapshot, CostInput } from "../../src/openai-costs";
 
 const STORAGE_KEY = "routedeck:test-fixture:theme-preview:v1";
 const RULES_STORAGE_KEY = "routedeck:test-fixture:user-rules:v1";
 const previewQuery = new URLSearchParams(location.search);
+const diagnosticCalls: DiagnosticStage[] = [];
+const diagnosticGates = new Map<DiagnosticStage, (result: { success: boolean; detail: string }) => void>();
+window.addEventListener('serylane-fixture-diagnostic-finish', ((event: CustomEvent<{stage: DiagnosticStage; success?: boolean; detail?: string}>) => {
+  const gate = diagnosticGates.get(event.detail?.stage);
+  if (!gate) return;
+  diagnosticGates.delete(event.detail.stage);
+  gate({ success: event.detail.success !== false, detail: event.detail.detail ?? '合成检查；未发送实际网络请求。' });
+}) as EventListener);
 const previewPlatform = ["windows", "macos", "linux"].includes(previewQuery.get("platform") ?? "") ? previewQuery.get("platform")! : "macos";
 const previewWindows = previewPlatform === "windows";
 const PROGRAMS_STORAGE_KEY = `routedeck:test-fixture:proxy-programs:v1:${previewPlatform}`;
@@ -974,6 +983,16 @@ window.addEventListener("serylane-fixture-lifecycle", ((event: CustomEvent<impor
 mockIPC(async (command, payload) => {
   if (command === "app_lifecycle_status") return { generation: 0, phase: "open" };
   const args = payloadRecord(payload);
+  if (command === 'run_connectivity_diagnostic_step') {
+    const stage = String(args.stage) as DiagnosticStage;
+    if (!['local_proxy', 'controller', 'http_proxy'].includes(stage)) throw new Error('FIXTURE_ONLY: 未知诊断步骤');
+    diagnosticCalls.push(stage);
+    document.documentElement.dataset.fixtureDiagnosticCalls = JSON.stringify(diagnosticCalls);
+    const result = previewQuery.get('diagnosticScenario') === 'progressive'
+      ? await new Promise<{success: boolean; detail: string}>(resolve => diagnosticGates.set(stage, resolve))
+      : { success: true, detail: '合成检查；未发送实际网络请求。' };
+    return { stage, ...result, latencyMs: 1 };
+  }
   if (command === 'node_test_status') return fixtureNodeStatus();
   if (command === 'start_node_test' || command === 'start_ai_health_check') {
     if (fixtureNodeJobFails) throw ruleError('STATE_CONFLICT', '合成核心读取失败，请刷新后重试');
