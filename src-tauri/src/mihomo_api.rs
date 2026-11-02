@@ -168,6 +168,14 @@ impl MihomoApiClient {
         self.get("rules").await
     }
 
+    /// One read of the existing controller, bounded by the caller's status budget.
+    /// Reading a saved mode or a listening API alone cannot establish TUN ingress.
+    pub(crate) async fn runtime_config(&self, budget: Duration) -> AppResult<Value> {
+        tokio::time::timeout(budget, self.get("configs"))
+            .await
+            .map_err(|_| AppError::Runtime("核心入口配置读取超时，请刷新核对".into()))?
+    }
+
     /// Verify the rule count, domain-rule prefix and runtime mode, not merely a successful PUT.
     /// No configuration or controller credentials are included in failure messages.
     pub(crate) async fn verify_rule_config(&self, yaml: &str) -> AppResult<()> {
@@ -640,5 +648,79 @@ mod routing_verification_tests {
             .verify_rule_config("mode: rule\nrules: []")
             .await
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod runtime_ingress_config_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn runtime_ingress_config_reads_actual_enablement_without_writing() {
+        for enabled in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api = MihomoApiClient::from_endpoint(
+                listener.local_addr().unwrap().port(),
+                "fixture".into(),
+            )
+            .unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let size = socket.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..size]);
+                assert!(request.starts_with("GET /configs HTTP/1.1\r\n"));
+                assert!(request
+                    .to_lowercase()
+                    .contains("authorization: bearer fixture"));
+                let body =
+                    json!({"mode":"rule","tun":{"enable":enabled,"device":"Serylane"}}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            });
+            let config = api.runtime_config(Duration::from_secs(1)).await.unwrap();
+            assert_eq!(config["tun"]["enable"].as_bool(), Some(enabled));
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_ingress_config_read_failure_is_not_proxy_off() {
+        for (status, body) in [(401, "{}"), (200, "not json")] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api = MihomoApiClient::from_endpoint(
+                listener.local_addr().unwrap().port(),
+                "fixture".into(),
+            )
+            .unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let size = socket.read(&mut request).await.unwrap();
+                assert!(size > 0);
+                socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            });
+            assert!(api.runtime_config(Duration::from_secs(1)).await.is_err());
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_ingress_config_read_honors_status_budget() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api =
+            MihomoApiClient::from_endpoint(listener.local_addr().unwrap().port(), "fixture".into())
+                .unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let started = std::time::Instant::now();
+        assert!(api.runtime_config(Duration::from_millis(60)).await.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "must not wait for the controller client's 10-second timeout"
+        );
+        server.abort();
     }
 }

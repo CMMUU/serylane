@@ -12,6 +12,9 @@ use std::collections::BTreeSet;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
+pub(crate) mod ingress;
+use ingress::{read_ingress, route_status, Ingress};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Preset {
@@ -245,6 +248,7 @@ pub struct Snapshot {
     pub status: String,
     pub readiness: String,
     pub verification: String,
+    pub ingress: Ingress,
     pub warning: String,
     pub user_rule_count: usize,
 }
@@ -281,12 +285,11 @@ fn state_with_runtime(app: &AppHandle, running: Option<bool>) -> AppResult<Snaps
         .applied
         .as_ref()
         .is_some_and(|p| groups.contains(&p.target));
-    let running = running.unwrap_or_else(|| {
-        app.state::<crate::runtime::MihomoRuntime>()
-            .status(Some(app))
-            .phase
-            == RuntimePhase::Running
-    });
+    let runtime_phase = app
+        .state::<crate::runtime::MihomoRuntime>()
+        .status(Some(app))
+        .phase;
+    let running = running.unwrap_or(runtime_phase == RuntimePhase::Running);
     let readiness = if current.active_profile_id.is_none() {
         "no_profile"
     } else if document.draft.domains.is_empty() {
@@ -303,28 +306,22 @@ fn state_with_runtime(app: &AppHandle, running: Option<bool>) -> AppResult<Snaps
         "off"
     } else if !valid {
         "missing_target"
-    } else if !running {
-        "waiting_core"
     } else if mode != RoutingMode::Rule {
         "wrong_mode"
+    } else if !running {
+        "waiting_core"
     } else {
         "pending"
     }
     .to_string();
-    let status = if !document.enabled {
-        "已关闭"
-    } else if !valid {
-        "出口已失效 · 请重新选择出口或关闭路由"
-    } else if !running {
-        "已配置 · 等待核心启动"
-    } else if mode != RoutingMode::Rule {
-        "已配置 · 当前非规则模式，不生效"
+    let ingress = if running {
+        Ingress::unknown()
     } else {
-        "已配置 · 等待核对核心规则"
-    }
-    .to_string();
+        Ingress::inactive(runtime_phase)
+    };
+    let status = route_status(&verification, &ingress);
     Ok(Snapshot { document, presets: presets(), targets: groups, profile_id: current.active_profile_id, profile_revision: current.active_revision_id,
-        status, readiness, verification, warning: "域名路由优先于本地规则、AI 规则与订阅规则；未匹配流量保持原规则。*.example.com 仅匹配子域，根域须另列；覆盖 HTTPS/WSS 的所有路径，不解密内容，不修改 Codex 配置。".into(), user_rule_count: storage.user_rules()?.rules.len() })
+        status, readiness, verification, ingress, warning: "域名路由优先于本地规则、AI 规则与订阅规则；未匹配流量保持原规则。*.example.com 仅匹配子域，根域须另列；覆盖 HTTPS/WSS 的所有路径，不解密内容，不修改 Codex 配置。".into(), user_rule_count: storage.user_rules()?.rules.len() })
 }
 async fn verified_state(app: &AppHandle) -> AppResult<Snapshot> {
     let storage = AppStorage::from_app(app)?;
@@ -332,50 +329,65 @@ async fn verified_state(app: &AppHandle) -> AppResult<Snapshot> {
     let (marker, running) = crate::user_rules::configuration_runtime(app, &storage)?;
     crate::lifecycle::PROCESS_LIFECYCLE.check(ticket)?;
     let mut snapshot = state_with_runtime(app, Some(running))?;
-    if snapshot.verification != "pending" {
-        return Ok(snapshot);
-    }
-    let id = snapshot
-        .profile_id
-        .ok_or_else(|| AppError::Conflict("请先选用配置".into()))?;
-    let revision = snapshot
-        .profile_revision
-        .ok_or_else(|| AppError::Conflict("请重新选用配置".into()))?;
-    let profile = storage.load_profile(id)?;
     let settings = storage.settings()?;
-    let candidate = build_effective_config_with_policy(
-        &storage.load_revision_source(id, revision)?,
-        &settings,
-        profile.routing_mode,
-        Some(&profile.openai_policy),
-    )?;
-    let result = crate::mihomo_api::MihomoApiClient::new(&settings)?
-        .verify_rule_config(&candidate.yaml)
-        .await;
-    if Document::read(&storage)?.revision != snapshot.document.revision
-        || crate::user_rules::configuration_fingerprint(app, &storage)? != marker
-    {
-        snapshot.verification = "changed".into();
-        snapshot.status = "配置正在变化 · 请刷新状态重新核对".into();
+    let candidate = if snapshot.verification == "pending" {
+        let id = snapshot
+            .profile_id
+            .ok_or_else(|| AppError::Conflict("请先选用配置".into()))?;
+        let revision = snapshot
+            .profile_revision
+            .ok_or_else(|| AppError::Conflict("请重新选用配置".into()))?;
+        let profile = storage.load_profile(id)?;
+        Some(build_effective_config_with_policy(
+            &storage.load_revision_source(id, revision)?,
+            &settings,
+            profile.routing_mode,
+            Some(&profile.openai_policy),
+        )?)
     } else {
-        let (code, status) = match result {
-            Ok(()) => (
-                "verified",
-                "已生效 · 核心规则核对通过，仅处理进入核心的新连接",
-            ),
-            Err(AppError::Conflict(_)) => (
-                "mismatch",
-                "尚未生效 · 核心规则或模式不一致，请重新应用或关闭路由",
-            ),
-            Err(_) => (
-                "unavailable",
-                "生效状态待核对 · 核心读取未完成，请刷新状态；未自动改变网络",
-            ),
-        };
-        snapshot.verification = code.into();
-        snapshot.status = status.into();
-    }
+        None
+    };
+    // An off policy still reports ingress. Rule verification and traffic entry
+    // are independent observations, sharing the final context guard below.
+    let (ingress, result) = tokio::join!(read_ingress(app, &settings, running), async {
+        match candidate {
+            Some(candidate) => Some(match crate::mihomo_api::MihomoApiClient::new(&settings) {
+                Ok(api) => api.verify_rule_config(&candidate.yaml).await,
+                Err(error) => Err(error),
+            }),
+            None => None,
+        }
+    },);
+    crate::lifecycle::PROCESS_LIFECYCLE.check(ticket)?;
+    let unchanged = Document::read(&storage)?.revision == snapshot.document.revision
+        && crate::user_rules::configuration_fingerprint(app, &storage)? == marker;
+    publish_observations(&mut snapshot, ingress, result, unchanged);
     Ok(snapshot)
+}
+
+fn publish_observations(
+    snapshot: &mut Snapshot,
+    ingress: Ingress,
+    result: Option<AppResult<()>>,
+    unchanged: bool,
+) {
+    if !unchanged {
+        snapshot.ingress = Ingress::unknown();
+        if snapshot.document.enabled {
+            snapshot.verification = "changed".into();
+        }
+    } else {
+        snapshot.ingress = ingress;
+        if let Some(result) = result {
+            snapshot.verification = match result {
+                Ok(()) => "verified",
+                Err(AppError::Conflict(_)) => "mismatch",
+                Err(_) => "unavailable",
+            }
+            .into();
+        }
+    }
+    snapshot.status = route_status(&snapshot.verification, &snapshot.ingress);
 }
 
 fn record_operation(
@@ -524,6 +536,57 @@ pub async fn apply_domain_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn late_ingress_or_rule_reads_cannot_publish_a_stale_success() {
+        for enabled in [false, true] {
+            let document = Document {
+                enabled,
+                ..Document::default()
+            };
+            let mut snapshot = Snapshot {
+                document,
+                presets: vec![],
+                targets: vec![],
+                profile_id: None,
+                profile_revision: None,
+                status: String::new(),
+                readiness: "ready".into(),
+                verification: if enabled { "pending" } else { "off" }.into(),
+                ingress: Ingress::unknown(),
+                warning: String::new(),
+                user_rule_count: 0,
+            };
+            let observed = Ingress {
+                state: ingress::IngressState::SystemProxy,
+                message: "fixture".into(),
+            };
+            publish_observations(&mut snapshot, observed, Some(Ok(())), false);
+            assert_eq!(snapshot.ingress.state, ingress::IngressState::Unknown);
+            assert_eq!(
+                snapshot.verification,
+                if enabled { "changed" } else { "off" }
+            );
+            assert!(!snapshot.status.contains("已生效"));
+            if !enabled {
+                publish_observations(
+                    &mut snapshot,
+                    Ingress {
+                        state: ingress::IngressState::SystemProxy,
+                        message: "fixture".into(),
+                    },
+                    None,
+                    true,
+                );
+                assert_eq!(snapshot.verification, "off");
+                assert_eq!(
+                    snapshot.ingress.state,
+                    ingress::IngressState::SystemProxy,
+                    "an off policy must still expose the real ingress"
+                );
+            }
+        }
+    }
+
     #[test]
     fn presets_and_custom_share_one_deduplicated_overlay() {
         for preset in presets() {

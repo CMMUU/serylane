@@ -25,12 +25,13 @@ import { mountLogs } from "./log-view";
 import { installContinuousScrolling } from "./scrolling";
 import { sessionResumePresentation, canStopSession, startupModeFromSettings, startupModeSettings, startupModeHelp, startupRegistrationPresentation, type StartupMode } from "./session-resume";
 import { canStartRuntime, startRuntimeInMode, type RuntimeStartMode } from "./runtime-start";
+import { proxyPresentation, type ProxyActivity } from "./proxy-state";
 import { prepareTunForStart } from "./tun-preflight";
 import { api, errorMessage, revisionLabel } from "./api";
 import { describeAppUpdate, updateSourceLabel, shouldAcceptUpdatePoll } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { mountRuleManager, ruleManagerMarkup } from "./rule-manager";
-import { mountDomainRouting, domainRoutingMarkup } from "./domain-routing";
+import { mountDomainRouting, domainRoutingMarkup, type DomainRouteState } from "./domain-routing";
 import { syncProxyCompatibilityPlatform, proxyCompatibilityMarkup } from "./program-proxy";
 import {
   THEME_OPTIONS,
@@ -173,6 +174,10 @@ const subscriptionRefreshing = new Set<string>();
 let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
 let runtimeActionInFlight = false;
+let runtimeActivity: ProxyActivity | null = null;
+let proxyReadIssue = '';
+let proxyStopIssue = '';
+let verifiedIngress: DomainRouteState['ingress'] | null = null;
 let domainRouteChanging = false;
 let manualModeSwitching = false;
 const nodeDetailsSession = new InteractionSession();
@@ -780,6 +785,7 @@ async function performBaseRead() {
       globalTraffic,
       manualOutbound,
     });
+    proxyReadIssue = '';
     if (store.selectedProfile?.profile.id === selectedProfileId) {
       const current = store.profiles.find(profile => profile.id === selectedProfileId);
       store.selectedProfile = current && selectedDetails && selectedDetails.profile.id === current.id && selectedDetails.profile.activeRevisionId === current.activeRevisionId ? { ...selectedDetails, profile: current } : null;
@@ -862,47 +868,54 @@ async function refreshSessionResume(force = false) {
   }
 }
 
+function currentProxyPresentation() {
+  return proxyPresentation({
+    runtime: store.runtime, mode: store.settings?.networkMode, systemProxy: store.systemProxy,
+    ingress: verifiedIngress, readIssue: proxyReadIssue, stopIssue: proxyStopIssue,
+    activity: networkModeSwitching ? 'switching' : runtimeActionInFlight ? runtimeActivity ?? 'working'
+      : sessionResumePresentation(sessionResumeStatus).busy ? 'restoring' : null,
+  });
+}
+
 function renderHeader() {
   const running = store.runtime?.phase === "running";
   const mode = store.settings?.networkMode;
-  const controlsBusy = networkModeSwitching || runtimeActionInFlight || domainRouteChanging;
+  const controlsBusy = networkModeSwitching || runtimeActionInFlight || settingsSaving || manualModeSwitching || domainRouteChanging;
+  const restoring = sessionResumePresentation(sessionResumeStatus).busy;
   localRouting.render();
+  const presentation = currentProxyPresentation();
   ($("#global-refresh") as HTMLButtonElement).disabled = controlsBusy || baseLoading;
   $("#global-refresh")!.textContent = baseLoading ? "正在刷新…" : "刷新";
-  const systemProxyActive = Boolean(
-    running && mode === "system_proxy" && store.systemProxy?.active,
-  );
-  const tunActive = Boolean(running && mode === "tun");
+  const systemProxyActive = presentation.systemProxyActive;
+  const tunActive = presentation.tunActive;
   $("#platform-chip")!.textContent = store.appInfo
     ? `${store.appInfo.targetOs} · ${store.appInfo.targetArch}`
     : "—";
-  $("#application-runtime-state")!.textContent = networkModeSwitching
-    ? "正在切换网络"
-    : runtimeActionInFlight
-      ? "正在开启代理"
-      : phaseLabel(store.runtime?.phase);
+  $("#application-runtime-state")!.textContent = presentation.label;
+  $("#application-runtime-state")!.title = presentation.message;
   $("#application-profile-state")!.textContent =
     store.activeProfile?.profile.displayName ?? "未选择订阅";
   $("#application-mode-state")!.textContent = modeLabel(mode);
-  $("#application-status-dot")!.classList.toggle("is-running", running);
+  $("#application-status-dot")!.classList.toggle("is-running", presentation.active);
   $("#application-status-dot")!.classList.toggle("is-busy", controlsBusy);
   $("#sidebar-version")!.textContent = store.appInfo ? `v${store.appInfo.version}` : "";
   $("#page-title")!.textContent = NAV_ITEMS.find((item) => item.id === store.view)!.label;
   document.documentElement.dataset.runtimeRunning = String(running);
-  $("#sidebar-status")!.textContent = !store.runtime ? "代理核心 · 未读取" : running ? "代理核心 · 运行中" : `代理核心 · ${phaseLabel(store.runtime.phase)}`;
-  $("#sidebar-status-dot")!.classList.toggle("is-running", running);
+  $("#sidebar-status")!.textContent = presentation.label;
+  $("#sidebar-status")!.title = presentation.message;
+  $("#sidebar-status-dot")!.classList.toggle("is-running", presentation.active);
   renderGlobalTraffic();
   const systemProxyButton = $("#global-system-proxy") as HTMLButtonElement;
   const tunButton = $("#global-tun") as HTMLButtonElement;
   systemProxyButton.classList.toggle("is-active", systemProxyActive);
   systemProxyButton.setAttribute("aria-pressed", String(systemProxyActive));
-  systemProxyButton.disabled = controlsBusy || !store.settings || !store.activeProfile;
+  systemProxyButton.disabled = controlsBusy || restoring || !store.settings || !store.activeProfile;
   tunButton.classList.toggle("is-active", tunActive);
   tunButton.setAttribute("aria-pressed", String(tunActive));
   tunButton.title = store.tunHelper?.message ?? "TUN 使用最小权限 Helper 接管系统流量";
-  tunButton.disabled = controlsBusy || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
-  ($("#global-start") as HTMLButtonElement).disabled = !canStartRuntime(store.runtime) || !store.settings || !store.activeProfile || controlsBusy;
-  ($("#global-stop") as HTMLButtonElement).disabled = !canStopSession(store.runtime?.phase, sessionResumeStatus, startupStatus) || controlsBusy;
+  tunButton.disabled = controlsBusy || restoring || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
+  ($("#global-start") as HTMLButtonElement).disabled = !canStartRuntime(store.runtime) || !store.settings || !store.activeProfile || Boolean(proxyReadIssue) || controlsBusy || restoring;
+  ($("#global-stop") as HTMLButtonElement).disabled = !(canStopSession(store.runtime?.phase, sessionResumeStatus, startupStatus) || store.systemProxy?.active || proxyStopIssue) || controlsBusy;
   $("#about-app")!.textContent = store.appInfo?.version ?? "—";
   $("#about-core")!.textContent = store.binary?.version ?? "未找到";
   $("#about-platform")!.textContent = store.appInfo
@@ -914,10 +927,10 @@ function renderOverview() {
   if (!['overview'].includes(store.view)) return;
   $("#overview-subscription-guide")!.hidden = !store.appInfo || Boolean(store.activeProfile);
   const runtime = store.runtime;
-  const running = runtime?.phase === "running";
-  $("#connection-state")!.textContent = phaseLabel(runtime?.phase);
-  $("#connection-message")!.textContent = runtime?.message ?? "等待运行时状态";
-  $("#connection-dot")!.classList.toggle("is-running", running);
+  const presentation = currentProxyPresentation();
+  $("#connection-state")!.textContent = presentation.label;
+  $("#connection-message")!.textContent = presentation.message || runtime?.message || "等待运行时状态";
+  $("#connection-dot")!.classList.toggle("is-running", presentation.active);
   $("#runtime-version")!.textContent = runtime?.version ?? store.binary?.version ?? "未找到";
   $("#runtime-pid")!.textContent = runtime?.pid ? String(runtime.pid) : "—";
   $("#runtime-config")!.textContent = runtime?.configPath ?? "—";
@@ -930,14 +943,15 @@ function renderOverview() {
   $("#control-profile-caption")!.textContent = store.activeProfile
     ? `当前订阅：${store.activeProfile.profile.displayName}`
     : "当前订阅：未选择";
-  $("#control-runtime-pill")!.textContent = phaseLabel(runtime?.phase);
-  $("#control-runtime-pill")!.classList.toggle("is-running", running);
+  $("#control-runtime-pill")!.textContent = presentation.label;
+  $("#control-runtime-pill")!.classList.toggle("is-running", presentation.active);
   const systemProxySwitch = $("#home-system-proxy") as HTMLInputElement;
   const tunSwitch = $("#home-tun") as HTMLInputElement;
-  systemProxySwitch.checked = store.settings?.networkMode === "system_proxy";
-  tunSwitch.checked = store.settings?.networkMode === "tun";
-  systemProxySwitch.disabled = networkModeSwitching || runtimeActionInFlight || !store.settings || !store.activeProfile;
-  tunSwitch.disabled = networkModeSwitching || runtimeActionInFlight || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
+  const restoring = sessionResumePresentation(sessionResumeStatus).busy;
+  systemProxySwitch.checked = presentation.systemProxyActive;
+  tunSwitch.checked = presentation.tunActive;
+  systemProxySwitch.disabled = networkModeSwitching || runtimeActionInFlight || settingsSaving || manualModeSwitching || domainRouteChanging || restoring || !store.settings || !store.activeProfile;
+  tunSwitch.disabled = networkModeSwitching || runtimeActionInFlight || settingsSaving || manualModeSwitching || domainRouteChanging || restoring || !store.settings || !store.activeProfile || store.appInfo?.targetOs === "linux" || store.tunHelper?.supported === false;
   tunSwitch.title = store.tunHelper?.message ?? "正在读取此平台的 TUN 支持情况";
   const routingMode = store.activeProfile?.profile.routingMode ?? "rule";
   $$("#home-routing-mode button").forEach((button) => {
@@ -1455,12 +1469,23 @@ async function performRuntimeRead(allowDuringRuntimeAction: boolean) {
   if (requestedDuringWrite && !allowDuringRuntimeAction) return;
   const requestedRevision = runtimeMutationRevision;
   const requestedSequence = ++runtimeReadSequence;
-  const [runtime, systemProxy] = await Promise.all([api.runtime(), api.systemProxy()]);
+  let runtime: RuntimeStatus, systemProxy: SystemProxyStatus;
+  try {
+    [runtime, systemProxy] = await Promise.all([api.runtime(), api.systemProxy()]);
+  } catch (error) {
+    if (requestedRevision === runtimeMutationRevision && requestedSequence === runtimeReadSequence) {
+      proxyReadIssue = errorMessage(error);
+      localRouting.invalidate?.();
+      renderHeader(); renderOverview();
+    }
+    throw error;
+  }
   // Helper readback is unrelated to System Proxy completion. Refresh it later.
   void api.tunHelperStatus().then(helper => { if (requestedRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); } }).catch(() => {});
   if (requestedRevision !== runtimeMutationRevision || requestedSequence !== runtimeReadSequence
     || (!allowDuringRuntimeAction && (runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching))) return;
   store.runtime = runtime;
+  proxyReadIssue = '';
   invalidateNodeDetailsContext();
   store.systemProxy = systemProxy;
   if (runtime.phase !== "running") {
@@ -1477,11 +1502,28 @@ async function performRuntimeRead(allowDuringRuntimeAction: boolean) {
   void refreshConnectionFeedback();
 }
 
+async function refreshAfterNativeStop(success: boolean) {
+  // Our own writes already hold their lock through readback. A tray/native
+  // Stop needs the same invalidation while the visible window is otherwise idle.
+  if (appLifecycle.paused || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching || domainRouteChanging) return;
+  proxyStopIssue = success ? '' : '代理停止或清理未完成，请查看日志并重试停止';
+  runtimeMutationRevision++;
+  localRouting.invalidate();
+  await refreshRuntimeOnly();
+  await localRouting.refresh(true);
+  void refreshSessionResume(true);
+}
+
 async function startRuntime(mode: RuntimeStartMode) {
   connectionFeedback.clearIssue();
+  proxyStopIssue = '';
   const result = await startRuntimeInMode(mode, {
     state: () => ({ settings: store.settings, runtime: store.runtime, systemProxyActive: Boolean(store.systemProxy?.active), hasProfile: Boolean(store.activeProfile), busy: runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching || domainRouteChanging }),
-    setBusy: (busy) => { runtimeMutationRevision++; runtimeActionInFlight = busy; renderHeader(); renderOverview(); renderAppearance(themeController.snapshot); },
+    setBusy: (busy) => {
+      runtimeMutationRevision++; runtimeActionInFlight = busy; runtimeActivity = busy ? 'starting' : null;
+      localRouting.invalidate();
+      renderHeader(); renderOverview(); renderAppearance(themeController.snapshot);
+    },
     setSettings: (settings) => { store.settings = settings; },
     setRuntime: (runtime) => { store.runtime = runtime; },
     readRuntime: api.runtime,
@@ -1508,24 +1550,37 @@ async function startRuntime(mode: RuntimeStartMode) {
   }
   void refreshConnectionFeedback();
   void refreshSessionResume(true);
-  void localRouting.refresh(true);
+  await localRouting.refresh(true);
 }
 
 async function stopRuntime() {
   connectionFeedback.clearIssue();
-  if (runtimeActionInFlight || networkModeSwitching || domainRouteChanging) return;
+  if (runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching || domainRouteChanging) return;
   runtimeActionInFlight = true;
+  runtimeActivity = 'stopping';
+  proxyStopIssue = '';
   runtimeMutationRevision++;
+  localRouting.invalidate();
   renderHeader();
+  renderOverview();
   renderAppearance(themeController.snapshot);
   try {
-    const result = await action("Mihomo 已停止", () => api.stop());
-    if (result) store.runtime = result;
+    store.runtime = await api.stop();
+    toast('代理已关闭，路由设置已保留', 'success');
+  } catch (error) {
+    proxyStopIssue = errorMessage(error);
+    const issue = friendlyError(error);
+    connectionFeedback.showError({ userMessage: { ...issue, title: '关闭未完成', action: 'refresh' } });
   } finally {
-    runtimeActionInFlight = false;
-    runtimeMutationRevision++;
-    renderAppearance(themeController.snapshot);
-    await refreshRuntimeOnly();
+    try { await refreshRuntimeOnly(true); }
+    finally {
+      runtimeActionInFlight = false;
+      runtimeActivity = null;
+      runtimeMutationRevision++;
+      localRouting.invalidate();
+      renderHeader(); renderOverview(); renderAppearance(themeController.snapshot);
+    }
+    await localRouting.refresh(true);
     void refreshSessionResume(true);
   }
 }
@@ -1533,11 +1588,12 @@ async function stopRuntime() {
 function toggleGlobalNetworkMode(mode: "system_proxy" | "tun") {
   if (!store.settings || !store.activeProfile) return;
   const running = store.runtime?.phase === "running";
-  const active = mode === "system_proxy"
-    ? Boolean(running && store.settings.networkMode === mode && store.systemProxy?.active)
-    : Boolean(running && store.settings.networkMode === mode);
+  const presentation = currentProxyPresentation();
+  const active = mode === 'system_proxy' ? presentation.systemProxyActive : presentation.tunActive;
   if (active) {
-    void switchNetworkMode("manual");
+    void stopRuntime();
+  } else if (running && store.settings.networkMode === mode && presentation.state === 'checking') {
+    void localRouting.refresh(true);
   } else if (store.settings.networkMode === mode && !running) {
     void startRuntime(mode);
   } else if (store.settings.networkMode === mode) {
@@ -1561,7 +1617,9 @@ async function switchNetworkMode(mode: NetworkMode) {
   let completed = false;
   let failureIssue: ReturnType<typeof friendlyError> | null = null;
   networkModeSwitching = true;
+  proxyStopIssue = '';
   runtimeMutationRevision++;
+  localRouting.invalidate();
   renderAppearance(themeController.snapshot);
   systemSwitch.disabled = true;
   tunSwitch.disabled = true;
@@ -1577,6 +1635,8 @@ async function switchNetworkMode(mode: NetworkMode) {
     if (!wasRunning && !canStartRuntime(runtime)) {
       throw new Error("代理正在处理其他操作，请等待状态更新后重试。");
     }
+    // An already running TUN session is never restarted by a repeated enable.
+    // Readback below confirms its state; a deliberate Stop remains separate.
     if (mode === currentMode && wasRunning && (mode !== "system_proxy" || store.systemProxy?.active)) return;
     keepCore = wasRunning && mode !== "tun" && currentMode !== "tun";
     if (mode === "tun" && !(await ensureTunHelperReady())) return;
@@ -1641,6 +1701,7 @@ async function switchNetworkMode(mode: NetworkMode) {
       renderOverview();
       if (failureIssue) connectionFeedback.showError({ userMessage: failureIssue });
       else if (completed) toast(mode === "system_proxy" ? "系统代理已开启" : mode === "tun" ? "TUN 模式已开启" : "已切换为 Manual 模式", "success");
+      await localRouting.refresh(true);
       void refreshBase();
     }
   }
@@ -2568,8 +2629,14 @@ const localRouting = mountDomainRouting($("#routing-view")!, {
   api, confirm: confirmAction, error: errorMessage,
   globalToggle: $("#global-domain-route") as HTMLButtonElement,
   openSetup: () => { if (store.view !== "routing") navigate("routing"); },
-  isBlocked: () => runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching,
-  contextKey: () => [runtimeMutationRevision, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, store.activeProfile?.profile.routingMode, store.runtime?.phase, store.runtime?.pid].join('/'),
+  isBlocked: () => runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching || sessionResumePresentation(sessionResumeStatus).busy,
+  contextKey: () => [runtimeMutationRevision, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, store.activeProfile?.profile.routingMode,
+    store.runtime?.phase, store.runtime?.pid, store.runtime?.startedAt, store.settings?.networkMode,
+    store.systemProxy?.active, store.tunHelper?.state, store.tunHelper?.runtimeRunning, sessionResumePresentation(sessionResumeStatus).busy].join('/'),
+  onStatus: state => {
+    verifiedIngress = state?.ingress ?? null;
+    queueMicrotask(() => { renderHeader(); renderOverview(); });
+  },
   busyChanged: busy => { domainRouteChanging = busy; renderHeader(); },
   reportError: text => { if (store.view !== 'routing') toast(text, 'error'); },
 });
@@ -2704,11 +2771,11 @@ $("#global-system-proxy")!.addEventListener("click", () =>
 $("#global-tun")!.addEventListener("click", () => toggleGlobalNetworkMode("tun"));
 $("#home-system-proxy")!.addEventListener("change", (event) => {
   const enabled = (event.target as HTMLInputElement).checked;
-  void switchNetworkMode(enabled ? "system_proxy" : "manual");
+  if (enabled) void switchNetworkMode('system_proxy'); else void stopRuntime();
 });
 $("#home-tun")!.addEventListener("change", (event) => {
   const enabled = (event.target as HTMLInputElement).checked;
-  void switchNetworkMode(enabled ? "tun" : "manual");
+  if (enabled) void switchNetworkMode('tun'); else void stopRuntime();
 });
 $("#home-routing-mode")!.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
@@ -3216,6 +3283,8 @@ void listen<NetworkSafetyReport>("network-safety-report", (event) => {
 void listen<ConnectionFeedback>("connection-feedback", event => {
   connectionFeedback.accept(event.payload);
 }).then(() => refreshConnectionFeedback()).catch(() => { void refreshConnectionFeedback(); });
+
+void listen<boolean>("proxy-stop-finished", event => { void refreshAfterNativeStop(event.payload); }).catch(() => {});
 
 void listen<string>("navigate-view", (event) => {
   if (event.payload === "overview") navigate("overview");
