@@ -158,3 +158,21 @@ test('an incomplete Stop leaves retry Stop available and forbids starting a dupl
   assert.equal(f.control('#global-start').disabled,true);
   assert.equal(f.control('#global-stop').disabled,false);
 });
+
+test('native Stop signals invalidate route state and read the current runtime without changing it',async()=>{
+  const calls=[];
+  const env={appLifecycle:{paused:false},runtimeActionInFlight:false,networkModeSwitching:false,settingsSaving:false,manualModeSwitching:false,domainRouteChanging:false,runtimeMutationRevision:7,proxyStopIssue:'',
+    localRouting:{invalidate:()=>calls.push('invalidate'),refresh:async()=>calls.push('route-read')},
+    refreshRuntimeOnly:async()=>calls.push('runtime-read'),refreshSessionResume:async()=>calls.push('resume-read')};
+  vm.createContext(env);
+  vm.runInContext(compile(main.slice(main.indexOf('async function refreshAfterNativeStop('),main.indexOf('async function startRuntime('))),env);
+  await env.refreshAfterNativeStop(true);
+  assert.equal(env.runtimeMutationRevision,8);
+  assert.deepEqual(calls,['invalidate','runtime-read','route-read','resume-read']);
+  calls.length=0;await env.refreshAfterNativeStop(false);assert.match(env.proxyStopIssue,/清理未完成/);
+  assert.deepEqual(calls,['invalidate','runtime-read','route-read','resume-read']);
+  for(const busy of ['runtimeActionInFlight','networkModeSwitching','settingsSaving','manualModeSwitching','domainRouteChanging']) {
+    env[busy]=true;calls.length=0;await env.refreshAfterNativeStop();assert.deepEqual(calls,[],busy);env[busy]=false;
+  }
+  env.appLifecycle.paused=true;calls.length=0;await env.refreshAfterNativeStop();assert.deepEqual(calls,[]);
+});

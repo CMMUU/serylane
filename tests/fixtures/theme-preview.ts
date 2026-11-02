@@ -211,6 +211,18 @@ window.addEventListener("routedeck-fixture-runtime", event => {
 });
 if (previewQuery.has("runtimeScenario")) setRuntimeScenario({ scenario: previewQuery.get("runtimeScenario") });
 reportRuntimeScenario();
+window.addEventListener('serylane-fixture-tray-stop', () => {
+  runtimeScenarioEnabled = true;
+  fixtureDesiredRunning = false;
+  if (!fixtureRuntimeFailStop) {
+    fixtureRuntimePhase = 'stopped'; fixtureSystemProxyActive = false;
+    // Runtime::stop invalidates connection feedback before publishing outcome.
+    updateFeedback({ operation: fixtureFeedback.operation + 1, phase: 'idle', health: 'unchecked', retrying: false, issue: null, checks: [] });
+  }
+  reportStartup(); reportRuntimeScenario();
+  // Synthetic native notification only; no command reaches an actual runtime.
+  void emit('proxy-stop-finished', !fixtureRuntimeFailStop);
+});
 
 // In-memory scenarios only: no persisted Codex config, native IPC or sockets.
 // Dispatch `routedeck-fixture-routing` with { scenario, ...options } and refresh

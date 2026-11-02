@@ -1500,6 +1500,18 @@ async function performRuntimeRead(allowDuringRuntimeAction: boolean) {
   void refreshConnectionFeedback();
 }
 
+async function refreshAfterNativeStop(success: boolean) {
+  // Our own writes already hold their lock through readback. A tray/native
+  // Stop needs the same invalidation while the visible window is otherwise idle.
+  if (appLifecycle.paused || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching || domainRouteChanging) return;
+  proxyStopIssue = success ? '' : '代理停止或清理未完成，请查看日志并重试停止';
+  runtimeMutationRevision++;
+  localRouting.invalidate();
+  await refreshRuntimeOnly();
+  await localRouting.refresh(true);
+  void refreshSessionResume(true);
+}
+
 async function startRuntime(mode: RuntimeStartMode) {
   connectionFeedback.clearIssue();
   proxyStopIssue = '';
@@ -3269,6 +3281,8 @@ void listen<NetworkSafetyReport>("network-safety-report", (event) => {
 void listen<ConnectionFeedback>("connection-feedback", event => {
   connectionFeedback.accept(event.payload);
 }).then(() => refreshConnectionFeedback()).catch(() => { void refreshConnectionFeedback(); });
+
+void listen<boolean>("proxy-stop-finished", event => { void refreshAfterNativeStop(event.payload); }).catch(() => {});
 
 void listen<string>("navigate-view", (event) => {
   if (event.payload === "overview") navigate("overview");

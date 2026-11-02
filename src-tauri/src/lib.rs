@@ -1026,7 +1026,8 @@ fn stop_runtime_with_permit(
     // Persist the accepted Stop intent before cleanup. Even an interrupted
     // cleanup or failed proxy restoration must not turn it into an auto-start.
     let state = app.state::<MihomoRuntime>();
-    app.state::<session_resume::SessionResumeManager>()
+    let result = app
+        .state::<session_resume::SessionResumeManager>()
         .while_open(|| {
             // The state.json read/modify/write shares cleanup's transition lock.
             // Shutdown cannot read the old true intent and overwrite this Stop.
@@ -1045,7 +1046,11 @@ fn stop_runtime_with_permit(
             let status = status?;
             proxy_result?;
             Ok(status)
-        })
+        });
+    // Native tray Stop has no frontend command completion to refresh from.
+    // Publish the transaction outcome, never a potentially stale OS snapshot.
+    let _ = app.emit("proxy-stop-finished", result.is_ok());
+    result
 }
 
 #[tauri::command]
