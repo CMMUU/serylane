@@ -12,6 +12,7 @@ const importSource = (path) => import(`data:text/javascript;base64,${Buffer.from
 const { prepareTunForStart } = await importSource("src/tun-preflight.ts");
 const { friendlyError, mountConnectionFeedback } = await importSource("src/connection-feedback.ts");
 const { canStartRuntime } = await importSource("src/runtime-start.ts");
+const { proxyPresentation } = await importSource("src/proxy-state.ts");
 const main = read("src/main.ts");
 const switchStart = main.indexOf("async function switchNetworkMode(");
 const preflightStart = main.indexOf("async function ensureTunHelperReady(");
@@ -137,6 +138,8 @@ function mainFixture(options = {}) {
       systemProxy: { active: actualMode === "system_proxy" && actualRuntime.phase === "running" },
     },
     networkModeSwitching: false, domainRouteChanging: false, runtimeActionInFlight: false, settingsSaving: false, runtimeMutationRevision: 0,
+    proxyStopIssue: '', localRouting: { invalidate: noop, refresh: async () => {} },
+    currentProxyPresentation: () => ({ tunActive: actualMode === 'tun' && actualRuntime.phase === 'running' }),
     prepareTunForStart, canStartRuntime, friendlyError,
     errorMessage: error => error?.userMessage?.details ?? error?.message ?? String(error),
     $: selector => {
@@ -214,6 +217,20 @@ function mainFixture(options = {}) {
     switch: (mode = "tun") => env.switchNetworkMode(mode),
   };
 }
+
+test("repeated enable of a live TUN only reads back status while its busy projection is checking", async () => {
+  const f=mainFixture({actualMode:'tun',actualPhase:'running'});
+  let ingress={state:'tun',message:'verified'};
+  f.env.currentProxyPresentation=()=>proxyPresentation({runtime:f.env.store.runtime,mode:f.env.store.settings.networkMode,systemProxy:f.env.store.systemProxy,ingress,activity:f.env.networkModeSwitching?'switching':null});
+  f.env.localRouting.invalidate=()=>{ingress=null;f.calls.push('invalidate-route');};
+  f.env.localRouting.refresh=async()=>{assert.equal(f.env.networkModeSwitching,false);f.calls.push('route-read');ingress={state:'tun',message:'verified'};};
+  await f.switch('tun');
+  assert.deepEqual(f.mutations(),[],'an enabled TUN must not be stopped or restarted just because presentation is busy');
+  assert.deepEqual(f.preflight.calls,[]);
+  assert.equal(f.calls.filter(c=>c==='refresh-runtime').length,1);
+  assert.equal(f.calls.filter(c=>c==='route-read').length,1);
+  assert.deepEqual(f.observed(),{mode:'tun',phase:'running'});
+});
 
 test("Tauri Rust unit result contract is represented by JSON null in the browser fixture", () => {
   // serde serializes Rust () as JSON null; Promise<void> does not change this wire value.

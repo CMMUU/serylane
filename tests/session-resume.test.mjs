@@ -43,7 +43,7 @@ test("registration feedback distinguishes saved intent, OS denial and unknown st
 test("waiting restoration remains cancellable even while the core is stopped", () => {
   assert.equal(sessionResumePresentation({ phase: "waiting_network", message: "等待网络" }).busy, true);
   assert.match(sessionResumePresentation({ phase: "waiting_network", message: "等待网络" }).title, /等待网络/);
-  assert.match(read("src/main.ts"), /!canStopSession\(store.runtime\?\.phase, sessionResumeStatus, startupStatus\)/);
+  assert.match(read("src/main.ts"), /canStopSession\(store.runtime\?\.phase, sessionResumeStatus, startupStatus\)/);
   assert.equal(canStopSession("stopped", { phase: "paused", message: "配置待处理" }, null), true);
   const startup = { launchRequested: false, registered: false, systemAllows: null, desiredRunning: true, message: "" };
   assert.equal(canStopSession("crashed", { phase: "idle", message: "" }, startup), true);

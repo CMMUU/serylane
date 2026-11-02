@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.36 - 2026-11-02
+
+- Make ordinary System Proxy/TUN off actions use the real Stop path, cancel pending restoration and preserve the saved network mode for the next Start. Retain explicitly configured Manual local-proxy use.
+- Derive proxy controls from current runtime/takeover state. Keep domain-route configuration independent: stopping the proxy pauses enabled routes; starting revalidates the saved rules and ingress before reporting readiness.
+- Distinguish loaded rules, local-only ingress, active system proxy/TUN, and unknown or unavailable status. Invalidate old route verification during transitions and preserve drafts, missing-target rejection and independent route operations.
+- Keep download-center-only delivery, existing platform/TUN restrictions and separate physical login/network acceptance.
+
 ## 0.7.35 - 2026-10-30
 
 - Enable and validate internal DNS in generated TUN configurations without rewriting subscription source or changing other modes' DNS settings.

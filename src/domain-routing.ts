@@ -2,7 +2,8 @@ import { escapeNode as escape } from './node-selection';
 export type DomainSelection = { tools: string[]; customDomains: string[]; target: string };
 export type DomainPolicy = DomainSelection & { domains: string[] };
 export type AiPreset = {id:string; name:string; domains:string[]; note:string; sources:string[]};
-export type DomainRouteState = { document: { schemaVersion: number; revision: number; enabled: boolean; draft: DomainPolicy; applied: DomainPolicy | null }; presets: AiPreset[]; targets: string[]; profileId: string | null; profileRevision: string | null; status: string; readiness?: string; verification?: string; warning: string; userRuleCount: number };
+export type DomainRouteIngress = { state: 'stopped' | 'system_proxy' | 'tun' | 'local_only' | 'unavailable' | 'unknown'; message: string };
+export type DomainRouteState = { document: { schemaVersion: number; revision: number; enabled: boolean; draft: DomainPolicy; applied: DomainPolicy | null }; presets: AiPreset[]; targets: string[]; profileId: string | null; profileRevision: string | null; status: string; readiness?: string; verification?: string; ingress: DomainRouteIngress; warning: string; userRuleCount: number };
 export function parseDomains(text: string): string[] {
   const rows = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   if (rows.length > 100) throw new Error('域名名单最多 100 条。');
@@ -39,6 +40,7 @@ export function mountDomainRouting(root: HTMLElement, services: {
   busyChanged?: (busy: boolean) => void;
   reportError?: (message: string) => void;
   openSetup?: () => void;
+  onStatus?: (state: DomainRouteState | null) => void;
 }) {
   const $ = <T extends HTMLElement>(name: string) => root.querySelector<T>(`#domain-${name}`)!;
   type Operation = 'save' | 'enable' | 'disable' | 'apply' | 'restore';
@@ -48,6 +50,33 @@ export function mountDomainRouting(root: HTMLElement, services: {
   let focusAfterWork: string | null = null;
   const context = () => services.contextKey?.() ?? '';
   const blocked = () => Boolean(services.isBlocked?.());
+  let observedContext = context(), snapshotValid = false;
+  let published: DomainRouteState | null = null;
+  function publish(value: DomainRouteState | null, force = false) {
+    if (!force && value === published) return;
+    published = value;
+    services.onStatus?.(value);
+  }
+  function revoke() {
+    snapshotValid = false;
+    readError = '';
+    publish(null);
+  }
+  function checkContext() {
+    const next = context();
+    if (next === observedContext) return;
+    observedContext = next;
+    epoch++;
+    readAgain = true;
+    revoke();
+  }
+  function invalidate() {
+    observedContext = context();
+    epoch++;
+    readAgain = true;
+    revoke();
+    render();
+  }
   const message = (value: string, error = false) => { $('feedback').textContent = value; $('feedback').hidden = !value; $('feedback').dataset.tone = error ? 'error' : 'info'; };
   const errorText = (error: unknown) => {
     // Native route errors carry sanitized actionable details; do not hide them behind the generic DTO title.
@@ -88,8 +117,25 @@ export function mountDomainRouting(root: HTMLElement, services: {
     $<HTMLSelectElement>('target').value = state.document.draft.target; draftRevision = state.document.revision;
     baseline = signatureOf(state.document.draft);
   }
+  function presentation() {
+    const reportedIngress = state?.ingress?.state;
+    const ingress = snapshotValid && reportedIngress && ['stopped', 'system_proxy', 'tun', 'local_only', 'unavailable', 'unknown'].includes(reportedIngress) ? reportedIngress : 'unknown';
+    const enabled = Boolean(state?.document.enabled);
+    const ruleIssue = ['missing_target', 'wrong_mode', 'mismatch', 'unavailable', 'changed'].includes(state?.verification ?? '');
+    if (readError) return { text: `状态待核对，请刷新重试：${readError}`, label: '路由 · 待核对', active: false, tone: 'error', ingress };
+    if (!snapshotValid) return { text: '正在核对路由与代理状态…', label: '路由 · 核对中', active: false, tone: 'info', ingress };
+    if (!enabled) return { text: state?.status ?? '已关闭', label: '路由', active: false, tone: 'normal', ingress };
+    if (ruleIssue) return { text: state!.status, label: '路由 · 未就绪', active: false, tone: 'error', ingress };
+    if (ingress === 'stopped') return { text: '已启用 · 暂停，等待代理启动', label: '路由 · 待启动', active: false, tone: 'info', ingress };
+    if (ingress === 'unknown' || ingress === 'unavailable') return { text: `已启用 · ${state?.ingress?.message || '代理入口状态待核对，请刷新重试'}`, label: ingress === 'unavailable' ? '路由 · 未接管' : '路由 · 待核对', active: false, tone: 'error', ingress };
+    if (state?.verification !== 'verified') return { text: state?.status ?? '已启用 · 等待核对核心规则', label: '路由 · 核对中', active: false, tone: 'info', ingress };
+    if (ingress === 'local_only') return { text: '已启用 · 规则已加载，仅本地代理入口生效，系统未接管', label: '路由 · 本地', active: false, tone: 'info', ingress };
+    return { text: `已启用 · 规则就绪（${ingress === 'tun' ? 'TUN' : '系统代理'}），仅处理进入核心的新连接`, label: '路由', active: true, tone: 'normal', ingress };
+  }
   function render() {
+    checkContext();
     const enabled = Boolean(state?.document.enabled), locked = Boolean(busy) || blocked();
+    const display = presentation();
     const unapplied = Boolean(state && JSON.stringify(state.document.draft) !== JSON.stringify(state.document.applied));
     $<HTMLFieldSetElement>('fields').disabled = locked || !state;
     const applyButton = $<HTMLButtonElement>('apply');
@@ -100,20 +146,21 @@ export function mountDomainRouting(root: HTMLElement, services: {
     $<HTMLButtonElement>('refresh').disabled = locked || Boolean(readPromise);
     const pending = busy === 'enable' ? '正在开启…' : busy === 'disable' ? '正在关闭…' : busy === 'apply' ? '正在应用…' : '';
     const setup = !enabled ? preparation() : null;
-    const detail = readError ? '状态待核对，请刷新重试' : setup?.text ?? state?.status ?? '正在读取路由状态…';
+    const detail = !readError && snapshotValid && setup ? `已关闭 · ${setup.text}` : display.text;
     for (const button of [$<HTMLButtonElement>('toggle'), services.globalToggle].filter((b): b is HTMLButtonElement => Boolean(b))) {
       const global = button === services.globalToggle;
-      button.textContent = pending || (global ? '路由' : enabled ? '关闭路由' : setup ? '设置路由' : '开启路由');
+      button.textContent = pending || (global ? display.label : enabled ? '关闭路由' : setup ? '设置路由' : '开启路由');
       button.disabled = locked || !state;
       button.setAttribute('aria-pressed', String(enabled));
-      button.setAttribute('aria-busy', String(Boolean(pending)));
+      button.setAttribute('aria-busy', String(Boolean(pending) || Boolean(state && !snapshotValid && !readError)));
       button.setAttribute('aria-label', `${enabled ? '关闭' : '开启'}域名路由`);
-      button.classList.toggle('is-active', enabled && !readError && (!state?.verification || state.verification === 'verified'));
-      button.dataset.verification = readError ? 'unknown' : state?.verification ?? 'unknown';
-      button.title = setup ? `${setup.text} 点击前往设置。` : `${detail}；${enabled ? '点击关闭' : '点击开启'}。独立于系统代理和 TUN，不切换网络模式。`;
+      button.classList.toggle('is-active', display.active && !locked);
+      button.dataset.verification = readError || !snapshotValid ? 'unknown' : state?.verification ?? 'unknown';
+      button.dataset.ingress = display.ingress;
+      button.title = setup ? `${setup.text} 点击前往设置。` : `${detail}；${enabled ? '点击关闭路由配置' : '点击启用路由配置'}。仅影响名单规则，不启停主代理。`;
     }
     $('status').textContent = detail;
-    $('status').dataset.tone = readError || ['mismatch', 'unavailable', 'changed'].includes(state?.verification ?? '') ? 'error' : setup ? 'info' : 'normal';
+    $('status').dataset.tone = setup ? 'info' : display.tone;
     $('summary').textContent = state?.document.applied && enabled ? `${state.document.applied.domains.length} 条域名 → ${state.document.applied.target}` : '配置后开启，仅影响名单内流量';
     $('warning').textContent = state?.warning ?? '';
     $('revision').textContent = state ? `${dirty ? '编辑尚未保存' : unapplied ? '草稿尚未应用' : '草稿与已应用设置一致'} · 保存不改变流量，应用需确认。` : '';
@@ -122,10 +169,12 @@ export function mountDomainRouting(root: HTMLElement, services: {
     $<HTMLButtonElement>('restore').disabled = locked || Boolean(legacy?.active);
   }
   function accept(result: DomainRouteState) {
-    state = result; readError = '';
+    state = result; readError = ''; snapshotValid = true; observedContext = context();
     if (!dirty) fill();
+    publish(state);
   }
   async function refresh(quiet = false): Promise<void> {
+    checkContext();
     if (busy || blocked()) { readAgain = true; return; }
     if (readPromise) { readAgain = true; return readPromise; }
     readPromise = (async () => {
@@ -135,7 +184,7 @@ export function mountDomainRouting(root: HTMLElement, services: {
         const stamp = epoch, key = context();
         try {
           const result = await services.api.domainRouteStatus();
-          if (stamp !== epoch || key !== context() || busy || blocked()) { readAgain = true; continue; }
+          if (stamp !== epoch || key !== context() || busy || blocked()) { readAgain = true; checkContext(); if (busy || blocked()) break; continue; }
           if (!state || result.document.revision >= state.document.revision) accept(result);
           if (!quiet) {
             try { legacy = await services.api.legacyRouteStatus(); }
@@ -145,7 +194,9 @@ export function mountDomainRouting(root: HTMLElement, services: {
           }
         } catch (error) {
           if (stamp === epoch && key === context() && !busy && !blocked()) {
+            snapshotValid = false;
             readError = errorText(error);
+            publish(null, true);
             if (!quiet) message(readError, true);
           }
         }
@@ -157,9 +208,9 @@ export function mountDomainRouting(root: HTMLElement, services: {
   }
   async function work(operation: Operation, callback: () => Promise<void>) {
     if (busy || blocked()) return;
-    busy = operation; epoch++; services.busyChanged?.(true); render();
+    busy = operation; epoch++; revoke(); services.busyChanged?.(true); render();
     try { await callback(); }
-    catch (error) { const text = errorText(error); message(text, true); services.reportError?.(text); }
+    catch (error) { const text = errorText(error); snapshotValid = false; readError = text; publish(null, true); message(text, true); services.reportError?.(text); }
     finally {
       busy = null; epoch++; services.busyChanged?.(false); render();
       if (focusAfterWork) { $(focusAfterWork).focus?.(); focusAfterWork = null; }
@@ -173,19 +224,21 @@ export function mountDomainRouting(root: HTMLElement, services: {
     if (enabled && guide()) return;
     if (reapply && !needsReapply() && JSON.stringify(state.document.draft) === JSON.stringify(state.document.applied)) return;
     await work(enabled ? reapply ? 'apply' : 'enable' : 'disable', async () => {
-      const key = context();
+      const key = context(), stamp = epoch;
       const expected = await services.api.domainRouteStatus();
-      if (key !== context()) throw new Error('当前配置已变化，请刷新路由状态后重试。');
+      if (stamp !== epoch || key !== context()) throw new Error('当前配置已变化，请刷新路由状态后重试。');
       // A hidden/global entry uses a fresh snapshot, never a stale page-local toggle.
       if (!reapply && expected.document.enabled === enabled) { accept(expected); message('路由状态已更新。'); return; }
       accept(expected); render();
       if (enabled && guide()) return;
       const title = enabled ? reapply ? '应用路由更改？' : '开启域名路由？' : '关闭域名路由？';
       if (!await services.confirm({ title, message: enabled ? `工具 ${expected.document.draft.tools.length} 个 + 自定义 ${expected.document.draft.customDomains.length} 条，去重后 ${expected.document.draft.domains.length} 条 → ${expected.document.draft.target}。名单内流量优先使用该出口，其他流量保持原规则。仅处理进入核心的新流量，不修改 Codex，不切换系统代理或 TUN，不主动清空连接。` : '移除域名路由覆盖，其他本地及订阅规则保持不变。系统代理与 TUN 状态不变。', confirmLabel: enabled ? reapply ? '确认应用' : '开启路由' : '关闭路由', returnFocus: origin })) return;
-      if (key !== context()) throw new Error('当前配置已变化，请刷新路由状态后重试。');
-      accept(await services.api.applyDomainRoute(enabled, expected));
+      if (stamp !== epoch || key !== context()) throw new Error('当前配置已变化，请刷新路由状态后重试。');
+      const applied = await services.api.applyDomainRoute(enabled, expected);
+      if (stamp !== epoch || key !== context()) throw new Error('当前配置已变化，路由操作结果待核对，请刷新状态。');
+      accept(applied);
       if (dirty && draftRevision === expected.document.revision) draftRevision = state!.document.revision;
-      message(state!.status);
+      message(presentation().text);
     });
     const doc = root.ownerDocument;
     if (origin.isConnected && !(origin as HTMLButtonElement).disabled && doc &&
@@ -201,7 +254,7 @@ export function mountDomainRouting(root: HTMLElement, services: {
     let policy: DomainSelection;
     try { policy = selection(); }
     catch(error) { message(errorText(error), true); return; }
-    void work('save', async () => { const result = await services.api.saveDomainRoute(policy, draftRevision); dirty = false; filled = ''; accept(result); message(preparation()?.text ?? (state!.document.enabled ? '草稿已保存，当前流量未改变。点击应用更改并确认后生效。' : '草稿已保存，当前流量未改变。点击开启路由并确认后生效。')); });
+    void work('save', async () => { const stamp = epoch, key = context(); const result = await services.api.saveDomainRoute(policy, draftRevision); if (stamp !== epoch || key !== context()) throw new Error('当前配置已变化，草稿保存结果待核对，请刷新状态。'); dirty = false; filled = ''; accept(result); message(preparation()?.text ?? (state!.document.enabled ? '草稿已保存，当前流量未改变。点击应用更改并确认后生效。' : '草稿已保存，当前流量未改变。点击开启路由并确认后生效。')); });
   });
   const toggle = (origin: HTMLElement) => { if (state) void apply(!state.document.enabled, origin); };
   $('toggle').addEventListener('click', () => toggle($('toggle')));
@@ -213,5 +266,5 @@ export function mountDomainRouting(root: HTMLElement, services: {
     if (legacy.enabled) legacy = await services.api.setLocalRouteEnabled(false, legacy.revision, true);
     message('旧接入已恢复；新域名路由未自动启用。');
   }));
-  render(); return { refresh, render };
+  render(); return { refresh, render, invalidate };
 }

@@ -167,6 +167,7 @@ let fixtureRuntimeMode: NetworkMode = "manual";
 let fixtureRuntimePhase = "running";
 let fixtureSystemProxyActive = false;
 let fixtureRuntimeFailSave = false, fixtureRuntimeFailStart = false, fixtureRuntimeFailRollback = false;
+let fixtureRuntimeFailStop = false;
 let fixtureRuntimeDelay = 120;
 let fixtureRuntimeHelperReady = true;
 let fixtureRuntimeHelperState: string | null = null;
@@ -193,6 +194,7 @@ function setRuntimeScenario(detail: Record<string, unknown>) {
   }
   if (typeof detail.failSave === "boolean") fixtureRuntimeFailSave = detail.failSave;
   if (typeof detail.failStart === "boolean") fixtureRuntimeFailStart = detail.failStart;
+  if (typeof detail.failStop === "boolean") fixtureRuntimeFailStop = detail.failStop;
   if (typeof detail.failRollback === "boolean") fixtureRuntimeFailRollback = detail.failRollback;
   if (typeof detail.helperReady === "boolean") fixtureRuntimeHelperReady = detail.helperReady;
   if (typeof detail.helperState === "string") fixtureRuntimeHelperState = detail.helperState;
@@ -229,16 +231,25 @@ const domainPolicy = { domains: aiRoutePresets[0].domains, tools:['openai'], cus
 let domainDocument: DomainRouteState['document'] = { schemaVersion: 1, revision: 0, enabled: false, draft: structuredClone(domainPolicy), applied: null };
 let domainVerification = 'verified';
 let domainApplyFailure = false;
+let domainIngressOverride: DomainRouteState['ingress']['state'] | null = null;
 window.addEventListener('serylane-fixture-domain-runtime', event => {
-  const input = (event as CustomEvent<{verification?: string; failApply?: boolean}>).detail;
+  const input = (event as CustomEvent<{verification?: string; failApply?: boolean; ingress?: DomainRouteState['ingress']['state'] | null}>).detail;
   if (input.verification) domainVerification = input.verification;
   if (typeof input.failApply === 'boolean') domainApplyFailure = input.failApply;
+  if (input.ingress === null || ['stopped','system_proxy','tun','local_only','unavailable','unknown'].includes(input.ingress ?? '')) domainIngressOverride = input.ingress ?? null;
 });
 const subscriptionEdits = new Map<string, {url:string;revision:number}>();
 function domainState(): DomainRouteState {
   const profile=profiles.find(p=>p.id===activeProfileId);
+  const running = fixtureRuntimePhase === 'running';
+  const ingress: DomainRouteState['ingress'] = {
+    state: domainIngressOverride ?? (!running ? 'stopped' : fixtureRuntimeMode === 'tun' ? 'tun' : fixtureSystemProxyActive ? 'system_proxy' : fixtureRuntimeMode === 'manual' ? 'local_only' : 'unavailable'),
+    message: '合成入口状态；未读取系统设置或启动真实核心',
+  };
+  const verification = !domainDocument.enabled ? 'off' : !running ? 'waiting_core' : profile?.routingMode !== 'rule' ? 'wrong_mode' : domainVerification;
   return { document: structuredClone(domainDocument), presets: aiRoutePresets, targets: Object.entries(fixtureNodes).filter(([n,g])=>Array.isArray(g.all)&&n!=='GLOBAL').map(([n])=>n), profileId:profile?.id??null,profileRevision:profile?.activeRevisionId??null,
-    readiness: !profile ? 'no_profile' : !domainDocument.draft.target ? 'missing_target' : 'ready', verification: domainDocument.enabled ? domainVerification : 'off', status:domainDocument.enabled ? domainVerification === 'verified' ? '已生效 · 合成运行状态，真实网络未变化' : '生效状态待核对 · 合成核心规则不一致，可重新应用' : '已关闭', warning:'域名路由优先于本地规则、AI 规则及订阅规则；覆盖全部路径，不修改 Codex。',userRuleCount:0 };
+    readiness: !profile ? 'no_profile' : !domainDocument.draft.target ? 'missing_target' : profile.routingMode !== 'rule' ? 'wrong_mode' : 'ready', verification, ingress,
+    status: !domainDocument.enabled ? '已关闭' : !running ? '已启用 · 暂停，等待代理启动' : verification === 'verified' ? '规则核对通过 · 合成运行状态，真实网络未变化' : '路由暂未生效 · 请检查规则', warning:'域名路由优先于本地规则、AI 规则及订阅规则；覆盖全部路径，不修改 Codex。',userRuleCount:0 };
 }
 
 let routeConfigRevision = 1;
@@ -1108,6 +1119,11 @@ mockIPC(async (command, payload) => {
       updateFeedback({ operation: fixtureFeedback.operation + 1, mode: fixtureRuntimeMode });
       fixtureHealthProbe();
     } else {
+      fixtureDesiredRunning = false;
+      if (fixtureRuntimeFailStop) {
+        reportStartup(); reportRuntimeScenario();
+        throw routeError('CORE_ERROR','合成关闭失败；没有操作真实进程');
+      }
       fixtureRuntimePhase = "stopped";
       updateFeedback({ operation: fixtureFeedback.operation + 1, phase: "idle", health: "unchecked" });
       fixtureDesiredRunning = false;

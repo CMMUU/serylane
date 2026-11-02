@@ -14,17 +14,17 @@ function harness(enabled=false){
  const tool={checked:true,dataset:{tool:'openai'}};
  const root={querySelector:s=>element(s.replace('#domain-','')),querySelectorAll:s=>s.endsWith(':checked')?(tool.checked?[tool]:[]):[tool]};
  const draft={tools:['openai'],customDomains:[],domains:['openai.com'],target:'出口'};
- let snapshot={document:{schemaVersion:1,revision:1,enabled,draft,applied:enabled?clone(draft):null},presets:[{id:'openai',name:'OpenAI',domains:['openai.com'],note:''}],targets:['出口'],profileId:'p',profileRevision:'r',status:enabled?'已应用 · 仅处理进入代理核心的流量':'已关闭',warning:'规则说明',userRuleCount:0};
- const calls=[],confirmations=[],answers=[],reads=[],writes=[],notices=[],busy=[];
+ let snapshot={document:{schemaVersion:1,revision:1,enabled,draft,applied:enabled?clone(draft):null},presets:[{id:'openai',name:'OpenAI',domains:['openai.com'],note:''}],targets:['出口'],profileId:'p',profileRevision:'r',status:enabled?'已启用 · 核心规则已核对':'已关闭',verification:enabled?'verified':'off',ingress:{state:'system_proxy',message:'系统代理已接管'},warning:'规则说明',userRuleCount:0};
+ const calls=[],confirmations=[],answers=[],reads=[],writes=[],notices=[],busy=[],statuses=[];
  let context='p/r/running',blocked=false;
  let opened=0;
- const services={openSetup:()=>opened++,globalToggle:element('global'),isBlocked:()=>blocked,contextKey:()=>context,busyChanged:b=>busy.push(b),reportError:s=>notices.push(s),error:e=>e.message,
+ const services={openSetup:()=>opened++,globalToggle:element('global'),isBlocked:()=>blocked,contextKey:()=>context,busyChanged:b=>busy.push(b),reportError:s=>notices.push(s),error:e=>e.message,onStatus:s=>statuses.push(s&&clone(s)),
  confirm:async o=>{confirmations.push(o);return answers.length?await answers.shift():true;},
  api:{domainRouteStatus:async()=>{calls.push(['read']);return reads.length?await reads.shift():clone(snapshot);},legacyRouteStatus:async()=>null,
  saveDomainRoute:async(policy,revision)=>{calls.push(['save',clone(policy),revision]);if(revision!==snapshot.document.revision)throw Error('修订冲突');snapshot.document={...snapshot.document,revision:revision+1,draft:{...policy,domains:[...(policy.tools.includes('openai')?['openai.com']:[]),...policy.customDomains]}};return clone(snapshot);},
- applyDomainRoute:async(enabled,expected)=>{calls.push(['apply',enabled,expected.document.revision]);if(writes.length)await writes.shift();if(expected.document.revision!==snapshot.document.revision)throw Error('修订冲突');snapshot.document={...snapshot.document,enabled,revision:expected.document.revision+1,applied:enabled?clone(snapshot.document.draft):snapshot.document.applied};snapshot.status=enabled?'已应用 · 仅处理进入代理核心的流量':'已关闭';return clone(snapshot);}}};
+ applyDomainRoute:async(enabled,expected)=>{calls.push(['apply',enabled,expected.document.revision]);if(writes.length)await writes.shift();if(expected.document.revision!==snapshot.document.revision)throw Error('修订冲突');snapshot.document={...snapshot.document,enabled,revision:expected.document.revision+1,applied:enabled?clone(snapshot.document.draft):snapshot.document.applied};snapshot.status=enabled?'已启用 · 核心规则已核对':'已关闭';snapshot.verification=enabled?snapshot.ingress.state==='stopped'?'waiting_core':'verified':'off';return clone(snapshot);}}};
  const controller=mountDomainRouting(root,services);
- return {get opened(){return opened;},controller,control:element,calls,confirmations,answers,reads,writes,notices,busy,tool,get snapshot(){return snapshot;},set snapshot(v){snapshot=v;},set context(v){context=v;},set blocked(v){blocked=v;},fire(id,type='click',values={}){Object.assign(element(id),values);element(id).listeners[type]?.({preventDefault(){}});},settle};
+ return {get opened(){return opened;},controller,control:element,calls,confirmations,answers,reads,writes,notices,busy,statuses,tool,get snapshot(){return snapshot;},set snapshot(v){snapshot=v;},set context(v){context=v;},set blocked(v){blocked=v;},fire(id,type='click',values={}){Object.assign(element(id),values);element(id).listeners[type]?.({preventDefault(){}});},settle};
 }
 test('both entry points share authoritative state, confirmation and one mutation lock',async()=>{
  const h=harness();assert.equal(h.control('global').disabled,true);await h.controller.refresh();
@@ -66,13 +66,13 @@ test('invalid setup shows actionable message without confirming or starting core
  const h=harness();h.snapshot.document.draft.target='missing';await h.controller.refresh();h.fire('global');await settle();assert.equal(h.confirmations.length,0);assert.equal(h.calls.filter(c=>c[0]==='apply').length,0);assert.match(h.control('feedback').textContent,/有效出口/);assert.equal(h.opened,1);assert.equal(h.control('target').focused,true);
 });
 test('enabled preference does not replace waiting/ineffective runtime status',async()=>{
- const h=harness(true);for(const status of ['已配置 · 等待核心启动','已配置 · 当前非规则模式，不生效','需要重新选择出口 · 匹配流量拒绝连接']){h.snapshot.status=status;await h.controller.refresh(true);assert.equal(h.control('status').textContent,status);assert.match(h.control('global').title,new RegExp(status.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));assert.equal(h.control('toggle').textContent,'关闭路由');}
+ const h=harness(true);for(const [verification,status] of [['waiting_core','已配置 · 等待核对核心规则'],['wrong_mode','已配置 · 当前非规则模式，不生效'],['missing_target','需要重新选择出口 · 匹配流量拒绝连接']]){h.snapshot.verification=verification;h.snapshot.status=status;await h.controller.refresh(true);assert.equal(h.control('status').textContent,status);assert.match(h.control('global').title,new RegExp(status.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));assert.equal(h.control('toggle').textContent,'关闭路由');assert.equal(h.control('global').classList.values['is-active'],false);}
 });
 test('external runtime operation blocks both entries and programmatic duplicate calls',async()=>{
  const h=harness();await h.controller.refresh();h.blocked=true;h.controller.render();h.fire('global');h.fire('toggle');await settle();assert.equal(h.control('global').disabled,true);assert.equal(h.confirmations.length,0);h.blocked=false;h.controller.render();assert.equal(h.control('global').disabled,false);
 });
 test('read failure reports unknown, keeps last known preference and allows retry',async()=>{
- const h=harness(true);await h.controller.refresh();const gate=deferred();h.reads.push(gate.promise);const task=h.controller.refresh();gate.reject(Error('状态读取失败'));await task;assert.match(h.control('status').textContent,/状态待核对/);assert.equal(h.control('global').attrs['aria-pressed'],'true');await h.controller.refresh();assert.match(h.control('status').textContent,/已应用/);
+ const h=harness(true);await h.controller.refresh();const gate=deferred();h.reads.push(gate.promise);const task=h.controller.refresh();gate.reject(Error('状态读取失败'));await task;assert.match(h.control('status').textContent,/状态待核对/);assert.equal(h.control('global').attrs['aria-pressed'],'true');assert.equal(h.statuses.at(-1),null);await h.controller.refresh();assert.match(h.control('status').textContent,/规则就绪/);
 });
 test('global and page controls exist; no duplicate footer close; help stays collapsed',()=>{
  assert.match(read('src/main.ts'),/id="global-tun"[\s\S]*id="global-domain-route"[\s\S]*id="global-refresh"/);
@@ -116,4 +116,106 @@ test('sanitized native route details survive generic DTO title and failures reta
 
 test('fresh authoritative setup change guides focus after the mutation lock releases',async()=>{
  const h=harness();await h.controller.refresh();const gate=deferred();h.reads.push(gate.promise);h.fire('global');await settle();const next=clone(h.snapshot);next.document.draft.target='missing';next.document.revision++;h.snapshot=next;gate.resolve(next);await settle();assert.equal(h.control('target').focused,true);assert.equal(h.control('fields').disabled,false);assert.equal(h.calls.filter(c=>c[0]==='apply').length,0);
+});
+
+test('enabled route pauses with the stopped proxy while its configuration switch stays on',async()=>{
+ const h=harness(true);h.snapshot.ingress={state:'stopped',message:'代理已停止'};h.snapshot.verification='waiting_core';
+ assert.equal(h.statuses.length,0,'mount must not synchronously invoke parent status callbacks');
+ await h.controller.refresh();
+ assert.equal(h.control('status').textContent,'已启用 · 暂停，等待代理启动');
+ assert.equal(h.control('global').textContent,'路由 · 待启动');
+ assert.equal(h.control('global').attrs['aria-pressed'],'true');
+ assert.equal(h.control('toggle').textContent,'关闭路由');
+ assert.equal(h.control('global').classList.values['is-active'],false);
+ assert.equal(h.statuses.at(-1).ingress.state,'stopped');
+ assert.equal(h.calls.filter(c=>c[0]!=='read').length,0,'status reads cannot start the proxy or apply routes');
+ h.fire('global');await settle();
+ assert.deepEqual(h.calls.filter(c=>c[0]==='apply').map(c=>c[1]),[false]);
+ assert.equal(h.snapshot.ingress.state,'stopped');
+ assert.equal(h.control('global').attrs['aria-pressed'],'false');
+});
+
+test('only verified system proxy or TUN ingress receives the ready appearance',async()=>{
+ const h=harness(true);
+ for(const [ingress,label] of [['system_proxy','系统代理'],['tun','TUN']]) {
+  h.snapshot.ingress={state:ingress,message:`${label}已接管`};h.snapshot.verification='verified';
+  await h.controller.refresh(true);
+  assert.equal(h.control('global').classList.values['is-active'],true);
+  assert.match(h.control('status').textContent,new RegExp(`规则就绪（${label}）`));
+  h.snapshot.verification='pending';h.snapshot.status='等待核对核心规则';
+  await h.controller.refresh(true);
+  assert.equal(h.control('global').classList.values['is-active'],false);
+  assert.equal(h.control('status').textContent,'等待核对核心规则');
+ }
+});
+
+test('manual ingress explicitly describes local-only routing without claiming system capture',async()=>{
+ const h=harness(true);h.snapshot.ingress={state:'local_only',message:'系统未接管，本地代理端口仍在运行'};
+ await h.controller.refresh();
+ assert.match(h.control('status').textContent,/规则已加载，仅本地代理入口生效，系统未接管/);
+ assert.equal(h.control('global').textContent,'路由 · 本地');
+ assert.equal(h.control('global').attrs['aria-pressed'],'true');
+ assert.equal(h.control('global').classList.values['is-active'],false);
+ assert.equal(h.control('apply').disabled,true,'local-only ingress is not a rule mismatch needing reapply');
+});
+
+test('missing, unknown and unavailable ingress fail closed even when rules were verified',async()=>{
+ const h=harness(true);await h.controller.refresh();
+ for(const ingress of [undefined,{state:'unsupported_future_state',message:'入口状态待核对'},{state:'unknown',message:'入口读取失败，请刷新核对'},{state:'unavailable',message:'系统代理接管已被更改'}]) {
+  h.snapshot.ingress=ingress;await h.controller.refresh(true);
+  assert.equal(h.control('global').attrs['aria-pressed'],'true');
+  assert.equal(h.control('global').classList.values['is-active'],false);
+  assert.equal(h.control('status').dataset.tone,'error');
+  assert.match(h.control('status').textContent,/待核对|读取失败|接管已被更改/);
+ }
+});
+
+test('invalidate immediately revokes ready state and an older read cannot restore it',async()=>{
+ const h=harness(true);await h.controller.refresh();
+ h.control('domains').value='unsaved.example.com';h.fire('form','input');
+ const gate=deferred(),old=clone(h.snapshot);h.reads.push(gate.promise);const reading=h.controller.refresh(true);
+ h.blocked=true;h.controller.invalidate();
+ assert.equal(h.control('global').classList.values['is-active'],false);
+ assert.equal(h.control('global').attrs['aria-pressed'],'true');
+ assert.match(h.control('status').textContent,/正在核对/);
+ assert.equal(h.statuses.at(-1),null);
+ gate.resolve(old);await reading;
+ assert.equal(h.statuses.at(-1),null,'late verified snapshot must not republish ingress');
+ assert.equal(h.control('global').classList.values['is-active'],false);
+ assert.equal(h.control('domains').value,'unsaved.example.com');
+ h.blocked=false;h.snapshot.ingress={state:'stopped',message:'代理已停止'};h.snapshot.verification='waiting_core';
+ await h.controller.refresh(true);
+ assert.equal(h.control('global').textContent,'路由 · 待启动');
+ assert.equal(h.statuses.at(-1).ingress.state,'stopped');
+ assert.equal(h.control('domains').value,'unsaved.example.com');
+});
+
+test('rendering a changed proxy context invalidates readiness before a new response arrives',async()=>{
+ const h=harness(true);await h.controller.refresh();
+ h.context='p/r/system-proxy-unavailable';h.controller.render();
+ assert.equal(h.statuses.at(-1),null);
+ assert.equal(h.control('global').dataset.verification,'unknown');
+ assert.equal(h.control('global').classList.values['is-active'],false);
+ h.snapshot.ingress={state:'unavailable',message:'系统代理接管已被更改'};
+ await h.controller.refresh(true);
+ assert.equal(h.control('global').textContent,'路由 · 未接管');
+ assert.match(h.control('status').textContent,/系统代理接管已被更改/);
+});
+
+test('invalidation cancels a pending route confirmation even when its context string is unchanged',async()=>{
+ const h=harness(true);await h.controller.refresh();const confirmation=deferred();h.answers.push(confirmation.promise);
+ h.fire('toggle');await settle();h.blocked=true;h.controller.invalidate();confirmation.resolve(true);await settle();
+ assert.equal(h.calls.filter(c=>c[0]==='apply').length,0);
+ assert.equal(h.snapshot.document.enabled,true);
+ assert.equal(h.statuses.at(-1),null);
+ assert.equal(h.control('global').classList.values['is-active'],false);
+});
+
+test('closing routing removes only the routing preference and keeps the active ingress intact',async()=>{
+ const h=harness(true);h.snapshot.ingress={state:'tun',message:'TUN接管已核对'};await h.controller.refresh();
+ const ingress=clone(h.snapshot.ingress);h.fire('toggle');await settle();
+ assert.equal(h.snapshot.document.enabled,false);
+ assert.deepEqual(h.snapshot.ingress,ingress);
+ assert.deepEqual(h.calls.filter(c=>c[0]!=='read').map(c=>c.slice(0,2)),[['apply',false]]);
+ assert.match(h.confirmations.at(-1).message,/系统代理与 TUN 状态不变/);
 });
