@@ -74,3 +74,9 @@ test('subscription task polling is read-only and does not invalidate every in-fl
  assert.ok(commands?.includes('"subscription_task_status"'));
  assert.match(source,/"subscription_task_status", \{ taskId \}, 'background'/);
 });
+
+test('network observation polling is read-only and cannot repeatedly invalidate UI reads',()=>{
+ const source=read('src/api.ts');
+ assert.ok(source.match(/const readCommands = new Set\(\[(.*?)\]\)/s)?.[1].includes('"network_context_status"'));
+ assert.match(read('src/main.ts'),/read: \(\) => api\.networkContext\('background'\)/);
+});

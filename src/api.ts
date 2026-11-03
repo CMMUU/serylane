@@ -23,6 +23,7 @@ import type {
   GlobalTrafficSnapshot,
   NetworkMode,
   NetworkSafetyReport,
+  NetworkContextSnapshot,
   OpenAiPolicy,
   OpenAiPolicyTask,
   ProfileDetails,
@@ -50,7 +51,7 @@ import type {
 } from "./types";
 
 const reads = new ReadCoordinator();
-const readCommands = new Set(["subscription_task_status", "run_connectivity_diagnostic_step", "read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
+const readCommands = new Set(["network_context_status", "subscription_task_status", "run_connectivity_diagnostic_step", "read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
 async function invoke<T>(command: string, args?: InvokeArgs, priority: ReadPriority = 'foreground'): Promise<T> {
   if (command === "app_update_status") {
     appLifecycle.requireStatus();
@@ -71,8 +72,8 @@ export const api = {
   domainRouteStatus: (priority: ReadPriority = 'foreground') => invoke<DomainRouteState>("domain_route_status", undefined, priority),
   saveDomainRoute: (policy: DomainSelection, expectedRevision: number) => invoke<DomainRouteState>("save_domain_route", {policy, expectedRevision}),
   applyDomainRoute: (enabled: boolean, state: DomainRouteState) => invoke<DomainRouteState>("apply_domain_route", {enabled, expectedRevision: state.document.revision, profileId: state.profileId, profileRevision: state.profileRevision, confirmed: true}),
-  startAiHealthCheck: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_ai_health_check", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision }),
-  startNodeTest: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_node_test", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision }),
+  startAiHealthCheck: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_ai_health_check", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision, networkRevision: scope.networkRevision ?? null }),
+  startNodeTest: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_node_test", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision, networkRevision: scope.networkRevision ?? null }),
   nodeTestStatus: (priority: ReadPriority = 'foreground') => invoke<NodeTestSnapshot | null>("node_test_status", undefined, priority),
   cancelNodeTest: (taskId: string) => invoke<NodeTestSnapshot>("cancel_node_test", { taskId }),
   manualOutbound: () => invoke<ManualOutboundState>("get_manual_outbound"),
@@ -195,11 +196,12 @@ export const api = {
   saveOpenAiCosts: (input: CostInput) => invoke<CostSnapshot>("save_openai_costs", { input, confirmed: true }),
   clearProxySelection: (group: string, profileId: string, revisionId: string, modeRevision: string) =>
     invoke<void>("clear_proxy_selection", { group, profileId, revisionId, modeRevision }),
-  testProxyDelay: (proxy: string, url?: string, timeoutMs = 5_000) =>
+  testProxyDelay: (proxy: string, url?: string, timeoutMs = 5_000, networkRevision?: string | null) =>
     invoke<Record<string, unknown>>("test_proxy_delay", {
       proxy,
       url: url ?? null,
       timeoutMs,
+      networkRevision: networkRevision ?? null,
     }),
   testProxyGroup: (
     group: string,
@@ -225,8 +227,9 @@ export const api = {
     invoke<OpenAiPolicy>("disable_openai_policy", { profileId }),
   closeConnection: (connectionId: string) =>
     invoke<void>("close_connection", { connectionId }),
-  diagnosticStep: (stage: DiagnosticStage) =>
-    invoke<ConnectivityCheck>("run_connectivity_diagnostic_step", { stage }),
+  networkContext: (priority: ReadPriority = 'foreground') => invoke<NetworkContextSnapshot>("network_context_status", undefined, priority),
+  diagnosticStep: (stage: DiagnosticStage, node?: string) =>
+    invoke<ConnectivityCheck>("run_connectivity_diagnostic_step", { stage, node: node || null }),
   networkSafety: () =>
     invoke<NetworkSafetyReport>("run_network_safety_check"),
 };

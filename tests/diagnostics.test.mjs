@@ -114,3 +114,17 @@ test('labels and error text are escaped, while rows expose stable identity and r
  const html=diagnosticRowsMarkup({rows:[{id:'x\"<',label:'<img src=x>',status:'running',detail:'<script>bad()</script>'},{id:'done',label:'端口',status:'fail',detail:'a & b'}]});
  assert.ok(!html.includes('<img'));assert.ok(!html.includes('<script>'));assert.match(html,/&lt;script&gt;/);assert.match(html,/data-render-key="x&quot;&lt;"/);assert.match(html,/status-running/);assert.match(html,/检测中/);assert.match(html,/未通过/);assert.match(html,/role="listitem"/);
 });
+
+test('network-aware diagnostics use selected node without switching it; skipped transport is not a failure',async()=>{
+ const received=[];const f=fixture({networkContext:async()=>({observed:true,stale:false,routeKnown:true,dnsKnown:true,tailscale:'exit_node',detail:'fixture exit'}),diagnosticNode:()=> 'fixture-node',diagnosticStep:async(stage,node)=>{received.push([stage,node]);return {stage,success:stage!=='node_transport',outcome:stage==='node_transport'?'skipped':null,detail:'fixture',latencyMs:null};}});
+ await f.controller.run();const s=f.controller.snapshot();assert.equal(s.rows.length,12);assert.equal(s.rows[0].status,'pass');assert.equal(s.rows.at(-2).status,'skipped');assert.equal(s.rows.at(-1).status,'pass');assert.ok(received.every(([,node])=>node==='fixture-node'));
+});
+test('unknown network is a warning and does not invent an inactive Tailscale state',async()=>{
+ const f=fixture({networkContext:async()=>({observed:true,stale:false,routeKnown:true,dnsKnown:true,tailscale:'unknown',detail:'CLI missing'})});await f.controller.run();assert.equal(f.controller.snapshot().rows[0].status,'warn');
+});
+
+test('completed diagnostics become historical after an explicit network invalidation',async()=>{
+ const f=fixture();await f.controller.run();f.controller.invalidate('网络已变化',true);
+ assert.equal(f.controller.snapshot().phase,'interrupted');assert.ok(f.controller.snapshot().rows.every(r=>r.status==='skipped'));
+ assert.equal(f.controller.snapshot().pending,false);
+});

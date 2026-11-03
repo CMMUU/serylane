@@ -61,3 +61,12 @@ test('single retests replace batch cell results without changing batch summary; 
  f.click('manual-test-all');await flush();f.manager.recordSingle(scope,rev,{name:'A',state:'passed',delayMs:99});assert.equal(f.manager.results()[0].delayMs,null);
  f.context({...scope,profileId:'other'});assert.deepEqual(f.manager.results(),[]);
 });
+
+test('network epoch change drops completed and single-node results, including delayed replies',async()=>{
+ const initial={...scope,networkRevision:'network-1'};
+ assert.equal(sameNodeTestScope(initial,{...initial,networkRevision:'network-2'}),false);
+ const f=fixture({status:async()=>snapshot({scope:initial,phase:'completed',nodes:[{name:'A',state:'passed',delayMs:20}]})});
+ f.context(initial);await f.manager.refresh();assert.equal(f.manager.results()[0].delayMs,20);
+ const revision=f.manager.revision();f.context({...initial,networkRevision:'network-2'});
+ f.manager.recordSingle(initial,revision,{name:'A',state:'passed',delayMs:99});assert.deepEqual(f.manager.results(),[]);
+});

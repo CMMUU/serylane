@@ -62,3 +62,9 @@ test('batch result states override stale history and individual tests disable wh
  assert.match(markup,/超时/);assert.match(markup,/未测试/);assert.match(markup,/70 ms/);assert.doesNotMatch(markup,/>1 ms</);
  assert.match(markup,/class="[^\"]*proxy-delay[^\"]*"[^>]*disabled/);
 });
+
+test('unscoped controller history is hidden when network-aware results are required',()=>{
+ const map={G:{type:'Selector',all:['A'],now:'A'},A:{type:'Trojan',history:[{delay:19}]}};
+ const old=nodeGridMarkup('G',map,'','delay',false,[],false,200,false);assert.ok(!old.includes('19 ms'));
+ const fresh=nodeGridMarkup('G',map,'','delay',false,[{name:'A',state:'passed',delayMs:23}],false,200,false);assert.ok(fresh.includes('23 ms'));
+});

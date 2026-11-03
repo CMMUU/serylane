@@ -23,8 +23,10 @@ mod macos_upgrade;
 mod manual_outbound;
 mod mihomo_api;
 mod models;
+mod network_context;
 mod network_safety;
 mod node_details;
+mod node_diagnostics;
 mod node_metadata;
 mod node_selection;
 mod node_test;
@@ -1324,6 +1326,7 @@ async fn start_ai_health_check(
     profile_id: Uuid,
     revision_id: Uuid,
     mode_revision: Uuid,
+    network_revision: Option<Uuid>,
 ) -> Result<node_test::Snapshot, AppErrorDto> {
     node_test::start_kind(
         app,
@@ -1331,6 +1334,7 @@ async fn start_ai_health_check(
         revision_id,
         mode_revision,
         node_test::Kind::Ai,
+        network_revision,
     )
     .await
     .map_err(dto)
@@ -1342,10 +1346,17 @@ async fn start_node_test(
     profile_id: Uuid,
     revision_id: Uuid,
     mode_revision: Uuid,
+    network_revision: Option<Uuid>,
 ) -> Result<node_test::Snapshot, AppErrorDto> {
-    node_test::start(app, profile_id, revision_id, mode_revision)
-        .await
-        .map_err(dto)
+    node_test::start(
+        app,
+        profile_id,
+        revision_id,
+        mode_revision,
+        network_revision,
+    )
+    .await
+    .map_err(dto)
 }
 #[tauri::command]
 async fn node_test_status(app: AppHandle) -> Result<Option<node_test::Snapshot>, AppErrorDto> {
@@ -1365,8 +1376,13 @@ async fn test_proxy_delay(
     proxy: String,
     url: Option<String>,
     timeout_ms: Option<u32>,
+    network_revision: Option<Uuid>,
 ) -> Result<Value, AppErrorDto> {
-    api_client(&app)?
+    let before = network_context::refresh(&app).await;
+    if network_revision.is_some_and(|r| r != before.revision) {
+        return Err(dto(AppError::Conflict("网络环境已变化，请重新测速".into())));
+    }
+    let result = api_client(&app)?
         .delay(
             &proxy,
             url.as_deref()
@@ -1374,7 +1390,14 @@ async fn test_proxy_delay(
             timeout_ms.unwrap_or(5_000),
         )
         .await
-        .map_err(dto)
+        .map_err(dto)?;
+    let after = network_context::refresh(&app).await;
+    if before.revision != after.revision || after.stale {
+        return Err(dto(AppError::Conflict(
+            "网络环境在测速期间变化，结果已丢弃，请重新测试".into(),
+        )));
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1417,11 +1440,13 @@ async fn run_connectivity_diagnostics(app: AppHandle) -> Result<Vec<DiagnosticCh
 async fn run_connectivity_diagnostic_step(
     app: AppHandle,
     stage: DiagnosticStage,
+    node: Option<String>,
 ) -> Result<DiagnosticCheck, AppErrorDto> {
     let lifecycle = &lifecycle::PROCESS_LIFECYCLE;
     let ticket = lifecycle
         .ticket()
         .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
+    let diagnostic_app = app.clone();
     let settings = ui_read::run(move || {
         AppStorage::from_app(&app)
             .and_then(|storage| storage.settings())
@@ -1431,7 +1456,24 @@ async fn run_connectivity_diagnostic_step(
     lifecycle
         .check(ticket)
         .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
-    let result = diagnostics::run_step(&settings, stage).await;
+    let result = match stage {
+        DiagnosticStage::NodeDns => {
+            node_diagnostics::run(&diagnostic_app, "node_dns", node.as_deref())
+                .await
+                .map_err(dto)?
+        }
+        DiagnosticStage::NodeTransport => {
+            node_diagnostics::run(&diagnostic_app, "node_transport", node.as_deref())
+                .await
+                .map_err(dto)?
+        }
+        DiagnosticStage::NodeRequest => {
+            node_diagnostics::run(&diagnostic_app, "node_request", node.as_deref())
+                .await
+                .map_err(dto)?
+        }
+        _ => diagnostics::run_step(&settings, stage).await,
+    };
     lifecycle
         .check(ticket)
         .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
@@ -1583,6 +1625,7 @@ pub fn run() {
         .manage(SubscriptionImportGuard::default())
         .manage(subscription_task::TaskManager::default())
         .manage(node_test::NodeTestManager::default())
+        .manage(network_context::NetworkContext::default())
         .manage(OpenAiPolicyTaskManager::default())
         .manage(GlobalTrafficMonitor::default())
         .manage(user_rules::ConfigurationMutationGuard::default())
@@ -1697,6 +1740,7 @@ pub fn run() {
                 }
             }
             subscription_quota::start(app.handle().clone());
+            network_context::start(app.handle().clone());
             let pruning_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -1805,6 +1849,7 @@ pub fn run() {
             start_node_test,
             start_ai_health_check,
             node_test_status,
+            network_context::network_context_status,
             cancel_node_test,
             test_proxy_delay,
             test_proxy_group,

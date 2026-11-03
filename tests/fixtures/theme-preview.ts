@@ -888,10 +888,15 @@ function fixtureManualState() {
 // Synthetic controller job: no real nodes, requests, profiles or runtime writes.
 let fixtureNodeJob: NodeTestSnapshot | null = null;
 let fixtureNodeJobStarted = 0, fixtureNodeJobCounter = 0, fixtureNodeJobFails = false;
+let fixtureNetwork = { revision: 'fixture-network-1', generation: 1, observed: true, stale: false, tailscale: 'exit_node', routeKnown: true, dnsKnown: true, policy: 'system', independentEgressAvailable: false, tunCoexistenceVerified: false, detail: '合成场景：Tailscale 已选择出口节点，保持系统出口；未修改实际网络。' };
+window.addEventListener('serylane-fixture-network', ((event: CustomEvent<Record<string, unknown>>) => {
+  fixtureNetwork = {...fixtureNetwork, ...event.detail, generation: fixtureNetwork.generation + 1, revision: `fixture-network-${fixtureNetwork.generation + 1}`};
+  void emit('network-context-changed', fixtureNetwork);
+}) as EventListener);
 function fixtureNodeScope(kind: "manual" | "ai" = "manual"): NodeTestScope | null {
   const profile = profiles.find(p => p.id === activeProfileId);
   if (!profile || fixtureProxyMode !== kind || fixtureRuntimePhase !== 'running' || profile.routingMode === 'direct') return null;
-  return {kind, profileId: profile.id, revisionId: profile.activeRevisionId!, modeRevision: fixtureModeRevision, runtimePid: null, runtimeStartedAt: stamp, routingMode: profile.routingMode};
+  return {networkRevision: fixtureNetwork.revision, kind, profileId: profile.id, revisionId: profile.activeRevisionId!, modeRevision: fixtureModeRevision, runtimePid: null, runtimeStartedAt: stamp, routingMode: profile.routingMode};
 }
 function fixtureNodeStatus() {
   const job = fixtureNodeJob;
@@ -983,15 +988,16 @@ window.addEventListener("serylane-fixture-lifecycle", ((event: CustomEvent<impor
 mockIPC(async (command, payload) => {
   if (command === "app_lifecycle_status") return { generation: 0, phase: "open" };
   const args = payloadRecord(payload);
+  if (command === 'network_context_status') return structuredClone(fixtureNetwork);
   if (command === 'run_connectivity_diagnostic_step') {
     const stage = String(args.stage) as DiagnosticStage;
-    if (!['local_proxy', 'controller', 'http_proxy'].includes(stage)) throw new Error('FIXTURE_ONLY: 未知诊断步骤');
+    if (!['local_proxy', 'controller', 'http_proxy', 'node_dns', 'node_transport', 'node_request'].includes(stage)) throw new Error('FIXTURE_ONLY: 未知诊断步骤');
     diagnosticCalls.push(stage);
     document.documentElement.dataset.fixtureDiagnosticCalls = JSON.stringify(diagnosticCalls);
     const result = previewQuery.get('diagnosticScenario') === 'progressive'
       ? await new Promise<{success: boolean; detail: string}>(resolve => diagnosticGates.set(stage, resolve))
       : { success: true, detail: '合成检查；未发送实际网络请求。' };
-    return { stage, ...result, latencyMs: 1 };
+    return { stage, ...result, outcome: stage === 'node_transport' ? 'skipped' : null, latencyMs: 1 };
   }
   if (command === 'node_test_status') return fixtureNodeStatus();
   if (command === 'start_node_test' || command === 'start_ai_health_check') {

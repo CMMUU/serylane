@@ -1,6 +1,7 @@
 import { appLifecycle, type LifecycleSnapshot } from "./app-lifecycle";
 import { PageReads, type ReadPriority } from "./read-coordinator";
 import { stableMarkup } from "./stable-dom";
+import { createNetworkContext } from "./network-context";
 import { createDiagnostics, diagnosticRowsMarkup } from "./diagnostics";
 import { createAiHealth, aiHealthMarkup } from "./ai-health";
 import { mountSubscriptionEditor } from "./subscription-editor";
@@ -51,6 +52,7 @@ import type {
   CurrentNodeDetails,
   GlobalTrafficSnapshot,
   NetworkMode,
+  NetworkContextSnapshot,
   NetworkSafetyReport,
   OpenAiPolicyTask,
   ProfileDetails,
@@ -420,13 +422,15 @@ app.innerHTML = `
           <div class="panel-heading"><div><div class="section-label">AI PROXY</div><h2>AI 代理</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
           <div id="proxy-mode-notice" class="warning-box" hidden><p>自选节点正在生效，AI 策略已暂停。二者只能启用一个；Codex 路由接入保持独立。</p><button class="button button-quiet" id="proxy-mode-restore">使用 AI 代理</button></div>
           <fieldset id="proxy-mode-controls"><legend class="sr-only">代理策略控制</legend>
+          <p class="hint network-context-copy" role="status">正在识别网络环境；保持系统出口。</p>
           <div id="openai-policy-card" class="openai-policy-card"></div>
           ${openAiCostsMarkup}
           </fieldset>
         </article>
       </section>
 
-      <section class="view-stack is-hidden" id="manual-view">${manualOutboundMarkup}</section>
+      <section class="view-stack is-hidden" id="manual-view">${manualOutboundMarkup}
+        <p class="hint network-context-copy" role="status">网络变化后需重新测速；未绑定当前网络的核心历史延迟不参与排序。</p></section>
       <section class="view-stack is-hidden" id="routing-view">
         ${domainRoutingMarkup}
       </section>
@@ -456,6 +460,9 @@ app.innerHTML = `
       <section class="view-stack is-hidden" id="diagnostics-view">
         <article class="panel">
           <div class="panel-heading"><div><div class="section-label">DIAGNOSTICS</div><h2>分层诊断</h2></div><button class="button button-primary" id="run-diagnostics">立即诊断</button></div>
+          <p class="hint network-context-copy" role="status">正在识别网络环境；保持系统出口。</p>
+          <div class="diagnostic-node-picker"><label for="diagnostic-node">排查节点（不切换实际出口）</label><select id="diagnostic-node"><option value="">不指定，仅检查基础连接</option></select><button class="button button-quiet" id="diagnostic-nodes-refresh">刷新节点</button></div>
+          <p class="hint">按系统出口执行 DNS、TCP 对照和核心实际协议检查；UDP、提供器及显式拨号链以实际协议结果为准。长连接与 MTU 仍需真实使用验证。</p>
           <p id="diagnostic-status" class="hint diagnostic-status" role="status" aria-live="polite" aria-atomic="true">按顺序检查核心、配置、端口与实际代理请求。</p>
           <div id="diagnostic-list" class="diagnostic-list" role="list" aria-label="诊断结果" aria-busy="false"></div>
         </article>
@@ -2339,7 +2346,7 @@ function renderProxies() {
     return `<details class="proxy-card manual-group" data-render-key="${escapeHtml(name)}" data-group="${escapeHtml(name)}" ${open.has(name) || firstRender && index === 0 || query ? 'open' : ''}>
       <summary><strong>${escapeHtml(name)}</strong><span>${escapeHtml(value.now ?? '按组策略')} · ${value.all?.length ?? 0} 节点</span><small>${escapeHtml(value.type ?? '')}</small></summary>
       <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">当前出口详情</button>${value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-node-auto="${escapeHtml(name)}" ${busy ? 'disabled' : ''}>恢复自动</button>` : ''}</div>
-      ${open.has(name) || firstRender && index === 0 || query ? nodeGridMarkup(name, map, query, sort, busy, nodeTests.results(), nodeTests.busy(), nodeLimits.get(name) ?? 200) : ""}</details>`;
+      ${open.has(name) || firstRender && index === 0 || query ? nodeGridMarkup(name, map, query, sort, busy, nodeTests.results(), nodeTests.busy(), nodeLimits.get(name) ?? 200, false) : ""}</details>`;
   }).join(''));
 }
 
@@ -2389,7 +2396,7 @@ function renderNodeDetails() {
     </header>
     <div class="node-health-summary">
       <div><span>状态</span><strong>${details.alive == null ? "尚未验证" : details.alive ? "最近探测可达" : "最近探测失败"}</strong></div>
-      <div><span>延迟</span><strong>${details.lastDelayMs == null ? "—" : `${details.lastDelayMs} ms`}</strong></div>
+      <div><span>核心历史延迟</span><strong>${details.lastDelayMs == null ? "—" : `${details.lastDelayMs} ms`}</strong></div>
       <div><span>协议</span><strong>${escapeHtml(details.nodeType)} · ${escapeHtml(details.tls ?? "无 TLS")}</strong></div>
       <div><span>最近检测</span><strong>${latestTime ? formatPolicyDate(latestTime) : "暂无"}</strong></div>
     </div>
@@ -2530,12 +2537,59 @@ async function refreshLogs() {
   await logsView.refresh();
 }
 
-function runDiagnostics() {
-  return diagnosticsView.run();
+const networkContext = createNetworkContext({
+  read: () => api.networkContext('background'),
+  changed: (state, invalidated) => {
+    for (const element of document.querySelectorAll('.network-context-copy')) element.textContent = state?.detail ?? '网络环境待重新识别，旧测速暂不采用；保持原出口。';
+    if (invalidated) {
+      diagnosticsView.invalidate('网络、DNS 或出口已变化，请重新诊断；未修改代理设置。', true);
+      overviewNodeDetails = {};
+      nodeTests.render();
+      if (store.view === 'manual') renderProxies();
+      if (store.view === 'proxies') renderOpenAiPolicy();
+    }
+  },
+});
+window.setInterval(() => { if (!appLifecycle.paused && !document.hidden) void networkContext.refresh(); }, 6000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !appLifecycle.paused) void networkContext.refresh(); });
+window.addEventListener('focus', () => { if (!appLifecycle.paused) void networkContext.refresh(); });
+
+let diagnosticNodesReading = false;
+async function refreshDiagnosticNodes() {
+  if (diagnosticNodesReading) return;
+  diagnosticNodesReading = true;
+  const context = pageContext();
+  const button = $('#diagnostic-nodes-refresh') as HTMLButtonElement; button.disabled = true;
+  const selector = $('#diagnostic-node') as HTMLSelectElement, previous = selector.value;
+  try {
+    const payload = await api.proxies();
+    if (context !== pageContext() || store.view !== 'diagnostics') return;
+    const map = (payload as { proxies?: ProxyMap }).proxies ?? {};
+    const names = Object.keys(map).filter(name => map[name].type && !map[name].all && !['Direct', 'Reject', 'RejectDrop', 'Pass', 'Compatible'].includes(map[name].type!)).sort();
+    selector.replaceChildren(new Option('不指定，仅检查基础连接', ''), ...names.slice(0, 1000).map(name => new Option(name, name)));
+    if (names.includes(previous)) selector.value = previous;
+    if (names.length > 1000) toast('仅列出前 1000 个节点，请拆分配置后排查其余节点。', 'info');
+  } catch { if (context === pageContext()) toast('节点列表未读取成功，请确认核心运行后刷新。', 'error'); }
+  finally { diagnosticNodesReading = false; button.disabled = false; }
+}
+$('#diagnostic-nodes-refresh')!.addEventListener('click', () => void refreshDiagnosticNodes());
+$('#diagnostic-node')!.addEventListener('change', () => diagnosticsView.invalidate('排查节点已变化，请重新诊断。'));
+
+let diagnosticStart: Promise<void> | null = null;
+function runDiagnostics(): Promise<void> {
+  if (diagnosticStart) return diagnosticStart;
+  const button = $('#run-diagnostics') as HTMLButtonElement;
+  const context = pageContext();
+  button.disabled = true; button.textContent = '正在识别网络…'; button.setAttribute('aria-busy', 'true');
+  diagnosticStart = networkContext.refresh().then(async () => {
+    if (context === pageContext() && store.view === 'diagnostics') await diagnosticsView.run();
+  }).finally(() => { diagnosticStart = null; button.disabled = false; button.textContent = '重新诊断'; button.setAttribute('aria-busy', 'false'); });
+  return diagnosticStart;
 }
 const diagnosticsView = createDiagnostics({
   ...api, context: () => JSON.stringify([pageContext(), store.runtime?.startedAt, store.settings?.networkMode,
-    store.settings?.mixedPort, store.settings?.controllerPort, store.activeProfile?.profile.routingMode, appLifecycle.generation]),
+    store.settings?.mixedPort, store.settings?.controllerPort, store.activeProfile?.profile.routingMode, appLifecycle.generation, networkContext.current()?.revision, ($('#diagnostic-node') as HTMLSelectElement).value]),
+  diagnosticNode: () => ($('#diagnostic-node') as HTMLSelectElement).value,
   allowed: () => store.view === 'diagnostics' && !appLifecycle.paused,
   networkMode: () => store.settings?.networkMode,
   error: errorMessage,
@@ -2600,7 +2654,7 @@ function aiHealthContext(): NodeTestScope | null {
   const profile = store.activeProfile?.profile, runtime = store.runtime, mode = store.manualOutbound;
   if (!profile?.activeRevisionId || !profile.openaiPolicy.enabled || runtime?.phase !== 'running' || mode?.mode !== 'ai'
       || profile.routingMode === 'direct' || store.openAiTask?.running || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return null;
-  return { kind: 'ai', profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision,
+  return { networkRevision: networkContext.current()?.revision ?? null, kind: 'ai', profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision,
     runtimePid: runtime.pid, runtimeStartedAt: runtime.startedAt, routingMode: profile.routingMode };
 }
 const aiHealth = createAiHealth({ context: aiHealthContext, start: api.startAiHealthCheck, status: () => api.nodeTestStatus('background'),
@@ -2610,7 +2664,7 @@ window.setInterval(() => { if (!appLifecycle.paused && !document.hidden && store
 function nodeTestContext(): NodeTestScope | null {
   const profile = store.activeProfile?.profile, runtime = store.runtime, mode = store.manualOutbound;
   if (!profile?.activeRevisionId || runtime?.phase !== 'running' || mode?.mode !== 'manual' || mode.legacySelection || profile.routingMode === 'direct' || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return null;
-  return { profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision, runtimePid: runtime.pid, runtimeStartedAt: runtime.startedAt, routingMode: profile.routingMode };
+  return { networkRevision: networkContext.current()?.revision ?? null, profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision, runtimePid: runtime.pid, runtimeStartedAt: runtime.startedAt, routingMode: profile.routingMode };
 }
 const nodeTests = mountNodeTest($("#manual-view")!, {
   context: nodeTestContext, start: api.startNodeTest, status: () => api.nodeTestStatus('background'), cancel: api.cancelNodeTest,
@@ -2689,7 +2743,7 @@ function navigate(view: ViewName) {
   }
   if (view === "connections" && store.runtime?.phase === "running") void refreshConnections();
   if (view === "logs") void refreshLogs();
-  if (view === "diagnostics") void runDiagnostics();
+  if (view === "diagnostics") { void refreshDiagnosticNodes(); void runDiagnostics(); }
   if (previousView !== view) restoreViewScroll(view);
 }
 
@@ -2875,7 +2929,7 @@ $("#proxy-groups")!.addEventListener("click", async (event) => {
   if (!scope || button.disabled) return;
   button.disabled = true;
   try {
-    const result = await api.testProxyDelay(name);
+    const result = await api.testProxyDelay(name, undefined, 5_000, scope.networkRevision);
     if (!sameNodeTestScope(scope, nodeTestContext()) || revision !== nodeTests.revision()) return;
     const delay = Number(result.delay);
     const delayMs = Number.isFinite(delay) && delay > 0 ? delay : null;
@@ -3242,3 +3296,6 @@ void (async () => {
   });
   appLifecycle.update(await api.lifecycle());
 })().catch(() => { /* Native admission remains authoritative if the WebView is closing. */ });
+
+void listen<NetworkContextSnapshot>("network-context-changed", event => networkContext.accept(event.payload)).catch(() => {});
+void networkContext.refresh();

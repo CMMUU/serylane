@@ -2037,3 +2037,7 @@ td small { color: var(--muted); }
 .ai-health-results li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; }
 .ai-health-results li span { overflow-wrap: anywhere; }
 .ai-health-results li strong { white-space: nowrap; }
+
+.diagnostic-node-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.diagnostic-node-picker select { flex: 1 1 240px; min-width: 0; max-width: 100%; }
+.network-context-copy { overflow-wrap: anywhere; }
