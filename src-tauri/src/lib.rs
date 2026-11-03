@@ -13,6 +13,8 @@ mod error;
 mod lifecycle;
 mod local_routing;
 #[cfg(target_os = "macos")]
+mod macos_interaction;
+#[cfg(target_os = "macos")]
 mod macos_service;
 #[cfg(target_os = "macos")]
 mod macos_update_install;
@@ -190,21 +192,32 @@ async fn rollback_user_rules(
 }
 
 #[tauri::command]
-fn set_app_theme(app: AppHandle, theme: String) -> Result<PublicAppSettings, AppErrorDto> {
+async fn set_app_theme(app: AppHandle, theme: String) -> Result<PublicAppSettings, AppErrorDto> {
     appearance::native_theme(&theme).map_err(dto)?;
-    let storage = AppStorage::from_app(&app).map_err(dto)?;
-    let settings = appearance::persist_theme(&storage, &theme).map_err(dto)?;
-    appearance::apply_native_theme(&app, &settings.theme).map_err(dto)?;
-    Ok(PublicAppSettings::from(&settings))
+    ui_read::write(move || {
+        let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
+        let storage = AppStorage::from_app(&app).map_err(dto)?;
+        let settings = appearance::persist_theme(&storage, &theme).map_err(dto)?;
+        appearance::apply_native_theme(&app, &settings.theme).map_err(dto)?;
+        Ok(PublicAppSettings::from(&settings))
+    })
+    .await
 }
 
 #[tauri::command]
-fn update_settings(
+async fn update_settings(
     app: AppHandle,
-    state: State<'_, MihomoRuntime>,
-    traffic: State<'_, GlobalTrafficMonitor>,
     settings: PublicAppSettings,
 ) -> Result<PublicAppSettings, AppErrorDto> {
+    ui_read::write(move || update_settings_inner(app, settings)).await
+}
+
+fn update_settings_inner(
+    app: AppHandle,
+    settings: PublicAppSettings,
+) -> Result<PublicAppSettings, AppErrorDto> {
+    let state = app.state::<MihomoRuntime>();
+    let traffic = app.state::<GlobalTrafficMonitor>();
     let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
     let current = storage.settings().map_err(dto)?;
@@ -1525,12 +1538,15 @@ fn cleanup_resources(app: &AppHandle, deadline: std::time::Instant) {
 }
 
 fn show_home_window(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    macos_interaction::reveal(app);
+    #[cfg(not(target_os = "macos"))]
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-        let _ = app.emit("navigate-view", "overview");
     }
+    // Revealing a window is not navigation. Keep the user's current page/draft.
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1621,8 +1637,9 @@ pub fn run() {
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
-            tray.menu(&menu)
-                .show_menu_on_left_click(false)
+            let tray = tray
+                .menu(&menu)
+                .show_menu_on_left_click(cfg!(target_os = "macos"))
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -1630,7 +1647,9 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        show_home_window(tray.app_handle());
+                        if !cfg!(target_os = "macos") {
+                            show_home_window(tray.app_handle());
+                        }
                     }
                 })
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -1650,6 +1669,16 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+            #[cfg(target_os = "macos")]
+            if macos_interaction::install(&tray).is_err() {
+                app_log::record(
+                    1,
+                    app_log::Area::App,
+                    "原生菜单兼容适配未完成，保留默认菜单；请查看诊断",
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = tray;
             app.state::<GlobalTrafficMonitor>()
                 .start(app.handle().clone(), settings.show_global_traffic);
             let _ = app
@@ -1795,6 +1824,10 @@ pub fn run() {
         .run(|app, event| {
             // Tao maps confirmed Windows WM_ENDSESSION to LoopDestroyed,
             // which reaches Tauri as Exit (not necessarily Window::Destroyed).
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Reopen { .. }) {
+                show_home_window(app);
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 cleanup_app(app);
             }

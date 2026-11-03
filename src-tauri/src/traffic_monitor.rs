@@ -18,6 +18,8 @@ use std::sync::OnceLock;
 
 pub const TRAFFIC_EVENT: &str = "global-traffic";
 pub const TRAY_ID: &str = "main";
+#[cfg(target_os = "macos")]
+static NATIVE_BRAND_READY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,7 +101,8 @@ async fn run_monitor(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut collecting = false;
     let mut last_sample_at = Instant::now();
-    let mut last_tray_key = String::new();
+    let tray_queued = Arc::new(AtomicBool::new(false));
+    let last_tray_key = Arc::new(Mutex::new(String::new()));
 
     loop {
         interval.tick().await;
@@ -120,7 +123,7 @@ async fn run_monitor(
                 ..Default::default()
             };
             store_and_publish(&app, &snapshot, initial.clone());
-            update_tray_if_changed(&app, &initial, &mut last_tray_key);
+            queue_tray_update(&app, &snapshot, &tray_queued, &last_tray_key);
             continue;
         }
 
@@ -140,7 +143,7 @@ async fn run_monitor(
             interfaces,
         };
         store_and_publish(&app, &snapshot, next.clone());
-        update_tray_if_changed(&app, &next, &mut last_tray_key);
+        queue_tray_update(&app, &snapshot, &tray_queued, &last_tray_key);
     }
 }
 
@@ -216,6 +219,35 @@ fn store_and_publish(
     let _ = app.emit(TRAFFIC_EVENT, next);
 }
 
+// One pending UI callback reads the latest sample when it actually runs. A
+// busy menu/AppKit loop must not stop sampling or accumulate stale tray work.
+fn queue_tray_update(
+    app: &AppHandle,
+    snapshot: &Arc<Mutex<GlobalTrafficSnapshot>>,
+    queued: &Arc<AtomicBool>,
+    last_key: &Arc<Mutex<String>>,
+) {
+    if queued.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let handle = app.clone();
+    let state = snapshot.clone();
+    let pending = queued.clone();
+    let key = last_key.clone();
+    if app
+        .run_on_main_thread(move || {
+            let next = state.lock().ok().map(|value| value.clone());
+            if let (Some(next), Ok(mut key)) = (next, key.lock()) {
+                update_tray_if_changed(&handle, &next, &mut key);
+            }
+            pending.store(false, Ordering::Release);
+        })
+        .is_err()
+    {
+        queued.store(false, Ordering::Release);
+    }
+}
+
 fn update_tray_if_changed(
     app: &AppHandle,
     snapshot: &GlobalTrafficSnapshot,
@@ -237,6 +269,15 @@ fn update_tray_if_changed(
         format_tray_rate(snapshot.upload_bytes_per_second),
         format_tray_rate(snapshot.download_bytes_per_second)
     );
+    #[cfg(target_os = "macos")]
+    if app
+        .tray_by_id(TRAY_ID)
+        .is_some_and(|tray| macos_title::menu_tracking(&tray))
+    {
+        // Keep sampling/publishing traffic. Commit only the latest title after
+        // native menu tracking ends, without moving its hit target underneath it.
+        return;
+    }
     if key == *last_key {
         return;
     }
@@ -250,6 +291,8 @@ fn update_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
         return;
     };
     if !snapshot.enabled {
+        #[cfg(target_os = "macos")]
+        NATIVE_BRAND_READY.store(false, Ordering::Release);
         // tray-icon 0.24's macOS None setter leaves the previous native title
         // intact. An empty string explicitly removes both rows.
         let _ = tray.set_title(Some(""));
@@ -275,19 +318,25 @@ fn update_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
     {
         // Only the shared S mark remains an image. Numbers use AppKit text at
         // its real point size, independently of tray-icon's 18pt image scaling.
-        let native = tray
-            .set_icon_with_as_template(Some(native_macos_brand_icon()), true)
-            .map_err(|error| error.to_string())
-            .and_then(|()| {
-                macos_title::update(
-                    &tray,
-                    snapshot.upload_bytes_per_second,
-                    snapshot.download_bytes_per_second,
-                )
-            });
+        let native = (|| -> Result<(), String> {
+            if !NATIVE_BRAND_READY.load(Ordering::Acquire) {
+                tray.set_icon_with_as_template(Some(native_macos_brand_icon()), true)
+                    .map_err(|error| error.to_string())?;
+            }
+            macos_title::update(
+                &tray,
+                snapshot.upload_bytes_per_second,
+                snapshot.download_bytes_per_second,
+            )?;
+            NATIVE_BRAND_READY.store(true, Ordering::Release);
+            Ok(())
+        })();
         match native {
             Ok(()) => return,
-            Err(error) => eprintln!("global traffic native tray fallback: {error}"),
+            Err(error) => {
+                NATIVE_BRAND_READY.store(false, Ordering::Release);
+                eprintln!("global traffic native tray fallback: {error}");
+            }
         }
         let _ = tray.set_title(Some(""));
         let _ = macos_title::clear(&tray);

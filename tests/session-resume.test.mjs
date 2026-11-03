@@ -96,10 +96,10 @@ test("settings save, polling and event paths are wired to the same persisted opt
   assert.match(main, /startupModeDraft = null/);
   assert.match(main, /startupModeDraft \?\? savedStartupMode/);
   assert.match(read("src/settings-view.ts"), /id="settings-startup-mode"/);
-  assert.match(read("src/api.ts"), /invoke<StartupStatus>\("get_startup_status"\)/);
+  assert.match(read("src/api.ts"), /invoke<StartupStatus>\("get_startup_status", undefined, priority\)/);
   assert.match(main, /listen<SessionResumeStatus>\("session-resume-status"/);
   assert.match(main, /revision !== sessionResumeRevision/);
-  assert.match(read("src/api.ts"), /invoke<SessionResumeStatus>\("get_session_resume_status"\)/);
+  assert.match(read("src/api.ts"), /invoke<SessionResumeStatus>\("get_session_resume_status", undefined, priority\)/);
   assert.match(read("src/settings-view.ts"), /id="session-resume-status" role="status" aria-live="polite"/);
 });
 
@@ -124,7 +124,7 @@ test("late initial status reads cannot overwrite a newer completed-resume refres
       get: (target, key) => target[key] ?? (async () => null),
     }),
     invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderProfiles: noop, renderSubscriptions: noop,
-    renderSettings: noop, renderManualMode: noop, renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
+    renderProxies: noop, renderSettings: noop, renderManualMode: noop, renderOpenAiPolicy: noop, renderGlobalTraffic: noop, scheduleAutomaticUpdateCheck: noop,
   };
   const main = read("src/main.ts");
   const code = main.slice(main.indexOf("async function performBaseRead()"), main.indexOf("function renderHeader()"));

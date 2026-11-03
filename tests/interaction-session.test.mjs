@@ -36,3 +36,21 @@ test('disabled capabilities have UI, IPC and worker boundaries',()=>{
  assert.match(stability,/if !crate::capabilities::ENHANCED_STABILITY/);
  assert.doesNotMatch(main.slice(main.indexOf('"retest" && details'),main.indexOf('document.addEventListener("keydown"')),/openNodeDetails/);
 });
+
+test('detail loading uses stable header and close control with stationary modal geometry',()=>{
+ const main=read('src/main.ts'),css=read('src/styles.css');
+ const open=main.slice(main.indexOf('async function openNodeDetails('),main.indexOf('function closeNodeDetails()'));
+ assert.ok(open.indexOf('modal.classList.remove("is-hidden")')<open.indexOf('await api.currentNodeDetails'));
+ assert.match(open,/aria-busy/);assert.match(open,/data-render-key="node-close"/);
+ const render=main.slice(main.indexOf('function renderNodeDetails()'),main.indexOf('async function openNodeDetails('));
+ assert.match(render,/stableMarkup\(container/);assert.match(render,/data-render-key="node-close"/);
+ assert.match(css,/height: min\(640px, calc\(100vh - 72px\)\)/);
+});
+test('macOS native reveal stays separate from navigation and tray rendering is coalesced',()=>{
+ const native=read('src-tauri/src/macos_interaction.rs'),lib=read('src-tauri/src/lib.rs'),traffic=read('src-tauri/src/traffic_monitor.rs');
+ assert.match(lib,/show_menu_on_left_click\(cfg!\(target_os = "macos"\)\)/);
+ assert.match(lib,/RunEvent::Reopen/);assert.match(native,/isOnActiveSpace\(\)/);
+ assert.doesNotMatch(lib.slice(lib.indexOf('fn show_home_window('),lib.indexOf('#[cfg_attr(mobile')),/navigate-view/);
+ assert.match(traffic,/queued\.swap\(true, Ordering::AcqRel\)/);
+ assert.match(traffic,/queue_tray_update\(&app, &snapshot/);
+});

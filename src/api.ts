@@ -4,7 +4,7 @@ import type { DomainSelection, DomainRouteState } from "./domain-routing";
 import type { NodeTestScope, NodeTestSnapshot } from "./node-test";
 import type { DownloadOptions, SubscriptionTask } from "./subscription-task";
 import { invoke as nativeInvoke, type InvokeArgs } from "@tauri-apps/api/core";
-import { ReadCoordinator } from "./read-coordinator";
+import { ReadCoordinator, type ReadPriority } from "./read-coordinator";
 import type { ConnectivityCheck, DiagnosticStage } from "./diagnostics";
 import type { ProxyMode, ManualOutboundState } from "./manual-outbound";
 import type { CostSnapshot, CostInput } from "./openai-costs";
@@ -50,14 +50,14 @@ import type {
 } from "./types";
 
 const reads = new ReadCoordinator();
-const readCommands = new Set(["run_connectivity_diagnostic_step", "read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
-async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
+const readCommands = new Set(["subscription_task_status", "run_connectivity_diagnostic_step", "read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
+async function invoke<T>(command: string, args?: InvokeArgs, priority: ReadPriority = 'foreground'): Promise<T> {
   if (command === "app_update_status") {
     appLifecycle.requireStatus();
     return reads.read(command, () => nativeInvoke<T>(command, args));
   }
   appLifecycle.requireOpen();
-  if (readCommands.has(command)) return reads.read(`${command}:${JSON.stringify(args ?? {})}`, () => appLifecycle.read(() => nativeInvoke<T>(command, args)));
+  if (readCommands.has(command)) return reads.read(`${command}:${JSON.stringify(args ?? {})}`, () => appLifecycle.read(() => nativeInvoke<T>(command, args)), priority);
   // Never coalesce writes or replay them on timeout. Invalidate both sides of
   // a mutation, including a failed/partially applied native transaction.
   reads.invalidate();
@@ -68,16 +68,16 @@ export const api = {
   lifecycle: () => nativeInvoke<LifecycleSnapshot>("app_lifecycle_status"),
   readSubscriptionEdit: (profileId: string) => invoke<SubscriptionEdit>("read_subscription_edit", {profileId}),
   saveSubscriptionEdit: (input: SubscriptionEdit) => invoke<SubscriptionEdit>("save_subscription_edit", {input, confirmed: true}),
-  domainRouteStatus: () => invoke<DomainRouteState>("domain_route_status"),
+  domainRouteStatus: (priority: ReadPriority = 'foreground') => invoke<DomainRouteState>("domain_route_status", undefined, priority),
   saveDomainRoute: (policy: DomainSelection, expectedRevision: number) => invoke<DomainRouteState>("save_domain_route", {policy, expectedRevision}),
   applyDomainRoute: (enabled: boolean, state: DomainRouteState) => invoke<DomainRouteState>("apply_domain_route", {enabled, expectedRevision: state.document.revision, profileId: state.profileId, profileRevision: state.profileRevision, confirmed: true}),
   startAiHealthCheck: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_ai_health_check", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision }),
   startNodeTest: (scope: NodeTestScope) => invoke<NodeTestSnapshot>("start_node_test", { profileId: scope.profileId, revisionId: scope.revisionId, modeRevision: scope.modeRevision }),
-  nodeTestStatus: () => invoke<NodeTestSnapshot | null>("node_test_status"),
+  nodeTestStatus: (priority: ReadPriority = 'foreground') => invoke<NodeTestSnapshot | null>("node_test_status", undefined, priority),
   cancelNodeTest: (taskId: string) => invoke<NodeTestSnapshot>("cancel_node_test", { taskId }),
   manualOutbound: () => invoke<ManualOutboundState>("get_manual_outbound"),
   setManualOutbound: (mode: ProxyMode, expectedRevision: string) => invoke<ManualOutboundState>("set_manual_outbound", {mode, expectedRevision, confirmed: true}),
-  connectionFeedback: () => invoke<ConnectionFeedback>("connection_feedback"),
+  connectionFeedback: (priority: ReadPriority = 'foreground') => invoke<ConnectionFeedback>("connection_feedback", undefined, priority),
   recheckConnection: () => invoke<ConnectionFeedback>("recheck_connection"),
   legacyRouteStatus: () => invoke<RouteSnapshot | null>("legacy_route_status"),
   localRouteStatus: () => invoke<RouteSnapshot>("local_route_status"),
@@ -100,8 +100,7 @@ export const api = {
     invoke<AppSettings>("update_settings", { settings }),
   setTheme: (theme: ThemePreference) =>
     invoke<AppSettings>("set_app_theme", { theme }),
-  globalTraffic: () =>
-    invoke<GlobalTrafficSnapshot>("global_traffic_snapshot"),
+  globalTraffic: (priority: ReadPriority = 'foreground') => invoke<GlobalTrafficSnapshot>("global_traffic_snapshot", undefined, priority),
   inspect: (source: string) =>
     invoke<ProfileSummary>("inspect_mihomo_yaml", { source }),
   profiles: () => invoke<ProfileRecord[]>("list_profiles"),
@@ -129,7 +128,7 @@ export const api = {
       taskId,
       download,
     }),
-  subscriptionTask: (taskId: string) => invoke<SubscriptionTask | null>("subscription_task_status", { taskId }),
+  subscriptionTask: (taskId: string) => invoke<SubscriptionTask | null>("subscription_task_status", { taskId }, 'background'),
   cancelSubscriptionTask: (taskId: string) => invoke<boolean>("cancel_subscription_task", { taskId }),
   refreshProfile: (profileId: string, taskId?: string, download?: DownloadOptions) =>
     invoke<ProfileOperationResult>("refresh_profile", { profileId, taskId, download }),
@@ -142,10 +141,10 @@ export const api = {
     invoke<ProfileDetails>("rollback_profile", { profileId }),
   deleteProfile: (profileId: string) =>
     invoke<void>("delete_profile", { profileId, confirmed: true }),
-  binary: () => invoke<BinaryInfo>("probe_mihomo"),
-  runtime: () => invoke<RuntimeStatus>("runtime_status"),
-  sessionResume: () => invoke<SessionResumeStatus>("get_session_resume_status"),
-  startupStatus: () => invoke<StartupStatus>("get_startup_status"),
+  binary: (priority: ReadPriority = 'foreground') => invoke<BinaryInfo>("probe_mihomo", undefined, priority),
+  runtime: (priority: ReadPriority = 'foreground') => invoke<RuntimeStatus>("runtime_status", undefined, priority),
+  sessionResume: (priority: ReadPriority = 'foreground') => invoke<SessionResumeStatus>("get_session_resume_status", undefined, priority),
+  startupStatus: (priority: ReadPriority = 'foreground') => invoke<StartupStatus>("get_startup_status", undefined, priority),
   repairStartup: () => invoke<StartupStatus>("repair_startup_registration"),
   openStartupSettings: () => invoke<void>("open_startup_settings"),
   startActive: () => invoke<RuntimeStatus>("start_active_profile"),
@@ -154,7 +153,7 @@ export const api = {
   applicationLogs: () => invoke<ApplicationLogSnapshot>("application_logs"),
   clearApplicationLogs: () => invoke<void>("clear_application_logs"),
   clearLogs: () => invoke<void>("clear_runtime_logs"),
-  systemProxy: () => invoke<SystemProxyStatus>("system_proxy_status"),
+  systemProxy: (priority: ReadPriority = 'foreground') => invoke<SystemProxyStatus>("system_proxy_status", undefined, priority),
   systemProxyCompatibility: () => invoke<ProxyCompatibility>("check_system_proxy_compatibility"),
   proxyPrograms: (refresh = false) => invoke<ProgramState>("list_proxy_programs", { refresh }),
   installedProxyApplications: (refresh = false) => invoke<InstalledApplications>("list_installed_proxy_applications", { refresh }),
@@ -166,7 +165,7 @@ export const api = {
   launchProxyProgram: (programId: string, expectedRevision: number) =>
     invoke<ProgramState>("launch_proxy_program", { programId, expectedRevision }),
   chooseProxyProgram: () => invoke<string | null>("choose_proxy_program"),
-  tunHelperStatus: () => invoke<TunHelperStatus>("tun_helper_status"),
+  tunHelperStatus: (priority: ReadPriority = 'foreground') => invoke<TunHelperStatus>("tun_helper_status", undefined, priority),
   installTunHelper: () => invoke<TunHelperStatus>("install_tun_helper"),
   repairTunHelper: () => invoke<TunHelperStatus>("repair_tun_helper"),
   uninstallTunHelper: () => invoke<void>("uninstall_tun_helper"),
@@ -176,10 +175,10 @@ export const api = {
     invoke<AppSettings>("set_network_mode", { mode }),
   setProfileRoutingMode: (profileId: string, mode: RoutingMode) =>
     invoke<ProfileDetails>("set_profile_routing_mode", { profileId, mode }),
-  proxies: () => invoke<Record<string, unknown>>("get_proxies"),
+  proxies: (priority: ReadPriority = 'foreground') => invoke<Record<string, unknown>>("get_proxies", undefined, priority),
   currentNodeDetails: (group: string) =>
     invoke<CurrentNodeDetails>("get_current_node_details", { group }),
-  rules: () => invoke<Record<string, unknown>>("get_rules"),
+  rules: (priority: ReadPriority = 'foreground') => invoke<Record<string, unknown>>("get_rules", undefined, priority),
   userRules: () => invoke<UserRulesState>("get_user_rules"),
   validateUserRules: (rules: UserRule[]) =>
     invoke<UserRulesValidation>("validate_user_rules", { rules }),
@@ -189,7 +188,7 @@ export const api = {
     invoke<UserRulesState>("rollback_user_rules", { revisionId, expectedRevision }),
   parseUserRulesText: (text: string) =>
     invoke<UserRule[]>("parse_user_rules_text", { text }),
-  connections: () => invoke<Record<string, unknown>>("get_connections"),
+  connections: (priority: ReadPriority = 'foreground') => invoke<Record<string, unknown>>("get_connections", undefined, priority),
   selectProxy: (group: string, proxy: string, profileId: string, revisionId: string, modeRevision: string) =>
     invoke<void>("select_proxy", { group, proxy, profileId, revisionId, modeRevision }),
   openAiCosts: (profileId: string) => invoke<CostSnapshot>("get_openai_costs", { profileId }),
@@ -219,8 +218,7 @@ export const api = {
       profileId,
       autoMaintain,
     }),
-  openAiPolicyTask: () =>
-    invoke<OpenAiPolicyTask>("get_openai_policy_task"),
+  openAiPolicyTask: (priority: ReadPriority = 'foreground') => invoke<OpenAiPolicyTask>("get_openai_policy_task", undefined, priority),
   cancelOpenAiPolicyGeneration: () =>
     invoke<OpenAiPolicyTask>("cancel_openai_policy_generation"),
   disableOpenAiPolicy: (profileId: string) =>

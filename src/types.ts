@@ -268,6 +268,7 @@ export type NodeDelaySample = {
 };
 
 export type CurrentNodeDetails = {
+  providerDetailsAvailable?: boolean;
   group: string;
   nodeName: string;
   routeChain: string[];

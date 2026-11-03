@@ -27,6 +27,15 @@ pub(super) struct Rate {
     pub full_unit: &'static str,
 }
 
+pub(super) fn menu_tracking(tray: &tauri::tray::TrayIcon) -> bool {
+    tray.with_inner_tray_icon(|_| {
+        objc2_foundation::NSRunLoop::currentRunLoop()
+            .currentMode()
+            .is_some_and(|mode| &*mode == unsafe { objc2_app_kit::NSEventTrackingRunLoopMode })
+    })
+    .unwrap_or(false)
+}
+
 pub(super) fn format_rate(bytes: u64) -> Rate {
     let mut value = bytes as f64;
     let mut unit = 0;
@@ -147,12 +156,19 @@ pub(super) fn apply_to_item(
     // setting attributed runs alone leaves the default menu font's baseline.
     let font =
         unsafe { NSFont::monospacedDigitSystemFontOfSize_weight(FONT_SIZE, NSFontWeightMedium) };
-    button.setFont(Some(&font));
+    if button
+        .font()
+        .is_none_or(|current| current.pointSize() != FONT_SIZE)
+    {
+        button.setFont(Some(&font));
+    }
     button.setAlignment(NSTextAlignment::Left);
     button.setImagePosition(NSCellImagePosition::ImageLeft);
     let title = build_title(upload, download);
     button.setAttributedTitle(&title);
-    item.setLength(macos_layout::item_width());
+    if item.length() != macos_layout::item_width() {
+        item.setLength(macos_layout::item_width());
+    }
     // NSStatusBarButton's cell can anchor a multiline title at the original
     // single-line baseline (unlike an ordinary NSButton). Center the actual
     // two-line title using the live button geometry, not an OS-specific offset.
@@ -194,7 +210,9 @@ pub(super) fn apply_bitmap_to_item(
         macos_layout::CONTENT_HEIGHT,
     ));
     button.setImagePosition(NSCellImagePosition::ImageOnly);
-    item.setLength(macos_layout::item_width());
+    if item.length() != macos_layout::item_width() {
+        item.setLength(macos_layout::item_width());
+    }
     Ok(())
 }
 

@@ -55,6 +55,10 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 
 [启用与兼容性](docs/TUN启用与兼容性.md) · [三端稳定化方案](docs/TUN三端稳定化方案-2026-10-30.md)。稳定化方案是下一阶段设计，不能把构建、模拟或单元测试通过当成三端网络接管验收完成。
 
+## 开发中的交互优化
+
+本轮候选源码增加即时读取反馈、前后台读取调度、稳定节点详情窗口和 macOS 原生菜单适配。**尚未发行**；内置屏其他应用全屏时的真实菜单栏点击验收仍待完成。见[待验收说明](docs/macOS交互优化-待验收说明-2026-11-04.md)。Tailscale 共存另行分析，本轮未改网络策略。
+
 ## 开发与验证
 
 Windows 使用对应 MSVC、C++ Build Tools、Windows SDK 和 WebView2；Node.js/npm、Rust 及各平台 Tauri 依赖也需准备。
