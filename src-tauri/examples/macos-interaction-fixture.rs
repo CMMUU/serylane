@@ -31,6 +31,7 @@ fn main() {
         Listener, Manager,
     };
     let companion = std::env::args().any(|arg| arg == "--companion");
+    let traffic = std::env::args().any(|arg| arg == "--traffic");
     let title = if companion {
         "Fullscreen Companion"
     } else {
@@ -44,13 +45,14 @@ fn main() {
     }
     .into();
     context.config_mut().product_name = Some(title.into());
+    context.package_info_mut().name = title.into();
     context.config_mut().app.windows.clear();
     let app = tauri::Builder::default().setup(move |app| {
         app.listen("window-reveal-status", |event| println!("reveal: {}", event.payload()));
-        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External("about:blank".parse()?))
-            .title(title).inner_size(700.0, 440.0)
-            .initialization_script(format!("addEventListener('DOMContentLoaded',()=>{{document.title={title:?};document.body.innerHTML='<main style=\"font:24px system-ui;padding:50px\"><h1>{title}</h1><p>Isolated native interaction test</p><p>No proxy, Tailscale or user configuration access.</p><input placeholder=\"Focus and typing test\"></main>';}});"))
-            .build()?;
+        let html = format!("<!doctype html><meta charset=utf-8><title>{title}</title><main style='font:24px system-ui;padding:48px'><h1>{title}</h1><p>Isolated interaction test — QA menu only.</p><p>No proxy or user settings access.</p><input placeholder='Focus and typing test'></main>");
+        let encoded = url::form_urlencoded::byte_serialize(html.as_bytes()).collect::<String>().replace('+', "%20");
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(format!("data:text/html,{encoded}").parse()?))
+            .title(title).inner_size(700.0, 440.0).build()?;
         if !companion {
             let show = MenuItem::with_id(app, "show", "显示测试窗口", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "隐藏测试窗口", true, None::<&str>)?;
@@ -67,7 +69,7 @@ fn main() {
             macos_interaction::install(&tray).map_err(std::io::Error::other)?;
             println!("native menu installed; pid={}", std::process::id());
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
+            if traffic { tauri::async_runtime::spawn(async move {
                 for n in 0..900 {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     let handle2 = handle.clone();
@@ -79,7 +81,7 @@ fn main() {
                         }
                     });
                 }
-            });
+            }); }
         }
         Ok(())
     }).build(context).expect("isolated native fixture");
