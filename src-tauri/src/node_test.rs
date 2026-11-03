@@ -218,6 +218,21 @@ impl NodeTestManager {
         }
         Ok(task.snapshot())
     }
+    fn network_changed(&self, current: impl FnOnce() -> Option<Uuid>) {
+        // Compare and cancel under the same slot lock: a delayed observation
+        // must not cancel a fresh job started in the newly observed epoch.
+        if let Ok(slot) = self.current.lock() {
+            if let Some(task) = slot.as_ref() {
+                let snapshot = task.snapshot();
+                if snapshot.valid && snapshot.scope.network_revision != current() {
+                    task.cancel(
+                        true,
+                        "网络、DNS 或出口环境已变化，旧结果待重新检测；未切换节点或出口",
+                    );
+                }
+            }
+        }
+    }
     fn invalidate_with(&self, message: &str) {
         if let Ok(slot) = self.current.lock() {
             if let Some(task) = slot.as_ref() {
@@ -235,14 +250,7 @@ impl NodeTestManager {
 }
 pub fn invalidate_network(app: &AppHandle) {
     if let Some(manager) = app.try_state::<NodeTestManager>() {
-        let current = crate::network_context::revision(app);
-        if manager
-            .snapshot()
-            .is_some_and(|s| s.valid && s.scope.network_revision != current)
-        {
-            manager
-                .invalidate_with("网络、DNS 或出口环境已变化，旧结果待重新检测；未切换节点或出口");
-        }
+        manager.network_changed(|| crate::network_context::revision(app));
     }
 }
 pub fn invalidate(app: &AppHandle) {
@@ -561,6 +569,18 @@ mod tests {
         (0..n).map(|i| format!("node-{i}")).collect()
     }
 
+    #[test]
+    fn repeated_network_notification_preserves_new_epoch_job() {
+        let m = NodeTestManager::default();
+        let scope = context();
+        let current = scope.network_revision;
+        let (task, _) = m.begin(scope, names(1)).unwrap();
+        m.network_changed(|| current);
+        assert!(task.snapshot().valid);
+        assert_eq!(task.snapshot().phase, Phase::Running);
+        m.network_changed(|| Some(Uuid::new_v4()));
+        assert!(!task.snapshot().valid);
+    }
     #[test]
     fn network_changes_invalidate_completed_results_and_refuse_inflight_reuse() {
         let m = NodeTestManager::default();
