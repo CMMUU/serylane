@@ -41,3 +41,42 @@ test('native filesystem and OS queries are async background reads, writes retain
  assert.match(read('src-tauri/src/platform.rs'),/child\.kill\(\)[\s\S]{0,60}child\.wait\(\)/);
  assert.match(read('src/main.ts'),/if \(previousView === view\) return/);
 });
+
+test('background polling leaves two execution slots for foreground interaction',async()=>{
+ const r=new ReadCoordinator(), gate=deferred(), started=[];
+ const jobs=Array.from({length:6},(_,i)=>r.read(`background-${i}`,async()=>{started.push(`b${i}`);await gate.promise;return i;},'background'));
+ await Promise.resolve(); assert.equal(started.length,2);
+ const foreground=r.read('button',async()=>{started.push('button');return 'ready';});
+ assert.equal(await foreground,'ready');assert.deepEqual(started,['b0','b1','button']);
+ gate.resolve();await Promise.all(jobs);
+});
+test('a foreground caller promotes an already queued resource without duplicate IPC',async()=>{
+ const r=new ReadCoordinator(),gate=deferred(),calls=[];
+ const occupied=[r.read('busy1',()=>gate.promise,'background'),r.read('busy2',()=>gate.promise,'background')];
+ const background=r.read('details',async()=>{calls.push('details');return 'details';},'background');
+ await Promise.resolve();assert.deepEqual(calls,[]);
+ const foreground=r.read('details',async()=>{throw Error('must coalesce');});
+ assert.deepEqual(await Promise.all([background,foreground]),['details','details']);assert.deepEqual(calls,['details']);
+ gate.resolve();await Promise.all(occupied);
+});
+test('timed out queued reads are dropped, while running operations retain their slots',async()=>{
+ const r=new ReadCoordinator(30),gate=deferred();let queuedCalls=0;
+ const busy=Array.from({length:4},(_,i)=>r.read('busy'+i,()=>gate.promise));
+ const queued=r.read('stale',async()=>{queuedCalls++;return 1;});
+ await Promise.all([...busy,queued].map(p=>assert.rejects(p,/超时/)));
+ gate.resolve();await new Promise(r=>setImmediate(r));
+ assert.equal(queuedCalls,0);assert.equal(await r.read('fresh',async()=>2),2);
+});
+
+test('subscription task polling is read-only and does not invalidate every in-flight view',()=>{
+ const source=read('src/api.ts');
+ const commands=source.match(/const readCommands = new Set\(\[(.*?)\]\)/s)?.[1];
+ assert.ok(commands?.includes('"subscription_task_status"'));
+ assert.match(source,/"subscription_task_status", \{ taskId \}, 'background'/);
+});
+
+test('network observation polling is read-only and cannot repeatedly invalidate UI reads',()=>{
+ const source=read('src/api.ts');
+ assert.ok(source.match(/const readCommands = new Set\(\[(.*?)\]\)/s)?.[1].includes('"network_context_status"'));
+ assert.match(read('src/main.ts'),/read: \(\) => api\.networkContext\('background'\)/);
+});

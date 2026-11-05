@@ -268,6 +268,7 @@ export type NodeDelaySample = {
 };
 
 export type CurrentNodeDetails = {
+  providerDetailsAvailable?: boolean;
   group: string;
   nodeName: string;
   routeChain: string[];
@@ -443,3 +444,5 @@ export type ConnectionFeedback = {
   retrying: boolean; elapsedMs: number; issue: UserMessage | null;
   checks: NetworkSafetyReport["checks"];
 };
+
+export type NetworkContextSnapshot = { revision: string; generation: number; observed: boolean; stale: boolean; tailscale: "unknown" | "stopped" | "running" | "exit_node" | "exit_node_offline" | "exit_node_pending"; routeKnown: boolean; dnsKnown: boolean; policy: "system"; independentEgressAvailable: boolean; tunCoexistenceVerified: boolean; detail: string };

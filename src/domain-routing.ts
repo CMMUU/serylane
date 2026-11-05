@@ -30,7 +30,7 @@ export const domainRoutingMarkup = `<section class="panel domain-route-panel">
   <section id="domain-legacy" class="domain-help" hidden><h3>旧接入恢复</h3><p class="hint" id="domain-legacy-note"></p><button id="domain-restore" class="button button-quiet" type="button">恢复旧接入并关闭中转</button></section>
 </section>`;
 export function mountDomainRouting(root: HTMLElement, services: {
-  api: { domainRouteStatus(): Promise<DomainRouteState>; saveDomainRoute(policy: DomainSelection, expectedRevision: number): Promise<DomainRouteState>; applyDomainRoute(enabled: boolean, state: DomainRouteState): Promise<DomainRouteState>;
+  api: { domainRouteStatus(priority?: 'foreground' | 'background'): Promise<DomainRouteState>; saveDomainRoute(policy: DomainSelection, expectedRevision: number): Promise<DomainRouteState>; applyDomainRoute(enabled: boolean, state: DomainRouteState): Promise<DomainRouteState>;
     legacyRouteStatus(): Promise<import('./types').RouteSnapshot | null>; setCodexRoute(attach: boolean, revision: string, confirmed: boolean): Promise<import('./types').RouteSnapshot>; setLocalRouteEnabled(enabled: boolean, revision: number, confirmed: boolean): Promise<import('./types').RouteSnapshot> };
   confirm: (options: { title: string; message: string; confirmLabel?: string; returnFocus?: HTMLElement }) => Promise<boolean>;
   error: (error: unknown) => string;
@@ -183,7 +183,7 @@ export function mountDomainRouting(root: HTMLElement, services: {
         readAgain = false;
         const stamp = epoch, key = context();
         try {
-          const result = await services.api.domainRouteStatus();
+          const result = await services.api.domainRouteStatus(quiet ? 'background' : 'foreground');
           if (stamp !== epoch || key !== context() || busy || blocked()) { readAgain = true; checkContext(); if (busy || blocked()) break; continue; }
           if (!state || result.document.revision >= state.document.revision) accept(result);
           if (!quiet) {

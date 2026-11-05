@@ -625,6 +625,23 @@ rules:
 "#;
 
     #[test]
+    fn system_egress_preserves_subscription_dns_and_explicit_dialers_without_physical_fallback() {
+        let source = "proxies: [{name: A, type: socks5, server: example.invalid, port: 443, interface-name: fixture0, dialer-proxy: B}, {name: B, type: socks5, server: other.invalid, port: 443}]\nproxy-groups: [{name: PROXY, type: select, proxies: [A, B]}]\ndns: {enable: true, nameserver: [100.100.100.100], nameserver-policy: {'+.fixture.ts.net': '100.100.100.100'}}\nrules: ['MATCH,PROXY']";
+        let before: Value = serde_yaml::from_str(source).unwrap();
+        let settings = AppSettings {
+            network_mode: NetworkMode::SystemProxy,
+            ..Default::default()
+        };
+        let effective = build_effective_config(source, &settings, RoutingMode::Rule).unwrap();
+        let after: Value = serde_yaml::from_str(&effective.yaml).unwrap();
+        assert_eq!(after["proxies"], before["proxies"]);
+        assert_eq!(after["dns"], before["dns"]);
+        assert!(after["interface-name"].is_null());
+        assert_eq!(after["tun"]["enable"], false);
+        assert!(after["tun"]["route-exclude-address"].is_null());
+    }
+
+    #[test]
     fn overrides_local_control_fields() {
         let settings = AppSettings {
             mixed_port: 7895,

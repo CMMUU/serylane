@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value as YamlValue};
 use std::collections::HashSet;
+use std::time::Duration;
 use tauri::AppHandle;
 
 const MAX_ROUTE_DEPTH: usize = 16;
@@ -19,6 +20,7 @@ pub struct NodeDelaySample {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CurrentNodeDetails {
+    pub provider_details_available: bool,
     pub group: String,
     pub node_name: String,
     pub route_chain: Vec<String>,
@@ -62,9 +64,32 @@ pub async fn get_current_node_details(
     let source = storage.load_revision_source(profile_id, revision_id)?;
 
     let api = MihomoApiClient::new(&settings)?;
-    let proxies = api.proxies().await?;
-    let providers = api.proxy_providers().await.unwrap_or(JsonValue::Null);
-    build_current_node_details(group, &proxies, &providers, &source)
+    let (proxies, providers) = read_detail_payloads(api.proxies(), api.proxy_providers()).await?;
+    let mut details = build_current_node_details(group, &proxies, &providers, &source)?;
+    details.provider_details_available = !providers.is_null();
+    Ok(details)
+}
+
+async fn read_detail_payloads(
+    proxies: impl std::future::Future<Output = AppResult<JsonValue>>,
+    providers: impl std::future::Future<Output = AppResult<JsonValue>>,
+) -> AppResult<(JsonValue, JsonValue)> {
+    // Optional provider metadata must not add another 10-second controller
+    // timeout to the current-node interaction. Dropping timeout futures cancels
+    // the HTTP reads; no detached retries or node changes are performed.
+    let (proxies, providers) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(4), proxies),
+        tokio::time::timeout(Duration::from_millis(300), providers),
+    );
+    let proxies = proxies
+        .map_err(|_| AppError::Runtime("节点信息读取超时，请重试；代理保持运行".into()))??;
+    Ok((
+        proxies,
+        providers
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(JsonValue::Null),
+    ))
 }
 
 fn build_current_node_details(
@@ -115,6 +140,7 @@ fn build_current_node_details(
     let tls = source_node.as_ref().map(tls_label);
 
     Ok(CurrentNodeDetails {
+        provider_details_available: !providers_payload.is_null(),
         group: group.to_string(),
         node_name,
         route_chain,
@@ -367,5 +393,39 @@ proxies:
         let value: YamlValue =
             serde_yaml::from_str("type: trojan\nserver: example.com\n").expect("yaml");
         assert_eq!(tls_label(value.as_mapping().expect("mapping")), "TLS");
+    }
+}
+
+#[cfg(test)]
+mod interaction_budget_tests {
+    use super::*;
+    #[tokio::test]
+    async fn optional_provider_timeout_does_not_hide_available_node_data() {
+        let result = read_detail_payloads(
+            async { Ok(serde_json::json!({"proxies": {}})) },
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.0, serde_json::json!({"proxies": {}}));
+        assert!(result.1.is_null());
+    }
+    #[tokio::test]
+    async fn essential_failure_is_not_reported_as_empty_success() {
+        let result = read_detail_payloads(
+            async { Err(AppError::Runtime("controller unavailable".into())) },
+            async { Ok(JsonValue::Null) },
+        )
+        .await;
+        assert!(result.is_err());
+    }
+    #[tokio::test]
+    async fn available_provider_metadata_is_preserved() {
+        let (_, providers) = read_detail_payloads(async { Ok(serde_json::json!({})) }, async {
+            Ok(serde_json::json!({"providers": {}}))
+        })
+        .await
+        .unwrap();
+        assert!(!providers.is_null());
     }
 }

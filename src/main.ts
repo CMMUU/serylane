@@ -1,6 +1,7 @@
 import { appLifecycle, type LifecycleSnapshot } from "./app-lifecycle";
-import { PageReads } from "./read-coordinator";
+import { PageReads, type ReadPriority } from "./read-coordinator";
 import { stableMarkup } from "./stable-dom";
+import { createNetworkContext } from "./network-context";
 import { createDiagnostics, diagnosticRowsMarkup } from "./diagnostics";
 import { createAiHealth, aiHealthMarkup } from "./ai-health";
 import { mountSubscriptionEditor } from "./subscription-editor";
@@ -51,6 +52,7 @@ import type {
   CurrentNodeDetails,
   GlobalTrafficSnapshot,
   NetworkMode,
+  NetworkContextSnapshot,
   NetworkSafetyReport,
   OpenAiPolicyTask,
   ProfileDetails,
@@ -138,6 +140,7 @@ const store: {
 
 const pageReads = new PageReads();
 let baseLoading = false;
+let baseReaders = 0;
 let connectionDisplayLimit = 200, ruleDisplayLimit = 200;
 let nodeListKey = "";
 const nodeLimits = new Map<string, number>();
@@ -146,17 +149,23 @@ function dataContext(): string {
   return [runtimeMutationRevision, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, store.manualOutbound?.revision, store.runtime?.phase, store.runtime?.pid].join('/');
 }
 function pageContext(): string { return `${viewNavigationRevision}/${dataContext()}`; }
-function pageRead(key: string, selector: string, operation: (current: () => boolean) => Promise<void>) {
+const buttonReads = new WeakMap<HTMLButtonElement, { owner: symbol; label: string; disabled: boolean }>();
+function pageRead(key: string, selector: string, operation: (current: () => boolean) => Promise<void>, priority: ReadPriority = 'foreground') {
   const context = pageContext();
+  // Acknowledge the click before waiting for an older page-context read.
+  const button = priority === 'foreground' ? document.querySelector<HTMLButtonElement>(selector) : null;
+  const owner = Symbol(key), previous = button ? buttonReads.get(button) : undefined;
+  const original = { owner, label: previous?.label ?? button?.textContent ?? '', disabled: previous?.disabled ?? button?.disabled ?? false };
+  if (button) { buttonReads.set(button, original); button.disabled = true; button.textContent = '正在刷新…'; button.setAttribute('aria-busy', 'true'); }
   return pageReads.run(key, context, async () => {
     const current = () => context === pageContext();
     if (!current()) return;
-    const button = document.querySelector<HTMLButtonElement>(selector);
-    const label = button?.textContent ?? '';
-    if (button) { button.disabled = true; button.textContent = '正在刷新…'; button.setAttribute('aria-busy', 'true'); }
     try { await operation(current); }
-    catch (error) { if (current()) toast(errorMessage(error), 'error'); }
-    finally { if (button) { button.disabled = false; button.textContent = label; button.removeAttribute('aria-busy'); } }
+    catch (error) { if (current() && priority === 'foreground') toast(errorMessage(error), 'error'); }
+  }).finally(() => {
+    if (button && buttonReads.get(button)?.owner === owner) {
+      button.disabled = original.disabled; button.textContent = original.label; button.removeAttribute('aria-busy'); buttonReads.delete(button);
+    }
   });
 }
 
@@ -413,13 +422,15 @@ app.innerHTML = `
           <div class="panel-heading"><div><div class="section-label">AI PROXY</div><h2>AI 代理</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
           <div id="proxy-mode-notice" class="warning-box" hidden><p>自选节点正在生效，AI 策略已暂停。二者只能启用一个；Codex 路由接入保持独立。</p><button class="button button-quiet" id="proxy-mode-restore">使用 AI 代理</button></div>
           <fieldset id="proxy-mode-controls"><legend class="sr-only">代理策略控制</legend>
+          <p class="hint network-context-copy" role="status">正在识别网络环境；保持系统出口。</p>
           <div id="openai-policy-card" class="openai-policy-card"></div>
           ${openAiCostsMarkup}
           </fieldset>
         </article>
       </section>
 
-      <section class="view-stack is-hidden" id="manual-view">${manualOutboundMarkup}</section>
+      <section class="view-stack is-hidden" id="manual-view">${manualOutboundMarkup}
+        <p class="hint network-context-copy" role="status">网络变化后需重新测速；未绑定当前网络的核心历史延迟不参与排序。</p></section>
       <section class="view-stack is-hidden" id="routing-view">
         ${domainRoutingMarkup}
       </section>
@@ -449,6 +460,9 @@ app.innerHTML = `
       <section class="view-stack is-hidden" id="diagnostics-view">
         <article class="panel">
           <div class="panel-heading"><div><div class="section-label">DIAGNOSTICS</div><h2>分层诊断</h2></div><button class="button button-primary" id="run-diagnostics">立即诊断</button></div>
+          <p class="hint network-context-copy" role="status">正在识别网络环境；保持系统出口。</p>
+          <div class="diagnostic-node-picker"><label for="diagnostic-node">排查节点（不切换实际出口）</label><select id="diagnostic-node"><option value="">不指定，仅检查基础连接</option></select><button class="button button-quiet" id="diagnostic-nodes-refresh">刷新节点</button></div>
+          <p class="hint">按系统出口执行 DNS、TCP 对照和核心实际协议检查；UDP、提供器及显式拨号链以实际协议结果为准。长连接与 MTU 仍需真实使用验证。</p>
           <p id="diagnostic-status" class="hint diagnostic-status" role="status" aria-live="polite" aria-atomic="true">按顺序检查核心、配置、端口与实际代理请求。</p>
           <div id="diagnostic-list" class="diagnostic-list" role="list" aria-label="诊断结果" aria-busy="false"></div>
         </article>
@@ -708,18 +722,17 @@ const connectionFeedback = mountConnectionFeedback(document.querySelector<HTMLEl
 });
 window.addEventListener("pagehide", () => connectionFeedback.dispose(), { once: true });
 async function refreshConnectionFeedback() {
-  try { connectionFeedback.accept(await api.connectionFeedback()); }
+  try { connectionFeedback.accept(await api.connectionFeedback('background')); }
   catch { /* A transient status-read failure never changes a known runtime state. */ }
 }
 
 function refreshBase(): Promise<boolean> {
   const context = dataContext();
+  baseReaders++; baseLoading = true; renderHeader();
   return pageReads.run('base', context, async () => {
     if (context !== dataContext()) return false;
-    baseLoading = true; renderHeader();
-    try { return await performBaseRead(); }
-    finally { baseLoading = false; renderHeader(); }
-  });
+    return performBaseRead();
+  }).finally(() => { baseLoading = --baseReaders > 0; renderHeader(); });
 }
 async function performBaseRead() {
   const requestedBaseRead = ++baseReadSequence;
@@ -727,91 +740,52 @@ async function performBaseRead() {
   const requestedThemeRevision = themeController.mutationRevision;
   const requestedRuntimeRevision = runtimeMutationRevision;
   const requestedDuringRuntimeWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching;
-  const result = await action("", async () => {
-    const [
-      appInfo,
-      settings,
-      binary,
-      runtime,
-      systemProxy,
-      tunHelper,
-      profiles,
-      subscriptions,
-      activeProfile,
-      openAiTask,
-      globalTraffic,
-      manualOutbound,
-      selectedDetails,
-    ] =
-      await Promise.all([
-        api.appInfo(),
-        api.settings(),
-        api.binary(),
-        api.runtime(),
-        api.systemProxy(),
-        Promise.resolve(store.tunHelper),
-        api.profiles(),
-        api.subscriptions(),
-        api.activeProfile(),
-        api.openAiPolicyTask(),
-        api.globalTraffic(),
-        api.manualOutbound().catch(() => store.manualOutbound),
-        selectedProfileId ? api.profileDetails(selectedProfileId).catch(() => null) : Promise.resolve(null),
-      ]);
-    // A read started before/during a runtime or settings write must not put
-    // the old network mode and runtime status back into the toolbar.
-    if (requestedBaseRead !== baseReadSequence || requestedDuringRuntimeWrite || requestedRuntimeRevision !== runtimeMutationRevision || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return;
-    if (!themeController.sync(settings.theme, requestedThemeRevision)) {
-      settings.theme = themeController.snapshot.preference;
+  const current = () => requestedBaseRead === baseReadSequence && !requestedDuringRuntimeWrite
+    && requestedRuntimeRevision === runtimeMutationRevision && !runtimeActionInFlight && !networkModeSwitching && !settingsSaving && !manualModeSwitching;
+  // Commit coherent groups independently: a slow profile summary or binary
+  // probe must not hold the toolbar and every already-available page hostage.
+  const core = action('', async () => {
+    const [appInfo, settings, runtime, systemProxy, activeProfile, manualOutbound] = await Promise.all([
+      api.appInfo(), api.settings(), api.runtime(), api.systemProxy(), api.activeProfile(), api.manualOutbound(),
+    ]);
+    if (!current()) return false;
+    if (!themeController.sync(settings.theme, requestedThemeRevision)) settings.theme = themeController.snapshot.preference;
+    if (activeProfile?.profile.id !== store.activeProfile?.profile.id || activeProfile?.profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || runtime?.phase !== 'running') {
+      proxyReadSequence++; store.proxies = null; store.rules = null; store.connections = null; overviewNodeDetails = {};
     }
-    if (activeProfile?.profile.id !== store.activeProfile?.profile.id || activeProfile?.profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || runtime?.phase !== "running") {
-      proxyReadSequence++;
-      store.proxies = null;
-      store.rules = null; store.connections = null;
-      overviewNodeDetails = {};
-    }
+    Object.assign(store, {appInfo, settings, runtime, systemProxy, activeProfile, manualOutbound});
+    proxyReadIssue = '';
+    invalidateNodeDetailsContext();
+    renderHeader(); renderOverview(); renderProfiles(); renderSubscriptions(); renderSettings(); renderManualMode(); renderProxies();
+    return true;
+  });
+  const profilesRead = action('', async () => {
+    const [profiles, subscriptions, selectedDetails] = await Promise.all([
+      api.profiles(), api.subscriptions(), selectedProfileId ? api.profileDetails(selectedProfileId) : Promise.resolve(null),
+    ]);
+    if (!current()) return false;
     for (const subscription of subscriptions) {
       subscription.status = newestSubscriptionStatus(store.subscriptions.find(s => s.profile.id === subscription.profile.id)?.status, subscription.status);
     }
-    Object.assign(store, {
-      appInfo,
-      settings,
-      binary,
-      runtime,
-      systemProxy,
-      tunHelper,
-      profiles: synchronizedProfiles(profiles ?? [], subscriptions),
-      subscriptions,
-      activeProfile,
-      openAiTask,
-      globalTraffic,
-      manualOutbound,
-    });
-    proxyReadIssue = '';
+    store.profiles = synchronizedProfiles(profiles ?? [], subscriptions);
+    store.subscriptions = subscriptions;
     if (store.selectedProfile?.profile.id === selectedProfileId) {
-      const current = store.profiles.find(profile => profile.id === selectedProfileId);
-      store.selectedProfile = current && selectedDetails && selectedDetails.profile.id === current.id && selectedDetails.profile.activeRevisionId === current.activeRevisionId ? { ...selectedDetails, profile: current } : null;
+      const profile = store.profiles.find(p => p.id === selectedProfileId);
+      store.selectedProfile = profile && selectedDetails && selectedDetails.profile.id === profile.id && selectedDetails.profile.activeRevisionId === profile.activeRevisionId ? {...selectedDetails, profile} : null;
     }
+    renderProfiles(); renderSubscriptions(); renderManualMode(); renderOverview();
     return true;
   });
-  if (result !== true) return false;
-  invalidateNodeDetailsContext();
-  renderHeader();
-  renderOverview();
-  renderProfiles();
-  renderSubscriptions();
-  renderManualMode();
-  renderSettings();
-  renderOpenAiPolicy();
-  renderGlobalTraffic();
+  // Nonessential status is allowed to finish independently, with the same
+  // mutation/sequence protection. Failures leave the last known snapshot.
+  void api.binary('background').then(binary => { if (current()) { store.binary = binary; renderHeader(); } }).catch(() => {});
+  void api.openAiPolicyTask('background').then(task => { if (current()) { store.openAiTask = task; renderOpenAiPolicy(); } }).catch(() => {});
+  void api.globalTraffic('background').then(traffic => { if (current()) { store.globalTraffic = traffic; renderGlobalTraffic(); } }).catch(() => {});
+  void api.tunHelperStatus('background').then(helper => { if (current()) { store.tunHelper = helper; renderTunHelper(); } }).catch(() => {});
+  const [coreOk, profilesOk] = await Promise.all([core, profilesRead]);
+  if (!current() || coreOk !== true || profilesOk !== true) return false;
   void openAiCosts.refresh();
   void localRouting.refresh(true);
-  // Helper readiness is independent of menu/profile rendering. A slow service
-  // handshake must not hold the entire base snapshot behind Promise.all.
-  const helperRevision = runtimeMutationRevision;
-  void api.tunHelperStatus().then(helper => {
-    if (helperRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); }
-  }).catch(() => {});
   scheduleAutomaticUpdateCheck();
   void refreshSessionResume();
   void refreshProxies(true);
@@ -846,10 +820,10 @@ async function refreshSessionResume(force = false) {
   sessionResumeReadBusy = true;
   const revision = sessionResumeRevision;
   try {
-    const status = await api.sessionResume();
+    const status = await api.sessionResume(force ? 'foreground' : 'background');
     void refreshConnectionFeedback();
     const registration = store.view === "settings" || startupStatus === null || force
-      ? await api.startupStatus().catch(() => null)
+      ? await api.startupStatus(force ? 'foreground' : 'background').catch(() => null)
       : undefined;
     if (revision !== sessionResumeRevision) return;
     if (registration !== undefined) startupStatus = registration;
@@ -1458,22 +1432,22 @@ document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((but
 });
 themeController.refresh();
 
-function refreshRuntimeOnly(allowDuringRuntimeAction = false) {
+function refreshRuntimeOnly(allowDuringRuntimeAction = false, priority: ReadPriority = 'foreground') {
   const context = `${dataContext()}/${allowDuringRuntimeAction}`;
   return pageReads.run('runtime', context, async () => {
     if (context !== `${dataContext()}/${allowDuringRuntimeAction}`) return;
-    try { await performRuntimeRead(allowDuringRuntimeAction); }
+    try { await performRuntimeRead(allowDuringRuntimeAction, priority); }
     catch { /* Keep the last snapshot; explicit refresh reports native errors. */ }
   });
 }
-async function performRuntimeRead(allowDuringRuntimeAction: boolean) {
+async function performRuntimeRead(allowDuringRuntimeAction: boolean, priority: ReadPriority) {
   const requestedDuringWrite = runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching;
   if (requestedDuringWrite && !allowDuringRuntimeAction) return;
   const requestedRevision = runtimeMutationRevision;
   const requestedSequence = ++runtimeReadSequence;
   let runtime: RuntimeStatus, systemProxy: SystemProxyStatus;
   try {
-    [runtime, systemProxy] = await Promise.all([api.runtime(), api.systemProxy()]);
+    [runtime, systemProxy] = await Promise.all([api.runtime(priority), api.systemProxy(priority)]);
   } catch (error) {
     if (requestedRevision === runtimeMutationRevision && requestedSequence === runtimeReadSequence) {
       proxyReadIssue = errorMessage(error);
@@ -1483,7 +1457,7 @@ async function performRuntimeRead(allowDuringRuntimeAction: boolean) {
     throw error;
   }
   // Helper readback is unrelated to System Proxy completion. Refresh it later.
-  void api.tunHelperStatus().then(helper => { if (requestedRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); } }).catch(() => {});
+  void api.tunHelperStatus('background').then(helper => { if (requestedRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); } }).catch(() => {});
   if (requestedRevision !== runtimeMutationRevision || requestedSequence !== runtimeReadSequence
     || (!allowDuringRuntimeAction && (runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching))) return;
   store.runtime = runtime;
@@ -2212,7 +2186,7 @@ function refreshOpenAiTask() {
 }
 async function performOpenAiTaskRead() {
   const previous = store.openAiTask;
-  const task = await action("", () => api.openAiPolicyTask());
+  const task = await action("", () => api.openAiPolicyTask('background'));
   if (!task) return;
   store.openAiTask = task;
   renderOpenAiPolicy();
@@ -2245,14 +2219,14 @@ async function performOpenAiTaskRead() {
   }
 }
 
-function refreshProxies(quiet = false) {
+function refreshProxies(quiet = false, priority: ReadPriority = 'foreground') {
   const context = pageContext();
   return pageReads.run('proxies', context, async () => {
     if (context !== pageContext()) return;
-    await performProxyRead(quiet, context);
+    await performProxyRead(quiet, context, priority);
   });
 }
-async function performProxyRead(quiet: boolean, context: string) {
+async function performProxyRead(quiet: boolean, context: string, priority: ReadPriority) {
   const profile = store.activeProfile?.profile;
   const sequence = ++proxyReadSequence;
   const runtimeRevision = runtimeMutationRevision;
@@ -2267,7 +2241,7 @@ async function performProxyRead(quiet: boolean, context: string) {
     return;
   }
   try {
-    const result = await api.proxies();
+    const result = await api.proxies(priority);
     if (!contextCurrent() || store.runtime?.phase !== "running") return;
     if (result.modeRevision !== store.manualOutbound?.revision) throw new Error("选点方式已变化，请刷新页面状态后重试");
     if (result.profileId !== profile.id || result.revisionId !== profile.activeRevisionId) throw new Error("节点信息与当前配置不一致，请刷新重试");
@@ -2372,7 +2346,7 @@ function renderProxies() {
     return `<details class="proxy-card manual-group" data-render-key="${escapeHtml(name)}" data-group="${escapeHtml(name)}" ${open.has(name) || firstRender && index === 0 || query ? 'open' : ''}>
       <summary><strong>${escapeHtml(name)}</strong><span>${escapeHtml(value.now ?? '按组策略')} · ${value.all?.length ?? 0} 节点</span><small>${escapeHtml(value.type ?? '')}</small></summary>
       <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">当前出口详情</button>${value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-node-auto="${escapeHtml(name)}" ${busy ? 'disabled' : ''}>恢复自动</button>` : ''}</div>
-      ${open.has(name) || firstRender && index === 0 || query ? nodeGridMarkup(name, map, query, sort, busy, nodeTests.results(), nodeTests.busy(), nodeLimits.get(name) ?? 200) : ""}</details>`;
+      ${open.has(name) || firstRender && index === 0 || query ? nodeGridMarkup(name, map, query, sort, busy, nodeTests.results(), nodeTests.busy(), nodeLimits.get(name) ?? 200, false) : ""}</details>`;
   }).join(''));
 }
 
@@ -2412,17 +2386,17 @@ function renderNodeDetails() {
     ["TLS", details.tls ?? "未声明"],
     ["端口", details.port ?? "—"],
     ["UDP", details.udp == null ? "未知" : details.udp ? "支持" : "关闭"],
-    ["Provider", details.providerName ?? "本地配置"],
+    ["Provider", details.providerDetailsAvailable === false ? "信息暂未返回，可稍后重新查看" : details.providerName ?? "本地配置"],
     ["探测状态", details.alive == null ? "尚未验证" : details.alive ? "最近探测可达" : "最近探测失败"],
   ];
-  container.innerHTML = `
-    <header class="node-modal-header">
+  stableMarkup(container, `
+    <header class="node-modal-header" data-render-key="node-header">
       <div class="node-modal-identity"><span class="node-modal-mark">${escapeHtml(Array.from(details.nodeName).slice(0, 2).join("").toUpperCase())}</span><div><h2 id="node-details-title">当前节点信息</h2><p>${escapeHtml(details.group)} · 当前生效链路</p></div></div>
-      <button class="button button-quiet" data-node-modal-action="close">关闭</button>
+      <button class="button button-quiet" data-render-key="node-close" data-node-modal-action="close">关闭</button>
     </header>
     <div class="node-health-summary">
       <div><span>状态</span><strong>${details.alive == null ? "尚未验证" : details.alive ? "最近探测可达" : "最近探测失败"}</strong></div>
-      <div><span>延迟</span><strong>${details.lastDelayMs == null ? "—" : `${details.lastDelayMs} ms`}</strong></div>
+      <div><span>核心历史延迟</span><strong>${details.lastDelayMs == null ? "—" : `${details.lastDelayMs} ms`}</strong></div>
       <div><span>协议</span><strong>${escapeHtml(details.nodeType)} · ${escapeHtml(details.tls ?? "无 TLS")}</strong></div>
       <div><span>最近检测</span><strong>${latestTime ? formatPolicyDate(latestTime) : "暂无"}</strong></div>
     </div>
@@ -2440,7 +2414,7 @@ function renderNodeDetails() {
         <button class="button button-quiet" data-node-modal-action="retest">重新测速</button>
         <button class="button button-primary" data-node-modal-action="switch">切换节点</button>
       </div>
-    </footer>`;
+    </footer>`);
 }
 
 async function openNodeDetails(group: string | null) {
@@ -2457,6 +2431,12 @@ async function openNodeDetails(group: string | null) {
   if (ticket === null) return;
   nodeDetailsGroup = group;
   nodeDetailsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  store.nodeDetails = null;
+  const modal = $("#node-details-modal")!;
+  stableMarkup($("#node-details-content")!, `<header class="node-modal-header" data-render-key="node-header"><div class="node-modal-identity"><span class="node-modal-mark" aria-hidden="true">…</span><div><h2 id="node-details-title">当前节点信息</h2><p>${escapeHtml(group)} · 当前生效链路</p></div></div><button class="button button-quiet" data-render-key="node-close" data-node-modal-action="close">关闭</button></header><p class="empty-state" role="status">正在读取节点信息…</p>`);
+  modal.classList.remove("is-hidden"); modal.setAttribute("aria-hidden", "false"); modal.setAttribute('aria-busy', 'true');
+  syncModalScrollLock();
+  $("#node-details-modal [data-node-modal-action='close']")?.focus();
   let details: CurrentNodeDetails;
   try { details = await api.currentNodeDetails(group); }
   catch (error) {
@@ -2465,16 +2445,14 @@ async function openNodeDetails(group: string | null) {
   } finally { nodeDetailsSession.settle(ticket); }
   if (!nodeDetailsSession.accepts(ticket, nodeDetailsContext(group))) return;
   store.nodeDetails = details;
+  modal.removeAttribute('aria-busy');
   renderNodeDetails();
-  $("#node-details-modal")!.classList.remove("is-hidden");
-  $("#node-details-modal")!.setAttribute("aria-hidden", "false");
-  syncModalScrollLock();
-  const close = $("#node-details-modal [data-node-modal-action='close']") as HTMLButtonElement;
-  close?.focus();
+  $("#node-details-modal [data-node-modal-action='close']")?.focus();
 }
 
 function closeNodeDetails() {
   nodeDetailsSession.close();
+  $("#node-details-modal")?.removeAttribute('aria-busy');
   nodeDetailsGroup = null;
   store.nodeDetails = null;
   $("#node-details-modal")?.classList.add("is-hidden");
@@ -2519,13 +2497,13 @@ function renderRules() {
   $("#rules-more")!.textContent = `显示更多（${Math.min(ruleDisplayLimit, rules.length)}/${rules.length}）`;
 }
 
-function refreshConnections() {
+function refreshConnections(priority: ReadPriority = 'foreground') {
   return pageRead('connections', '#connections-refresh', async current => {
-    const result = await api.connections();
+    const result = await api.connections(priority);
     if (!current()) return;
     store.connections = result;
     renderConnections();
-  });
+  }, priority);
 }
 
 function renderConnections() {
@@ -2559,12 +2537,59 @@ async function refreshLogs() {
   await logsView.refresh();
 }
 
-function runDiagnostics() {
-  return diagnosticsView.run();
+const networkContext = createNetworkContext({
+  read: () => api.networkContext('background'),
+  changed: (state, invalidated) => {
+    for (const element of document.querySelectorAll('.network-context-copy')) element.textContent = state?.detail ?? '网络环境待重新识别，旧测速暂不采用；保持原出口。';
+    if (invalidated) {
+      diagnosticsView.invalidate('网络、DNS 或出口已变化，请重新诊断；未修改代理设置。', true);
+      overviewNodeDetails = {};
+      nodeTests.render();
+      if (store.view === 'manual') renderProxies();
+      if (store.view === 'proxies') renderOpenAiPolicy();
+    }
+  },
+});
+window.setInterval(() => { if (!appLifecycle.paused && !document.hidden) void networkContext.refresh(); }, 6000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !appLifecycle.paused) void networkContext.refresh(); });
+window.addEventListener('focus', () => { if (!appLifecycle.paused) void networkContext.refresh(); });
+
+let diagnosticNodesReading = false;
+async function refreshDiagnosticNodes() {
+  if (diagnosticNodesReading) return;
+  diagnosticNodesReading = true;
+  const context = pageContext();
+  const button = $('#diagnostic-nodes-refresh') as HTMLButtonElement; button.disabled = true;
+  const selector = $('#diagnostic-node') as HTMLSelectElement, previous = selector.value;
+  try {
+    const payload = await api.proxies();
+    if (context !== pageContext() || store.view !== 'diagnostics') return;
+    const map = (payload as { proxies?: ProxyMap }).proxies ?? {};
+    const names = Object.keys(map).filter(name => map[name].type && !map[name].all && !['Direct', 'Reject', 'RejectDrop', 'Pass', 'Compatible'].includes(map[name].type!)).sort();
+    selector.replaceChildren(new Option('不指定，仅检查基础连接', ''), ...names.slice(0, 1000).map(name => new Option(name, name)));
+    if (names.includes(previous)) selector.value = previous;
+    if (names.length > 1000) toast('仅列出前 1000 个节点，请拆分配置后排查其余节点。', 'info');
+  } catch { if (context === pageContext()) toast('节点列表未读取成功，请确认核心运行后刷新。', 'error'); }
+  finally { diagnosticNodesReading = false; button.disabled = false; }
+}
+$('#diagnostic-nodes-refresh')!.addEventListener('click', () => void refreshDiagnosticNodes());
+$('#diagnostic-node')!.addEventListener('change', () => diagnosticsView.invalidate('排查节点已变化，请重新诊断。'));
+
+let diagnosticStart: Promise<void> | null = null;
+function runDiagnostics(): Promise<void> {
+  if (diagnosticStart) return diagnosticStart;
+  const button = $('#run-diagnostics') as HTMLButtonElement;
+  const context = pageContext();
+  button.disabled = true; button.textContent = '正在识别网络…'; button.setAttribute('aria-busy', 'true');
+  diagnosticStart = networkContext.refresh().then(async () => {
+    if (context === pageContext() && store.view === 'diagnostics') await diagnosticsView.run();
+  }).finally(() => { diagnosticStart = null; button.disabled = false; button.textContent = '重新诊断'; button.setAttribute('aria-busy', 'false'); });
+  return diagnosticStart;
 }
 const diagnosticsView = createDiagnostics({
   ...api, context: () => JSON.stringify([pageContext(), store.runtime?.startedAt, store.settings?.networkMode,
-    store.settings?.mixedPort, store.settings?.controllerPort, store.activeProfile?.profile.routingMode, appLifecycle.generation]),
+    store.settings?.mixedPort, store.settings?.controllerPort, store.activeProfile?.profile.routingMode, appLifecycle.generation, networkContext.current()?.revision, ($('#diagnostic-node') as HTMLSelectElement).value]),
+  diagnosticNode: () => ($('#diagnostic-node') as HTMLSelectElement).value,
   allowed: () => store.view === 'diagnostics' && !appLifecycle.paused,
   networkMode: () => store.settings?.networkMode,
   error: errorMessage,
@@ -2629,20 +2654,20 @@ function aiHealthContext(): NodeTestScope | null {
   const profile = store.activeProfile?.profile, runtime = store.runtime, mode = store.manualOutbound;
   if (!profile?.activeRevisionId || !profile.openaiPolicy.enabled || runtime?.phase !== 'running' || mode?.mode !== 'ai'
       || profile.routingMode === 'direct' || store.openAiTask?.running || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return null;
-  return { kind: 'ai', profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision,
+  return { networkRevision: networkContext.current()?.revision ?? null, kind: 'ai', profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision,
     runtimePid: runtime.pid, runtimeStartedAt: runtime.startedAt, routingMode: profile.routingMode };
 }
-const aiHealth = createAiHealth({ context: aiHealthContext, start: api.startAiHealthCheck, status: api.nodeTestStatus,
+const aiHealth = createAiHealth({ context: aiHealthContext, start: api.startAiHealthCheck, status: () => api.nodeTestStatus('background'),
   cancel: api.cancelNodeTest, changed: () => { if (store.view === 'proxies') renderOpenAiPolicy(); }, error: errorMessage });
 window.setInterval(() => { if (!appLifecycle.paused && !document.hidden && store.view === 'proxies') void aiHealth.refresh(); }, 800);
 
 function nodeTestContext(): NodeTestScope | null {
   const profile = store.activeProfile?.profile, runtime = store.runtime, mode = store.manualOutbound;
   if (!profile?.activeRevisionId || runtime?.phase !== 'running' || mode?.mode !== 'manual' || mode.legacySelection || profile.routingMode === 'direct' || runtimeActionInFlight || networkModeSwitching || settingsSaving || manualModeSwitching) return null;
-  return { profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision, runtimePid: runtime.pid, runtimeStartedAt: runtime.startedAt, routingMode: profile.routingMode };
+  return { networkRevision: networkContext.current()?.revision ?? null, profileId: profile.id, revisionId: profile.activeRevisionId, modeRevision: mode.revision, runtimePid: runtime.pid, runtimeStartedAt: runtime.startedAt, routingMode: profile.routingMode };
 }
 const nodeTests = mountNodeTest($("#manual-view")!, {
-  context: nodeTestContext, start: api.startNodeTest, status: api.nodeTestStatus, cancel: api.cancelNodeTest,
+  context: nodeTestContext, start: api.startNodeTest, status: () => api.nodeTestStatus('background'), cancel: api.cancelNodeTest,
   changed: () => { if (store.view === 'manual') renderProxies(); }, error: errorMessage,
 });
 window.setInterval(() => { if (!appLifecycle.paused && !document.hidden && store.view === 'manual') void nodeTests.refresh(); }, 800);
@@ -2718,7 +2743,7 @@ function navigate(view: ViewName) {
   }
   if (view === "connections" && store.runtime?.phase === "running") void refreshConnections();
   if (view === "logs") void refreshLogs();
-  if (view === "diagnostics") void runDiagnostics();
+  if (view === "diagnostics") { void refreshDiagnosticNodes(); void runDiagnostics(); }
   if (previousView !== view) restoreViewScroll(view);
 }
 
@@ -2904,7 +2929,7 @@ $("#proxy-groups")!.addEventListener("click", async (event) => {
   if (!scope || button.disabled) return;
   button.disabled = true;
   try {
-    const result = await api.testProxyDelay(name);
+    const result = await api.testProxyDelay(name, undefined, 5_000, scope.networkRevision);
     if (!sameNodeTestScope(scope, nodeTestContext()) || revision !== nodeTests.revision()) return;
     const delay = Number(result.delay);
     const delayMs = Number.isFinite(delay) && delay > 0 ? delay : null;
@@ -3200,8 +3225,8 @@ window.setInterval(() => {
   if (sessionResumePresentation(sessionResumeStatus).busy) void refreshSessionResume();
   if (store.view === "logs") void refreshLogs();
   if (store.runtime?.phase === "running") {
-    void refreshRuntimeOnly();
-    if (store.view === "connections") void refreshConnections();
+    void refreshRuntimeOnly(false, 'background');
+    if (store.view === "connections") void refreshConnections('background');
   }
 }, 3_000);
 
@@ -3212,7 +3237,7 @@ window.setInterval(() => {
 window.setInterval(() => {
   if (appLifecycle.paused || proxyPolling || nodeSelectionBusy || document.hidden || !["overview", "proxies", "manual"].includes(store.view) || store.runtime?.phase !== "running") return;
   proxyPolling = true;
-  void refreshProxies(true).finally(() => { proxyPolling = false; });
+  void refreshProxies(true, 'background').finally(() => { proxyPolling = false; });
 }, 10_000);
 
 void listen<{ profileId: string; status: import("./types").SubscriptionStatus }>("subscription-usage-updated", (event) => {
@@ -3222,6 +3247,11 @@ void listen<{ profileId: string; status: import("./types").SubscriptionStatus }>
   if (JSON.stringify(record.status) === JSON.stringify(incoming)) return;
   record.status = incoming;
   renderSubscriptions();
+});
+
+void listen<string>('window-reveal-status', event => {
+  if (event.payload === 'failed') toast('主窗口暂未打开，请从 Dock 再试一次。代理保持原状。', 'error');
+  else if (event.payload === 'ready' && !document.hidden) void refreshRuntimeOnly();
 });
 
 void listen<GlobalTrafficSnapshot>("global-traffic", (event) => {
@@ -3266,3 +3296,6 @@ void (async () => {
   });
   appLifecycle.update(await api.lifecycle());
 })().catch(() => { /* Native admission remains authoritative if the WebView is closing. */ });
+
+void listen<NetworkContextSnapshot>("network-context-changed", event => networkContext.accept(event.payload)).catch(() => {});
+void networkContext.refresh();

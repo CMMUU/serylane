@@ -102,7 +102,7 @@ function baseReadFixture() {
     action:async(_message,run)=>run(),errorMessage:e=>e.message,friendlyError:e=>({title:e.message,description:'',action:'refresh',details:''}),
     localRouting:{render:noop,invalidate:()=>calls.push('invalidate'),refresh:async()=>calls.push('route-read')},
     connectionFeedback:{clearIssue:noop,showError:noop},themeController:{mutationRevision:0,snapshot:{preference:'system'},sync:()=>true},
-    renderOverview:noop,renderProfiles:noop,renderSubscriptions:noop,renderManualMode:noop,renderSettings:noop,renderOpenAiPolicy:noop,renderGlobalTraffic:noop,renderTunHelper:noop,renderAppearance:noop,
+    renderOverview:noop,renderProfiles:noop,renderSubscriptions:noop,renderManualMode:noop,renderProxies:noop,renderSettings:noop,renderOpenAiPolicy:noop,renderGlobalTraffic:noop,renderTunHelper:noop,renderAppearance:noop,
     invalidateNodeDetailsContext:noop,newestSubscriptionStatus:(_old,next)=>next,synchronizedProfiles:profiles=>profiles,
     openAiCosts:{refresh:async()=>{}},scheduleAutomaticUpdateCheck:noop,refreshSessionResume:async()=>{},refreshProxies:async()=>{},refreshConnectionFeedback:async()=>{},toast:noop,
     api:{
@@ -190,4 +190,17 @@ test('automatic restoration keeps Stop cancellable while modes and Start wait fo
   f.environment.sessionResumeStatus={phase:'idle',message:'stopped'};f.environment.renderHeader();
   assert.equal(f.control('#application-runtime-state').textContent,'已关闭');
   assert.equal(f.control('#global-start').disabled,false);
+});
+
+test('core state commits before slow subscription summaries and optional binary probe',async()=>{
+ const f=baseReadFixture();let releaseProfiles,releaseBinary;
+ f.environment.api.subscriptions=()=>new Promise(resolve=>{releaseProfiles=resolve;});
+ f.environment.api.binary=()=>new Promise(resolve=>{releaseBinary=resolve;});
+ f.environment.proxyReadIssue='pending refresh';
+ const reading=f.refresh();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.environment.proxyReadIssue,'');
+ assert.equal(f.control('#application-runtime-state').textContent,'系统代理运行中');
+ releaseProfiles([]);assert.equal(await reading,true);
+ releaseBinary({version:'fixture'});await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.environment.store.binary.version,'fixture');
 });

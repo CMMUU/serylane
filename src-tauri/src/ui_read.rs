@@ -37,9 +37,53 @@ where
         .map_err(|_| AppError::Runtime("状态读取中断，请重新刷新".into()).dto())?
 }
 
+/// Writes have an actual completion result, not a read timeout. A frontend
+/// timeout must never encourage replaying a partially committed preference.
+pub async fn write<T, F>(work: F) -> Result<T, AppErrorDto>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppErrorDto> + Send + 'static,
+{
+    let ticket = crate::lifecycle::PROCESS_LIFECYCLE
+        .ticket()
+        .map_err(|e| AppError::Conflict(e.to_string()).dto())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::lifecycle::PROCESS_LIFECYCLE
+            .check(ticket)
+            .map_err(|e| AppError::Conflict(e.to_string()).dto())?;
+        work()
+    })
+    .await
+    .map_err(|_| AppError::Runtime("设置操作中断，请重新读取实际状态".into()).dto())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn setting_write_runs_off_caller_and_completes_once() {
+        let caller = std::thread::current().id();
+        let worker = write(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            Ok(std::thread::current().id())
+        })
+        .await
+        .unwrap();
+        assert_ne!(caller, worker);
+    }
+    #[tokio::test]
+    async fn failed_write_is_not_replayed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let count = Arc::new(AtomicUsize::new(0));
+        let called = count.clone();
+        let result: Result<(), _> = write(move || {
+            called.fetch_add(1, Ordering::SeqCst);
+            Err(AppError::Io("fixture write error".into()).dto())
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn blocking_read_does_not_block_the_async_caller() {
         let caller = std::thread::current().id();

@@ -43,6 +43,7 @@ pub struct Scope {
     pub runtime_pid: Option<u32>,
     pub runtime_started_at: Option<String>,
     pub routing_mode: RoutingMode,
+    pub network_revision: Option<Uuid>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -217,12 +218,39 @@ impl NodeTestManager {
         }
         Ok(task.snapshot())
     }
-    fn invalidate(&self) {
+    fn network_changed(&self, current: impl FnOnce() -> Option<Uuid>) {
+        // Compare and cancel under the same slot lock: a delayed observation
+        // must not cancel a fresh job started in the newly observed epoch.
         if let Ok(slot) = self.current.lock() {
             if let Some(task) = slot.as_ref() {
-                task.cancel(true, "配置、选点方式或核心状态已变化，本轮测试已结束");
+                let snapshot = task.snapshot();
+                if snapshot.valid && snapshot.scope.network_revision != current() {
+                    task.cancel(
+                        true,
+                        "网络、DNS 或出口环境已变化，旧结果待重新检测；未切换节点或出口",
+                    );
+                }
             }
         }
+    }
+    fn invalidate_with(&self, message: &str) {
+        if let Ok(slot) = self.current.lock() {
+            if let Some(task) = slot.as_ref() {
+                if task.snapshot().valid {
+                    task.cancel(true, message);
+                }
+            }
+        }
+    }
+}
+impl NodeTestManager {
+    fn invalidate(&self) {
+        self.invalidate_with("配置、选点方式或核心状态已变化，本轮测试已结束");
+    }
+}
+pub fn invalidate_network(app: &AppHandle) {
+    if let Some(manager) = app.try_state::<NodeTestManager>() {
+        manager.network_changed(|| crate::network_context::revision(app));
     }
 }
 pub fn invalidate(app: &AppHandle) {
@@ -279,6 +307,7 @@ fn scope(app: &AppHandle, kind: Kind) -> AppResult<Scope> {
         runtime_pid: runtime.pid,
         runtime_started_at: runtime.started_at.map(|v| v.to_rfc3339()),
         routing_mode,
+        network_revision: crate::network_context::revision(app),
     })
 }
 pub fn status(app: &AppHandle) -> Option<Snapshot> {
@@ -407,11 +436,11 @@ where
     loop {
         tokio::select! { biased;
             _ = cancelled.changed() => break,
-            _ = monitor.tick() => { if !current() { task.cancel(true, "配置或核心状态已变化，本轮测试已结束"); break; } }
+            _ = monitor.tick() => { if !current() { task.cancel(true, "网络、配置或核心状态已变化，本轮测试已结束；请重新检测"); break; } }
             _ = &mut deadline => { task.cancel(false, "达到本轮总时限，已保留完成结果，其余节点未测试"); break; }
             result = requests.next() => match result {
                 Some((name, (state, delay))) => {
-                    if !current() { task.cancel(true, "配置或核心状态已变化，本轮测试已结束"); break; }
+                    if !current() { task.cancel(true, "网络、配置或核心状态已变化，本轮测试已结束；请重新检测"); break; }
                     task.result(&name, state, delay);
                 }
                 None => { task.change(|s| { if s.phase == Phase::Running { s.phase = Phase::Completed; s.message = "测试完成；仅检查延迟与连通性，未主动改选节点".into(); } }); break; }
@@ -425,8 +454,17 @@ pub async fn start(
     profile_id: Uuid,
     revision_id: Uuid,
     mode_revision: Uuid,
+    network_revision: Option<Uuid>,
 ) -> AppResult<Snapshot> {
-    start_kind(app, profile_id, revision_id, mode_revision, Kind::Manual).await
+    start_kind(
+        app,
+        profile_id,
+        revision_id,
+        mode_revision,
+        Kind::Manual,
+        network_revision,
+    )
+    .await
 }
 
 pub async fn start_kind(
@@ -435,9 +473,21 @@ pub async fn start_kind(
     revision_id: Uuid,
     mode_revision: Uuid,
     kind: Kind,
+    network_revision: Option<Uuid>,
 ) -> AppResult<Snapshot> {
+    crate::network_context::refresh(&app).await;
     let _permit = crate::user_rules::acquire_configuration(&app)?;
     let expected = scope(&app, kind)?;
+    if network_revision.is_some() && expected.network_revision != network_revision {
+        return Err(AppError::Conflict(
+            "网络环境已变化，请刷新后重新测试".into(),
+        ));
+    }
+    if expected.network_revision.is_none() {
+        return Err(AppError::Conflict(
+            "网络环境正在识别，请稍后重新测试；未修改出口".into(),
+        ));
+    }
     if (
         expected.profile_id,
         expected.revision_id,
@@ -512,12 +562,40 @@ mod tests {
             runtime_pid: Some(7),
             runtime_started_at: Some("fixture".into()),
             routing_mode: RoutingMode::Rule,
+            network_revision: Some(Uuid::new_v4()),
         }
     }
     fn names(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("node-{i}")).collect()
     }
 
+    #[test]
+    fn repeated_network_notification_preserves_new_epoch_job() {
+        let m = NodeTestManager::default();
+        let scope = context();
+        let current = scope.network_revision;
+        let (task, _) = m.begin(scope, names(1)).unwrap();
+        m.network_changed(|| current);
+        assert!(task.snapshot().valid);
+        assert_eq!(task.snapshot().phase, Phase::Running);
+        m.network_changed(|| Some(Uuid::new_v4()));
+        assert!(!task.snapshot().valid);
+    }
+    #[test]
+    fn network_changes_invalidate_completed_results_and_refuse_inflight_reuse() {
+        let m = NodeTestManager::default();
+        let a = context();
+        let (task, _) = m.begin(a.clone(), names(1)).unwrap();
+        let mut b = a;
+        b.network_revision = Some(Uuid::new_v4());
+        assert!(m.begin(b.clone(), names(1)).is_err());
+        task.result("node-0", NodeState::Passed, Some(10));
+        task.change(|s| s.phase = Phase::Completed);
+        drop(Worker(task.clone()));
+        m.invalidate_with("网络已变化");
+        assert!(!m.snapshot().unwrap().valid);
+        assert!(m.begin(b, names(1)).unwrap().1);
+    }
     #[test]
     fn ai_health_only_visits_managed_group_and_supports_one_node() {
         let payload = json!({"proxies": {

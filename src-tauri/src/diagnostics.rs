@@ -9,6 +9,9 @@ pub enum DiagnosticStage {
     LocalProxy,
     Controller,
     HttpProxy,
+    NodeDns,
+    NodeTransport,
+    NodeRequest,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -18,6 +21,7 @@ pub struct DiagnosticCheck {
     pub success: bool,
     pub latency_ms: Option<u128>,
     pub detail: String,
+    pub outcome: Option<String>,
 }
 
 pub async fn run(settings: &AppSettings) -> Vec<DiagnosticCheck> {
@@ -43,6 +47,20 @@ pub async fn run_step(settings: &AppSettings, stage: DiagnosticStage) -> Diagnos
             .await
         }
         DiagnosticStage::HttpProxy => check_http_proxy(settings).await,
+        DiagnosticStage::NodeDns
+        | DiagnosticStage::NodeTransport
+        | DiagnosticStage::NodeRequest => DiagnosticCheck {
+            stage: match stage {
+                DiagnosticStage::NodeDns => "node_dns",
+                DiagnosticStage::NodeTransport => "node_transport",
+                _ => "node_request",
+            }
+            .into(),
+            success: false,
+            latency_ms: None,
+            detail: "请选择节点后执行诊断".into(),
+            outcome: Some("skipped".into()),
+        },
     }
 }
 
@@ -51,18 +69,21 @@ async fn check_tcp_port(stage: &str, port: u16, timeout: Duration) -> Diagnostic
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(address)).await {
         Ok(Ok(_)) => DiagnosticCheck {
+            outcome: None,
             stage: stage.to_string(),
             success: true,
             latency_ms: Some(started.elapsed().as_millis()),
             detail: format!("127.0.0.1:{port} 可连接"),
         },
         Ok(Err(error)) => DiagnosticCheck {
+            outcome: None,
             stage: stage.to_string(),
             success: false,
             latency_ms: None,
             detail: error.to_string(),
         },
         Err(_) => DiagnosticCheck {
+            outcome: None,
             stage: stage.to_string(),
             success: false,
             latency_ms: Some(started.elapsed().as_millis()),
@@ -77,6 +98,7 @@ async fn check_http_proxy(settings: &AppSettings) -> DiagnosticCheck {
         Ok(proxy) => proxy,
         Err(error) => {
             return DiagnosticCheck {
+                outcome: None,
                 stage: "http_proxy".to_string(),
                 success: false,
                 latency_ms: None,
@@ -92,6 +114,7 @@ async fn check_http_proxy(settings: &AppSettings) -> DiagnosticCheck {
         Ok(client) => client,
         Err(error) => {
             return DiagnosticCheck {
+                outcome: None,
                 stage: "http_proxy".to_string(),
                 success: false,
                 latency_ms: None,
@@ -105,12 +128,14 @@ async fn check_http_proxy(settings: &AppSettings) -> DiagnosticCheck {
         .await
     {
         Ok(response) => DiagnosticCheck {
+            outcome: None,
             stage: "http_proxy".to_string(),
             success: response.status().is_success(),
             latency_ms: Some(started.elapsed().as_millis()),
             detail: format!("HTTP {}", response.status().as_u16()),
         },
         Err(error) => DiagnosticCheck {
+            outcome: None,
             stage: "http_proxy".to_string(),
             success: false,
             latency_ms: Some(started.elapsed().as_millis()),
@@ -126,7 +151,14 @@ mod tests {
 
     #[test]
     fn stage_input_only_accepts_the_three_known_probes() {
-        for stage in ["local_proxy", "controller", "http_proxy"] {
+        for stage in [
+            "local_proxy",
+            "controller",
+            "http_proxy",
+            "node_dns",
+            "node_transport",
+            "node_request",
+        ] {
             assert!(serde_json::from_value::<DiagnosticStage>(serde_json::json!(stage)).is_ok());
         }
         for stage in ["all", "unknown", "https://example.invalid/"] {

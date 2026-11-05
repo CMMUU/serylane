@@ -18,11 +18,11 @@ export const manualOutboundMarkup = `<article class="panel manual-outbound-panel
   </fieldset>
 </article>`;
 
-export function nodeGridMarkup(group: string, map: ProxyMap, query: string, sort: string, busy: boolean, results: NodeTestResult[] = [], testing = false, limit = 200): string {
+export function nodeGridMarkup(group: string, map: ProxyMap, query: string, sort: string, busy: boolean, results: NodeTestResult[] = [], testing = false, limit = 200, allowHistory = true): string {
   const value = map[group] ?? {};
   const selectable = ['Selector', 'Fallback', 'URLTest'].includes(value.type ?? '');
   const measured = new Map(results.map(n => [n.name, n]));
-  const delay = (name: string) => { const result = measured.get(name); if (result) return result.state === 'passed' ? result.delayMs : null; const history = map[name]?.history; const sample = history?.[history.length - 1]?.delay; return typeof sample === 'number' && sample > 0 ? sample : null; };
+  const delay = (name: string) => { const result = measured.get(name); if (result) return result.state === 'passed' ? result.delayMs : null; const history = allowHistory ? map[name]?.history : undefined; const sample = history?.[history.length - 1]?.delay; return typeof sample === 'number' && sample > 0 ? sample : null; };
   const nodes = (value.all ?? []).filter(name => `${name} ${map[name]?.type ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   if (sort === 'name') nodes.sort((a,b) => a.localeCompare(b));
   if (sort === 'delay') nodes.sort((a,b) => (delay(a) ?? Infinity) - (delay(b) ?? Infinity));
