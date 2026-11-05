@@ -87,8 +87,8 @@ fontdue = "0.9.4"
 block2 = "0.6"
 libc = "0.2"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSApplication", "block2", "libc", "NSAttributedString", "NSImage", "NSButton", "NSCell", "NSControl", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSMenu", "NSText", "NSView", "objc2-core-foundation"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSDate", "NSError", "NSFileManager", "NSPropertyList", "NSURL", "NSAttributedString", "NSDictionary", "NSGeometry", "NSRunLoop", "NSRange", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSApplication", "block2", "libc", "NSAttributedString", "NSImage", "NSButton", "NSCell", "NSControl", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSMenu", "NSMenuItem", "NSTextField", "NSEvent", "NSBitmapImageRep", "NSImageRep", "NSText", "NSView", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSDate", "NSError", "NSFileManager", "NSPropertyList", "NSURL", "NSAttributedString", "NSDictionary", "NSGeometry", "NSRunLoop", "NSOperation", "block2", "NSRange", "NSString", "NSValue"] }
 
 [dev-dependencies]
 tauri = { version = "~2.11", features = ["test"] }

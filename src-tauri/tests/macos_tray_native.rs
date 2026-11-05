@@ -11,8 +11,23 @@ mod macos_layout;
 mod macos_title;
 
 #[cfg(target_os = "macos")]
+#[path = "../src/macos_interaction.rs"]
+#[allow(dead_code, unused_imports)]
+mod macos_interaction;
+#[cfg(target_os = "macos")]
+mod app_log {
+    pub enum Area {
+        App,
+    }
+    pub fn record(_: u8, _: Area, message: &str) {
+        println!("test journal: {message}");
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::NSMenuDelegate;
     use objc2_app_kit::{
         NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
         NSApplication, NSApplicationActivationPolicy, NSAttributedStringNSExtendedStringDrawing,
@@ -23,7 +38,7 @@ fn main() {
 
     let mtm = MainThreadMarker::new().expect("native test main thread");
     let app = NSApplication::sharedApplication(mtm);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     let bar = NSStatusBar::systemStatusBar();
     let item = bar.statusItemWithLength(macos_layout::item_width());
     let button = item.button(mtm).expect("disposable status button");
@@ -263,6 +278,67 @@ fn main() {
             .count(),
         2
     );
+    use macos_interaction::MenuAction;
+    let actions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = actions.clone();
+    macos_interaction::install(
+        macos_layout::brand_icon(),
+        &[("QA Show", MenuAction::Show)],
+        Some("QA"),
+        move |action| calls.lock().unwrap().push(action),
+        |trace| println!("owner trace: {}", trace.stage),
+    )
+    .unwrap();
+    assert!(
+        macos_interaction::install(macos_layout::brand_icon(), &[], None, |_| {}, |_| {}).is_err(),
+        "duplicate status items must not be created"
+    );
+    macos_interaction::with_status_item(|item, mtm| {
+        let button = item.button(mtm).unwrap();
+        assert!(
+            button.subviews().is_empty(),
+            "the native button must not have an event overlay"
+        );
+        let menu = item.menu(mtm).unwrap();
+        assert_eq!(menu.numberOfItems(), 1);
+        macos_title::apply_to_item(item, 1024, 2048, mtm)?;
+        assert!(std::ptr::eq(&*menu, &*item.menu(mtm).unwrap()));
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        actions.lock().unwrap().is_empty(),
+        "install/render must not dispatch business actions"
+    );
+    // These calls exercise the real target/delegate and deferred delivery, not
+    // a physical menu-bar click. Fullscreen acceptance remains a separate gate.
+    macos_interaction::with_status_item(|item, mtm| {
+        let menu = item.menu(mtm).unwrap();
+        menu.delegate().unwrap().menuWillOpen(&menu);
+        menu.performActionForItemAtIndex(0);
+        assert!(actions.lock().unwrap().is_empty());
+        menu.delegate().unwrap().menuDidClose(&menu);
+        Ok(())
+    })
+    .unwrap();
+    objc2_foundation::NSRunLoop::currentRunLoop()
+        .runUntilDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.1));
+    assert_eq!(*actions.lock().unwrap(), vec![MenuAction::Show]);
+    macos_interaction::with_status_item(|item, mtm| {
+        item.menu(mtm).unwrap().performActionForItemAtIndex(0);
+        Ok(())
+    })
+    .unwrap();
+
+    macos_interaction::uninstall();
+    objc2_foundation::NSRunLoop::currentRunLoop()
+        .runUntilDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(0.1));
+    assert_eq!(*actions.lock().unwrap(), vec![MenuAction::Show]);
+    macos_interaction::uninstall();
+    assert!(macos_interaction::with_status_item(|_, _| Ok(())).is_err());
+    macos_interaction::install(macos_layout::brand_icon(), &[], Some("QA"), |_| {}, |_| {})
+        .unwrap();
+    macos_interaction::uninstall();
     bar.removeStatusItem(&item);
     println!("native tray: fixed-width two-row title, unit changes, clear and re-enable passed");
 }

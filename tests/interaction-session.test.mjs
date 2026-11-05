@@ -48,9 +48,45 @@ test('detail loading uses stable header and close control with stationary modal 
 });
 test('macOS native reveal stays separate from navigation and tray rendering is coalesced',()=>{
  const native=read('src-tauri/src/macos_interaction.rs'),lib=read('src-tauri/src/lib.rs'),traffic=read('src-tauri/src/traffic_monitor.rs');
- assert.match(lib,/show_menu_on_left_click\(cfg!\(target_os = "macos"\)\)/);
+ assert.match(lib,/macos_interaction::install\(/);
+ assert.match(native,/statusItemWithLength/);
+ assert.doesNotMatch(native,/TaoTrayTarget|\.performClick\(|setActivationPolicy|setCollectionBehavior/);
  assert.match(lib,/RunEvent::Reopen/);assert.match(native,/isOnActiveSpace\(\)/);
  assert.doesNotMatch(lib.slice(lib.indexOf('fn show_home_window('),lib.indexOf('#[cfg_attr(mobile')),/navigate-view/);
  assert.match(traffic,/queued\.swap\(true, Ordering::AcqRel\)/);
  assert.match(traffic,/queue_tray_update\(&app, &snapshot/);
+});
+
+// Source contracts complement native acceptance; they do not simulate a real
+// menu-bar click or prove Fullscreen Space behavior.
+test('macOS menu owner observes but never intercepts clicks, and owns teardown',()=>{
+ const native=read('src-tauri/src/macos_interaction.rs');
+ assert.match(native,/addLocalMonitorForEventsMatchingMask_handler/);
+ assert.match(native,/raw\.as_ptr\(\)/);
+ assert.match(native,/removeMonitor/);
+ assert.match(native,/removeStatusItem/);
+ assert.match(native,/setDelegate\(None\)/);
+ assert.match(native,/addOperationWithBlock/);
+ assert.match(native,/alive\.load\(Ordering::Acquire\)/);
+ assert.match(native,/menu-open/);assert.match(native,/menu-close/);
+ const willOpen=native.slice(native.indexOf('fn will_open('),native.indexOf('fn did_close('));
+ assert.doesNotMatch(willOpen,/reveal|set_focus|show_home|network/);
+});
+test('macOS traffic and enable changes share one main-thread paint queue',()=>{
+ const traffic=read('src-tauri/src/traffic_monitor.rs'),title=read('src-tauri/src/traffic_monitor/macos_title.rs');
+ const enable=traffic.slice(traffic.indexOf('pub fn set_enabled('),traffic.indexOf('pub fn snapshot('));
+ assert.match(enable,/queue_tray_update/);assert.doesNotMatch(enable,/\bupdate_tray\(/);
+ assert.match(traffic,/crate::macos_interaction::menu_tracking\(\)/);
+ assert.match(title,/crate::macos_interaction::with_status_item/);
+ assert.doesNotMatch(title,/with_inner_tray_icon|TaoTrayTarget/);
+});
+
+test('native acceptance fixture starts without production setup or data URL features',()=>{
+ const fixture=read('src-tauri/examples/macos-interaction-fixture.rs'),ci=read('.github/workflows/ci.yml');
+ assert.match(fixture,/about:blank/);assert.match(fixture,/install_qa_controls/);assert.match(fixture,/NSTextField::initWithFrame/);
+ assert.doesNotMatch(fixture,/data:text\/html|AppStorage|MihomoRuntime|tauri_plugin_/);
+ assert.match(fixture,/--self-test/);assert.match(fixture,/fixture-self-test/);
+ assert.match(fixture,/window_ok && menu_ok && controls_ok/);assert.match(fixture,/std::process::exit\(2\)/);
+ assert.match(ci,/macos-interaction-fixture -- --self-test/);
+ assert.match(fixture,/create_new\(true\)/);assert.match(fixture,/mode\(0o600\)/);
 });

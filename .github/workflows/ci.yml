@@ -80,6 +80,19 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
         env:
           SERYLANE_NATIVE_TRAY_SNAPSHOT_DIR: ${{ runner.temp }}/native-tray
+      - name: Verify isolated macOS menu/window fixture startup
+        if: runner.os == 'macOS'
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          cargo run --manifest-path src-tauri/Cargo.toml --example macos-interaction-fixture -- --self-test
+          if cargo run --manifest-path src-tauri/Cargo.toml --example macos-interaction-fixture -- --self-test-force-failure; then
+            echo 'Fixture failure gate incorrectly passed'
+            exit 1
+          else
+            code=$?
+            test "$code" -eq 2
+          fi
       - name: Verify Windows TUN adapter, selected routes, DNS and cleanup on isolated runner
         if: runner.os == 'Windows'
         shell: pwsh
