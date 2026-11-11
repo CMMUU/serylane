@@ -28,6 +28,7 @@ mod node_selection;
 mod node_test;
 mod openai_cost;
 mod openai_policy;
+mod openai_ranking;
 mod openai_stability;
 mod platform;
 mod profile_service;
@@ -410,16 +411,22 @@ async fn activate_profile(
     profile_id: Uuid,
     revision_id: Option<Uuid>,
 ) -> Result<ProfileDetails, AppErrorDto> {
-    profile_service::activate_profile(&app, profile_id, revision_id)
+    let details = profile_service::activate_profile(&app, profile_id, revision_id)
         .await
-        .map_err(dto)
+        .map_err(dto)?;
+    app.state::<openai_stability::StabilityManager>()
+        .update_policy_status(&app);
+    Ok(details)
 }
 
 #[tauri::command]
 async fn rollback_profile(app: AppHandle, profile_id: Uuid) -> Result<ProfileDetails, AppErrorDto> {
-    profile_service::rollback_profile(&app, profile_id)
+    let details = profile_service::rollback_profile(&app, profile_id)
         .await
-        .map_err(dto)
+        .map_err(dto)?;
+    app.state::<openai_stability::StabilityManager>()
+        .update_policy_status(&app);
+    Ok(details)
 }
 
 #[tauri::command]
@@ -620,6 +627,8 @@ async fn start_runtime_inner(
     {
         return Err(dto(AppError::Conflict("应用正在退出，启动已取消".into())));
     }
+    app.state::<openai_stability::StabilityManager>()
+        .schedule_check();
     Ok(())
 }
 

@@ -5,12 +5,33 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const read = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
-const { synchronizedProfiles, newestSubscriptionStatus, subscriptionBytes, subscriptionDate, describeSubscriptionUsage, subscriptionCardMarkup } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-cards.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
+const { synchronizedProfiles, newestSubscriptionStatus, subscriptionBytes, subscriptionDate, describeSubscriptionUsage, subscriptionCardMarkup, subscriptionRecommendationRanks } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-cards.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
 const { subscriptionImportMarkup, describeSubscriptionImport } = await import(`data:text/javascript;base64,${Buffer.from(ts.transpileModule(read("subscription-import.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText).toString("base64")}`);
 const now = Date.parse("2026-09-07T00:00:00Z");
 const GiB = 1024 ** 3;
 const sample = (changes = {}) => ({ uploadBytes: 2 * GiB, downloadBytes: 28 * GiB, totalBytes: 100 * GiB, expiresAt: Date.parse("2026-10-07T00:00:00Z") / 1000, ...changes });
 const subscription = () => ({ profile: { id: "fixture-only", displayName: "测试订阅", source: { type: "remote_subscription", host: "example.test" }, routingMode: "rule", openaiPolicy: { enabled: false, selectedNodes: [], autoMaintain: false } }, summary: { nodeCount: 12, proxyProviderCount: 2 }, revisionCount: 3, latestFetchedAt: "2026-09-05T00:00:00Z", latestMetadata: { bytes: 4096 }, latestValidation: { valid: true }, active: true, status: { checkedAt: "2026-09-07T00:00:00Z", lastError: null, usage: sample(), usageUpdatedAt: "2026-09-07T00:00:00Z" } });
+
+test("subscription AI ranks use comparable quality and a near-tie backup, independent of activation", () => {
+  const record = (id, qualityScore, independentBackup, score) => {
+    const entry = subscription();
+    entry.profile.id = id;
+    entry.profile.openaiPolicy = { enabled: true, benchmarkVersion: 2, selectedNodes: [{ qualityScore, score }], independentBackup };
+    return entry;
+  };
+  const primary = record("primary", 96, false, 100);
+  const backup = { ...record("backup", 94, true, 78), active: false };
+  const weaker = record("weaker", 91, true, 99);
+  const expired = record("expired", 100, true, 100);
+  expired.status.usage.expiresAt = now / 1000;
+  const legacy = record("legacy", 100, true, 100);
+  legacy.profile.openaiPolicy.benchmarkVersion = 1;
+  assert.deepEqual([...subscriptionRecommendationRanks([primary, weaker, backup, expired, legacy], now)], [["backup", 1], ["primary", 2], ["weaker", 3]]);
+  const html = subscriptionCardMarkup(backup, null, now, false, 1);
+  assert.match(html, /AI 推荐第 1 名">1\.<\/span> 测试订阅/);
+  assert.match(html, /未选用/);
+  assert.doesNotMatch(html, /aria-current/);
+});
 
 test("provider upload plus download produce quota and remaining, not response bytes", () => {
   const result = describeSubscriptionUsage(sample(), now);

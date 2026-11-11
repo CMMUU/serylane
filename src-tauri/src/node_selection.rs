@@ -95,6 +95,13 @@ pub async fn proxies(app: &AppHandle) -> AppResult<Value> {
                 );
             }
         }
+        let snapshot = app.state::<StabilityManager>().snapshot();
+        if snapshot.enabled
+            && snapshot.profile_id == Some(id)
+            && snapshot.revision_id == state.active_revision_id
+        {
+            payload["openaiRanking"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
+        }
     }
     Ok(payload)
 }
@@ -123,8 +130,7 @@ pub async fn select(
     let payload = api.proxies().await?;
     let runtime_group = &payload["proxies"][group];
     let managed = group == GROUP
-        && profile.openai_policy.enabled
-        && profile.openai_policy.stability_enabled
+        && crate::openai_stability::manages(&profile.openai_policy)
         && runtime_group["type"] == "Selector";
     if let Some(node) = node {
         validate_choice(runtime_group, node)?;
@@ -179,7 +185,11 @@ pub async fn select(
         return Err(error);
     }
     if group == GROUP {
-        app.state::<StabilityManager>().invalidate_observations();
+        let manager = app.state::<StabilityManager>();
+        manager.invalidate_observations();
+        if node.is_none() && managed {
+            manager.resume_ranked_selection();
+        }
     }
     Ok(())
 }

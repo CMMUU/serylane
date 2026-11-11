@@ -11,14 +11,14 @@ export function parseMultiplier(value: string): number | null {
 export const openAiCostsMarkup = `<details id="openai-cost-settings" class="openai-cost-settings"><summary>成本与性价比 <span id="openai-cost-caption">配置节点流量倍率</span></summary><div id="openai-cost-body"></div></details>`;
 export function costFormMarkup(s: CostSnapshot): string {
   return `<form id="openai-cost-form"><p class="node-choice-help">从名称明确的倍率标记自动识别；手动覆盖优先，留空恢复名称识别。1× 表示使用 1 GB 通常扣除 1 GB 套餐流量；实际账单以服务商为准。地区资格用于所有 OpenAI 托管选点入口；普通代理组保持不变。</p>
-    <div class="cost-preferences"><label>自动选点偏好<select name="mode"><option value="quality" ${s.mode === "quality" ? "selected" : ""}>质量优先（原策略）</option><option value="value" ${s.mode === "value" ? "selected" : ""}>性价比优先（推荐）</option></select></label>
+    <div class="cost-preferences"><label>自动选点预算<select name="mode"><option value="quality" ${s.mode === "quality" ? "selected" : ""}>不限倍率</option><option value="value" ${s.mode === "value" ? "selected" : ""}>性价比优先</option></select></label>
     <label>倍率上限（仅性价比模式）<input name="maxMultiplier" type="number" min="0.01" max="1000" step="any" value="${s.maxMultiplier ?? ""}" placeholder="不限制" /></label></div>
     <label class="cost-unknown"><input name="allowUnknown" type="checkbox" ${s.allowUnknown ? "checked" : ""} /><span>允许未知倍率兜底（不能保证费用上限）</span></label>
-    <p class="node-choice-help">质量优先沿用原策略，不限制倍率。性价比模式使用符合预算的候选节点与基础 Fallback；跳过大流量带宽测速，但连通性检测仍消耗少量流量。无符合预算的健康节点时拒绝新请求，不擅自使用超预算节点。手动固定节点仍优先，但地区资格必须通过。</p>
+    <p class="node-choice-help">重新筛选后，两种预算模式都按同一套推荐权重选点。性价比模式额外限制倍率和未知倍率候选。筛选使用轻量连通性检测，无符合预算的健康节点时拒绝新请求。手动选点须满足地区资格，费用超出预算或未知时会单独确认。</p>
     <label class="cost-search">查找节点<input name="search" type="search" placeholder="按节点名称筛选" /></label>
     <p class="node-choice-help">地区筛选：${s.nodes.filter(n => n.metadata?.eligible).length} 个名称符合 · ${s.nodes.filter(n => n.metadata && !n.metadata.eligible).length} 个排除。未知或冲突地区待确认；名称不是实际出口证明。</p>
     <div class="cost-node-list">${s.nodes.map((n,i) => `<label class="cost-node-row" data-cost-index="${i}"><span>${escapeNode(n.name)}<small class="cost-node-evidence">${escapeNode(n.metadata?.regionReason ?? "地区待确认")} · ${escapeNode(multiplierSourceLabel(n.metadata?.multiplierSource))}${n.multiplier == null ? "" : ` ${n.multiplier}×`}</small></span><span class="cost-rate-input"><input name="node-${i}" aria-label="${escapeNode(n.name)} · 流量倍率" type="number" min="0.01" max="1000" step="any" placeholder="${n.metadata?.nameMultiplier ?? "自动 / 未知"}" value="${n.manualMultiplier ?? ""}" /><span>×</span></span></label>`).join("") || '<p class="node-choice-help">没有可定价的显式节点；Provider 动态节点暂不支持 OpenAI 筛选。</p>'}</div>
-    <p class="node-choice-help">连接信息变更后手动覆盖作废；名称倍率持续自动识别。保存会校验并应用符合预算的基础 Fallback；不启动核心或生成灾备。预算内有效节点不足 2 个时拒绝托管路径新请求。增强稳定优先暂时停用。</p>
+    <p class="node-choice-help">连接信息变更后恢复名称识别。保存会校验并应用预算，重新筛选可评估当前预算内的新候选。</p>
     <div class="toolbar"><button class="button button-primary" type="submit">保存成本策略</button><button class="button button-quiet" type="button" data-cost-refresh>重新读取</button><span id="cost-feedback" role="status"></span></div></form>`;
 }
 export function mountOpenAiCosts(services: {
@@ -32,7 +32,7 @@ export function mountOpenAiCosts(services: {
   const feedback = (message: string) => { const node = root.querySelector("#cost-feedback"); if (node) node.textContent = message; };
   const errorText = (error: unknown) => error instanceof Error ? error.message : typeof error === "object" && error !== null && "message" in error ? String(error.message) : String(error);
   const render = () => {
-    root.querySelector("#openai-cost-caption")!.textContent = snapshot ? snapshot.mode === "value" ? "性价比优先" : "质量优先" : "配置节点流量倍率";
+    root.querySelector("#openai-cost-caption")!.textContent = snapshot ? snapshot.mode === "value" ? "性价比优先" : "不限倍率" : "配置节点流量倍率";
     body.innerHTML = snapshot ? costFormMarkup(snapshot) : '<p class="node-choice-help">请先选用配置。</p>';
     dirty = false;
   };

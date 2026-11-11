@@ -4,7 +4,9 @@ use crate::route_health::{ProbeReport, ProbeState, Target};
 use crate::{
     error::{AppError, AppErrorDto, AppResult},
     mihomo_api::{DelayProbe, MihomoApiClient},
-    models::RuntimePhase,
+    models::{OpenAiNodeScore, OpenAiPolicy, RoutingMode, RuntimePhase},
+    openai_cost::ResolvedCosts,
+    openai_ranking::{is_ranked, score, RankSignals},
     runtime::MihomoRuntime,
     storage::AppStorage,
 };
@@ -24,6 +26,13 @@ use uuid::Uuid;
 pub const GROUP: &str = "🤖 OpenAI 自动灾备";
 const WINDOW: u64 = 900;
 const COOLDOWN: u64 = 300;
+
+pub(crate) fn manages(policy: &OpenAiPolicy) -> bool {
+    policy.enabled
+        && (is_ranked(policy)
+            || (crate::capabilities::ENHANCED_STABILITY && policy.stability_enabled))
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -31,7 +40,7 @@ fn now() -> u64 {
         .as_secs()
 }
 
-async fn probe_target(api: &MihomoApiClient, name: &str, target: Target) -> ProbeReport {
+pub(crate) async fn probe_target(api: &MihomoApiClient, name: &str, target: Target) -> ProbeReport {
     let (url, expected) = target.probe();
     let (state, latency_ms) = match api.health_probe(name, url, Some(expected)).await {
         DelayProbe::Passed(ms) => (ProbeState::Passed, Some(ms)),
@@ -73,6 +82,7 @@ pub enum Evidence {
 #[derive(Clone, Default)]
 struct NodeHealth {
     samples: VecDeque<(u64, bool, bool)>,
+    latencies: VecDeque<(u64, u32)>,
     consecutive_failures: u32,
     recovery_passes: u32,
     cooldown_until: u64,
@@ -97,11 +107,18 @@ impl NodeHealth {
         };
         if let Some(ok) = report.evidence().filter(|_| !shared_failure) {
             self.record(time, Evidence::Probe(ok));
+            if ok {
+                if let Some(delay) = report.latency_ms.and_then(|ms| u32::try_from(ms).ok()) {
+                    self.latencies.push_back((time, delay));
+                }
+            }
         } else {
             // Keep historical evidence/cooldown, but do not select an unverified
             // candidate using a success from a previous round.
             self.last_probe = 0;
-            self.recovery_passes = 0;
+            if !shared_failure {
+                self.recovery_passes = 0;
+            }
         }
         self.chatgpt = chatgpt;
         self.openai_api = openai_api;
@@ -116,6 +133,13 @@ impl NodeHealth {
         }
         while self.samples.len() > 90 {
             self.samples.pop_front();
+        }
+        while self
+            .latencies
+            .front()
+            .is_some_and(|(t, _)| time.saturating_sub(*t) > WINDOW)
+        {
+            self.latencies.pop_front();
         }
     }
     fn record(&mut self, time: u64, event: Evidence) {
@@ -185,10 +209,103 @@ impl NodeHealth {
         }
     }
 }
+
+struct RankedNode {
+    name: String,
+    score: f64,
+    stream_samples: usize,
+    connection_samples: usize,
+    latency_ms: u32,
+}
+
+fn rank_node(
+    baseline: &OpenAiNodeScore,
+    health: Option<&NodeHealth>,
+    costs: &ResolvedCosts,
+    time: u64,
+) -> RankedNode {
+    let mut signals = RankSignals {
+        stream_successes: 0,
+        stream_samples: 0,
+        connection_successes: baseline.connection_successes,
+        connection_samples: baseline.connection_samples,
+        latency_ms: baseline.latency_ms,
+        jitter_ms: baseline.jitter_ms,
+        traffic_multiplier: costs.multiplier(&baseline.name),
+    };
+    if let Some(health) = health {
+        let mut connection_samples = 0;
+        let mut connection_successes = 0;
+        for &(_, ok, model) in health
+            .samples
+            .iter()
+            .filter(|(t, _, _)| time.saturating_sub(*t) <= WINDOW)
+        {
+            if model {
+                signals.stream_samples += 1;
+                signals.stream_successes += usize::from(ok);
+            } else {
+                connection_samples += 1;
+                connection_successes += usize::from(ok);
+            }
+        }
+        if connection_samples > 0 {
+            signals.connection_samples = connection_samples;
+            signals.connection_successes = connection_successes;
+        }
+        let mut delays: Vec<_> = health
+            .latencies
+            .iter()
+            .filter(|(t, _)| time.saturating_sub(*t) <= WINDOW)
+            .map(|(_, delay)| *delay)
+            .collect();
+        if delays.len() >= 3 {
+            delays.sort_unstable();
+            signals.latency_ms = delays[(delays.len() * 9).div_ceil(10) - 1];
+            signals.jitter_ms = signals.latency_ms - delays[delays.len() / 2];
+        }
+    }
+    RankedNode {
+        name: baseline.name.clone(),
+        score: score(signals),
+        stream_samples: signals.stream_samples,
+        connection_samples: signals.connection_samples,
+        latency_ms: signals.latency_ms,
+    }
+}
+
+fn rank_nodes(
+    policy: &OpenAiPolicy,
+    nodes: &BTreeMap<String, NodeHealth>,
+    allowed: &[String],
+    costs: &ResolvedCosts,
+    time: u64,
+) -> Vec<RankedNode> {
+    let mut ranking: Vec<_> = policy
+        .selected_nodes
+        .iter()
+        .filter(|node| allowed.contains(&node.name))
+        .map(|node| rank_node(node, nodes.get(&node.name), costs, time))
+        .collect();
+    ranking.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| right.connection_samples.cmp(&left.connection_samples))
+            .then_with(|| left.latency_ms.cmp(&right.latency_ms))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    ranking
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeSnapshot {
     name: String,
+    rank: Option<usize>,
+    recommendation_score: Option<f64>,
+    stream_samples: usize,
+    connection_samples: usize,
     probe_ok: bool,
     success_rate: Option<u64>,
     samples: usize,
@@ -198,6 +315,32 @@ pub struct NodeSnapshot {
     model_interrupted: u64,
     chatgpt: ProbeReport,
     openai_api: ProbeReport,
+}
+
+impl NodeSnapshot {
+    fn new(
+        name: &str,
+        n: &NodeHealth,
+        time: u64,
+        rank: Option<(Option<usize>, &RankedNode)>,
+    ) -> Self {
+        Self {
+            name: name.to_owned(),
+            rank: rank.and_then(|(position, _)| position),
+            recommendation_score: rank.map(|(_, row)| row.score),
+            stream_samples: rank.map_or(0, |(_, row)| row.stream_samples),
+            connection_samples: rank.map_or(0, |(_, row)| row.connection_samples),
+            probe_ok: n.usable(time),
+            success_rate: (!n.samples.is_empty()).then(|| (n.score() * 100.0).round() as u64),
+            samples: n.samples.len(),
+            cooldown_seconds: n.cooldown_until.saturating_sub(time),
+            recovery_passes: n.recovery_passes,
+            model_completed: n.model_completed,
+            model_interrupted: n.model_interrupted,
+            chatgpt: n.chatgpt.fresh(time),
+            openai_api: n.openai_api.fresh(time),
+        }
+    }
 }
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +366,9 @@ struct HealthState {
     epoch: u64,
     nodes: BTreeMap<String, NodeHealth>,
     identities: BTreeMap<String, [u8; 32]>,
+    ranking: Vec<RankedNode>,
+    ranked_run: Option<(u32, chrono::DateTime<chrono::Utc>)>,
+    reselect: bool,
     snapshot: StabilitySnapshot,
 }
 
@@ -238,6 +384,9 @@ impl HealthState {
         }
         if self.profile != profile {
             self.nodes.clear();
+            self.ranked_run = None;
+            self.reselect = false;
+            self.snapshot.last_switch = None;
         } else {
             // Regenerating a ranking/revision must not erase a failed node's
             // cooldown. Never carry observations to a renamed/replaced server.
@@ -248,7 +397,14 @@ impl HealthState {
                     .is_some_and(|(old, new)| old == new)
             });
         }
-        self.current = None;
+        if !self
+            .current
+            .as_ref()
+            .is_some_and(|name| self.nodes.contains_key(name))
+        {
+            self.current = None;
+        }
+        self.ranking.clear();
         self.snapshot.last_check = None;
         self.snapshot.common_failure = false;
         self.epoch += 1;
@@ -335,6 +491,18 @@ impl StabilityManager {
             s.snapshot.running = false;
         }
     }
+
+    pub(crate) fn schedule_check(&self) {
+        self.wake.notify_one();
+    }
+
+    pub(crate) fn resume_ranked_selection(&self) {
+        if let Ok(mut s) = self.inner.lock() {
+            s.reselect = true;
+        }
+        self.schedule_check();
+    }
+
     pub fn update_policy_status(&self, app: &AppHandle) {
         let Ok(storage) = AppStorage::from_app(app) else {
             return;
@@ -354,13 +522,20 @@ impl StabilityManager {
             s.snapshot.running = false;
             s.snapshot.profile_id = persistent.active_profile_id;
             s.snapshot.revision_id = profile.as_ref().and_then(|p| p.active_revision_id);
-            s.snapshot.eligible = profile.as_ref().is_some_and(|p| {
-                p.openai_policy.enabled && p.openai_policy.selected_nodes.len() >= 2
-            });
             s.snapshot.enabled = profile
                 .as_ref()
-                .is_some_and(|p| p.openai_policy.enabled && p.openai_policy.stability_enabled);
+                .is_some_and(|p| p.routing_mode == RoutingMode::Rule && manages(&p.openai_policy));
+            s.snapshot.eligible = s.snapshot.enabled
+                && profile
+                    .as_ref()
+                    .is_some_and(|p| !p.openai_policy.selected_nodes.is_empty());
             s.snapshot.message = "策略已应用，等待下一轮稳定性检查".into();
+            if s.snapshot.enabled {
+                self.schedule_check();
+            } else {
+                s.ranked_run = None;
+                s.reselect = false;
+            }
         }
     }
     pub fn snapshot(&self) -> StabilitySnapshot {
@@ -369,27 +544,37 @@ impl StabilityManager {
             .map(|mut s| {
                 let mut out = s.snapshot.clone();
                 let time = now();
+                if s.profile != out.profile_id || s.revision != out.revision_id || !out.enabled {
+                    out.current = None;
+                    out.nodes.clear();
+                    out.last_check = None;
+                    out.last_switch = None;
+                    return out;
+                }
                 out.current = s.current.clone();
                 for node in s.nodes.values_mut() {
                     node.prune(time);
                 }
-                out.nodes = s
-                    .nodes
-                    .iter()
-                    .map(|(name, n)| NodeSnapshot {
-                        name: name.clone(),
-                        probe_ok: n.usable(time),
-                        success_rate: (!n.samples.is_empty())
-                            .then(|| (n.score() * 100.0).round() as u64),
-                        samples: n.samples.len(),
-                        cooldown_seconds: n.cooldown_until.saturating_sub(time),
-                        recovery_passes: n.recovery_passes,
-                        model_completed: n.model_completed,
-                        model_interrupted: n.model_interrupted,
-                        chatgpt: n.chatgpt.fresh(time),
-                        openai_api: n.openai_api.fresh(time),
-                    })
-                    .collect();
+                let empty = NodeHealth::default();
+                out.nodes = if s.ranking.is_empty() {
+                    s.nodes
+                        .iter()
+                        .map(|(name, health)| NodeSnapshot::new(name, health, time, None))
+                        .collect()
+                } else {
+                    let mut rank = 0;
+                    s.ranking
+                        .iter()
+                        .map(|row| {
+                            let health = s.nodes.get(&row.name).unwrap_or(&empty);
+                            let position = health.usable(time).then(|| {
+                                rank += 1;
+                                rank
+                            });
+                            NodeSnapshot::new(&row.name, health, time, Some((position, row)))
+                        })
+                        .collect()
+                };
                 out
             })
             .unwrap_or_default()
@@ -433,10 +618,6 @@ impl StabilityManager {
         self.stopped.store(true, Ordering::Release);
     }
     pub fn start(&self, app: AppHandle) {
-        if !crate::capabilities::ENHANCED_STABILITY {
-            self.stop();
-            return;
-        }
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             let mut timer = tokio::time::interval(Duration::from_secs(60));
@@ -468,18 +649,28 @@ impl StabilityManager {
         });
     }
     async fn tick(&self, app: &AppHandle) -> AppResult<()> {
-        if !crate::capabilities::ENHANCED_STABILITY {
-            return Ok(());
-        }
         let storage = AppStorage::from_app(app)?;
-        if crate::manual_outbound::require_proxy_mode(&storage.settings()?).is_err() {
+        let settings = storage.settings()?;
+        if crate::manual_outbound::require_proxy_mode(&settings).is_err() {
             self.update_policy_status(app);
             return Ok(());
         }
         let active = storage.state()?.active_profile_id;
         let profile = active.map(|id| storage.load_profile(id)).transpose()?;
-        let policy = profile.as_ref().map(|p| &p.openai_policy);
-        let target = crate::local_routing::stability_target(app)?;
+        let Some(policy) = profile
+            .as_ref()
+            .filter(|p| p.routing_mode == RoutingMode::Rule && manages(&p.openai_policy))
+            .map(|p| &p.openai_policy)
+        else {
+            self.update_policy_status(app);
+            return Ok(());
+        };
+        let ranked = is_ranked(policy);
+        let target = if ranked {
+            Target::Chatgpt
+        } else {
+            crate::local_routing::stability_target(app)?
+        };
         let revision = profile.as_ref().and_then(|p| p.active_revision_id);
         let identities_changed = {
             let s = self
@@ -511,38 +702,22 @@ impl StabilityManager {
                 s.snapshot.last_check = None;
             }
             s.snapshot.selection_target = target;
-            s.nodes.retain(|name, _| {
-                policy.is_some_and(|p| p.selected_nodes.iter().any(|n| n.name == *name))
-            });
+            s.nodes
+                .retain(|name, _| policy.selected_nodes.iter().any(|n| n.name == *name));
             s.snapshot.profile_id = active;
             s.snapshot.revision_id = revision;
-            s.snapshot.eligible = policy.is_some_and(|p| {
-                p.enabled
-                    && p.selected_nodes
-                        .iter()
-                        .filter(|n| crate::node_metadata::eligible(&n.name))
-                        .count()
-                        >= 2
-            });
-            s.snapshot.enabled = policy.is_some_and(|p| p.enabled && p.stability_enabled);
-            s.snapshot.running = false;
-            s.snapshot.common_failure = false;
-            s.snapshot.message = "请先生成 OpenAI 灾备并启用稳定策略".into();
-            if policy.is_some_and(|p| p.enabled && !p.stability_enabled) {
-                s.snapshot.message =
-                    "基础 Fallback 生效；稳定策略未开启，双目标检测和故障反馈选点未运行".into();
-            }
+            s.snapshot.enabled = true;
         }
-        let Some(policy) = policy.filter(|p| p.enabled && p.stability_enabled) else {
-            return Ok(());
-        };
-        if app.state::<MihomoRuntime>().status(Some(app)).phase != RuntimePhase::Running {
+        let run_before = app.state::<MihomoRuntime>().status(Some(app));
+        if run_before.phase != RuntimePhase::Running {
             if let Ok(mut s) = self.inner.lock() {
-                s.snapshot.message = "稳定策略已开启，等待代理核心运行；未执行双目标检测".into();
+                s.snapshot.running = false;
+                s.snapshot.message = "等待代理核心运行，尚未进行节点检查".into();
+                s.current = None;
+                s.ranked_run = None;
             }
             return Ok(());
         }
-        let settings = storage.settings()?;
         let api = MihomoApiClient::new(&settings)?;
         let proxies = api.proxies().await?;
         let group = &proxies["proxies"][GROUP];
@@ -550,7 +725,6 @@ impl StabilityManager {
             return Err(AppError::Conflict("核心尚未加载稳定策略".into()));
         }
         let current = group["now"].as_str().unwrap_or("REJECT").to_string();
-        let run_before = app.state::<MihomoRuntime>().status(Some(app));
         if let Some(node) = active
             .map(|id| storage.openai_manual_node(id))
             .transpose()?
@@ -565,9 +739,9 @@ impl StabilityManager {
             let latest = active.map(|id| storage.load_profile(id)).transpose()?;
             if storage.state()?.active_profile_id != active
                 || latest.as_ref().and_then(|p| p.active_revision_id) != revision
-                || !latest
-                    .as_ref()
-                    .is_some_and(|p| p.openai_policy.enabled && p.openai_policy.stability_enabled)
+                || !latest.as_ref().is_some_and(|p| {
+                    p.routing_mode == RoutingMode::Rule && manages(&p.openai_policy)
+                })
                 || active
                     .map(|id| storage.openai_manual_node(id))
                     .transpose()?
@@ -588,7 +762,10 @@ impl StabilityManager {
             }
             // Keep the invalid manual intent, but never route new requests via
             // an unqualified historical pin or silently resume auto-selection.
-            if !valid && live["proxies"][GROUP]["type"] == "Selector" {
+            if !valid
+                && live["proxies"][GROUP]["type"] == "Selector"
+                && live["proxies"][GROUP]["now"] != "REJECT"
+            {
                 crate::node_selection::validate_choice(&live["proxies"][GROUP], "REJECT")?;
                 api.select_proxy(GROUP, "REJECT").await?;
             }
@@ -640,10 +817,10 @@ impl StabilityManager {
                         .is_some_and(|all| all.iter().any(|x| x.as_str() == Some(&n.name)))
             })
             .count();
-        if regional_candidates < 2 {
+        if !ranked && regional_candidates < 2 {
             allowed.clear();
         }
-        {
+        let probe_epoch = {
             let mut s = self
                 .inner
                 .lock()
@@ -653,9 +830,9 @@ impl StabilityManager {
                 s.current = Some(current.clone());
             }
             s.snapshot.running = true;
-            s.snapshot.message =
-                "基础连通性与真实模型流分开统计；保持健康节点，不主动清空连接".into();
-        }
+            s.snapshot.eligible = !allowed.is_empty();
+            s.epoch
+        };
         use futures_util::{stream, StreamExt};
         let checks = stream::iter(allowed.iter().cloned().map(|name| {
             let api = api.clone();
@@ -683,7 +860,7 @@ impl StabilityManager {
             || run_after.phase != RuntimePhase::Running
             || run_before.pid != run_after.pid
             || run_before.started_at != run_after.started_at
-            || crate::local_routing::stability_target(app)? != target
+            || (!ranked && crate::local_routing::stability_target(app)? != target)
             || storage.state()?.active_profile_id != active
         {
             self.invalidate_observations();
@@ -701,12 +878,10 @@ impl StabilityManager {
             self.invalidate_observations();
             return Ok(());
         }
-        if !crate::capabilities::ENHANCED_STABILITY
-            || latest.as_ref().and_then(|p| p.active_revision_id)
-                != profile.as_ref().and_then(|p| p.active_revision_id)
+        if latest.as_ref().and_then(|p| p.active_revision_id) != revision
             || !latest
                 .as_ref()
-                .is_some_and(|p| p.openai_policy.stability_enabled)
+                .is_some_and(|p| p.routing_mode == RoutingMode::Rule && manages(&p.openai_policy))
             || storage.openai_costs(active.unwrap())?.revision != cost_preferences.revision
         {
             self.invalidate_observations();
@@ -719,30 +894,56 @@ impl StabilityManager {
             self.invalidate_observations();
             return Ok(());
         }
-        let candidate = {
+        let run = run_after.pid.zip(run_after.started_at);
+        let (candidate, ranked_choice_verified) = {
             let mut s = self
                 .inner
                 .lock()
                 .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?;
+            if s.epoch != probe_epoch {
+                return Ok(());
+            }
             // When every probed exit fails together, do not churn through exits.
             // The current within-budget exit is held while the shared fault is checked.
             let common_failure = all_exits_failed(&checks, target);
             s.snapshot.common_failure = common_failure;
-            s.snapshot.last_check = Some(now());
+            let time = now();
+            s.snapshot.last_check = Some(time);
             for (name, chatgpt, openai_api) in checks {
                 let health = s.nodes.entry(name).or_default();
-                health.probes(target, chatgpt, openai_api, now(), common_failure);
+                health.probes(target, chatgpt, openai_api, time, common_failure);
             }
+            if ranked {
+                s.ranking = rank_nodes(policy, &s.nodes, &allowed, &costs, time);
+            }
+            s.snapshot.message = "根据目标连通性和节点权重选择后续新连接的出口".into();
             if common_failure && allowed.contains(&current) && costs.allowed(&current) {
                 s.snapshot.message = "多个出口的目标检测同时失败，可能是公共网络或目标服务异常；保留当前合预算出口复查，未反复切换".into();
-                current.clone()
+                (current.clone(), false)
+            } else if ranked {
+                let candidate = choose_ranked(
+                    &s.nodes,
+                    &s.ranking,
+                    &current,
+                    s.reselect || s.ranked_run != run,
+                    time,
+                );
+                let verified = s.nodes.get(&candidate).is_some_and(|n| n.usable(time));
+                (candidate, verified)
             } else {
-                choose_with_costs(&s.nodes, &current, &allowed, now(), &costs)
+                (
+                    choose_with_costs(&s.nodes, &current, &allowed, time, &costs),
+                    false,
+                )
             }
         };
         if candidate == current {
-            if candidate == "REJECT" {
-                if let Ok(mut s) = self.inner.lock() {
+            if let Ok(mut s) = self.inner.lock() {
+                if ranked_choice_verified {
+                    s.ranked_run = run;
+                    s.reselect = false;
+                }
+                if candidate == "REJECT" {
                     s.snapshot.message = if costs.value_mode() {
                         "没有符合预算的健康节点，后续新请求仍被拒绝；请调整倍率或预算"
                     } else {
@@ -753,6 +954,7 @@ impl StabilityManager {
             }
             return Ok(());
         }
+        crate::node_selection::validate_choice(&live["proxies"][GROUP], &candidate)?;
         api.select_proxy(GROUP, &candidate).await?;
         crate::app_log::record(
             1,
@@ -764,12 +966,18 @@ impl StabilityManager {
             .lock()
             .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?;
         s.epoch += 1;
+        if ranked_choice_verified {
+            s.ranked_run = run;
+            s.reselect = false;
+        }
         s.snapshot.message = if candidate == "REJECT" {
             if costs.value_mode() {
                 "没有符合预算的健康节点，拒绝后续新请求；未使用超预算或未获允许的未知倍率节点"
             } else {
                 "没有可验证的健康候选，拒绝后续新请求；未主动关闭现有连接"
             }
+        } else if ranked {
+            "已按最新权重为后续新连接选择合格出口，保留已有连接"
         } else if costs.value_mode() {
             "已按健康状态与倍率更新后续新连接出口；未主动关闭现有连接"
         } else {
@@ -781,6 +989,40 @@ impl StabilityManager {
         Ok(())
     }
 }
+
+fn choose_ranked(
+    nodes: &BTreeMap<String, NodeHealth>,
+    ranking: &[RankedNode],
+    current: &str,
+    reselect: bool,
+    time: u64,
+) -> String {
+    let keep_current = ranking.iter().any(|node| node.name == current)
+        && nodes.get(current).is_some_and(|node| {
+            node.consecutive_failures < 2
+                && node.cooldown_until <= time
+                && (node.cooldown_until == 0 || node.recovery_passes >= 3)
+        });
+    if keep_current && !reselect {
+        return current.into();
+    }
+    ranking
+        .iter()
+        .find(|node| {
+            nodes
+                .get(&node.name)
+                .is_some_and(|health| health.usable(time))
+        })
+        .map(|node| node.name.clone())
+        .unwrap_or_else(|| {
+            if keep_current {
+                current.into()
+            } else {
+                "REJECT".into()
+            }
+        })
+}
+
 fn choose(
     nodes: &BTreeMap<String, NodeHealth>,
     current: &str,
@@ -1110,6 +1352,73 @@ mod tests {
             .unwrap()
             .record(120, Evidence::Probe(false));
         assert_eq!(choose(&nodes, "a", &["a".into(), "b".into()], 120), "b");
+    }
+    #[test]
+    fn ranked_selection_is_sticky_and_skips_cooling_or_unverified_nodes() {
+        let costs = ResolvedCosts {
+            preferences: Default::default(),
+            multipliers: [
+                ("low-cost".into(), Some(1.0)),
+                ("costly".into(), Some(5.0)),
+                ("unverified".into(), Some(0.2)),
+            ]
+            .into(),
+        };
+        let baseline = |name: &str| OpenAiNodeScore {
+            name: name.into(),
+            latency_ms: 300,
+            jitter_ms: 15,
+            bandwidth_mbps: None,
+            connection_samples: 3,
+            connection_successes: 3,
+            quality_score: None,
+            score: 75.0,
+            checked_at: chrono::Utc::now(),
+        };
+        let policy = OpenAiPolicy {
+            selected_nodes: vec![
+                baseline("low-cost"),
+                baseline("costly"),
+                baseline("unverified"),
+            ],
+            ..Default::default()
+        };
+        let mut healthy = NodeHealth::default();
+        healthy.record(100, Evidence::Probe(true));
+        let mut nodes = BTreeMap::from([
+            ("low-cost".into(), healthy.clone()),
+            ("costly".into(), healthy),
+            ("unverified".into(), NodeHealth::default()),
+        ]);
+        let allowed = ["low-cost".into(), "costly".into(), "unverified".into()];
+        let ranking = rank_nodes(&policy, &nodes, &allowed, &costs, 100);
+        assert_eq!(ranking[0].name, "unverified");
+        assert_eq!(
+            choose_ranked(&nodes, &ranking, "REJECT", true, 100),
+            "low-cost"
+        );
+        assert_eq!(
+            choose_ranked(&nodes, &ranking, "costly", false, 100),
+            "costly"
+        );
+        assert_eq!(
+            choose_ranked(&nodes, &ranking, "costly", true, 100),
+            "low-cost"
+        );
+        let low_cost = nodes.get_mut("low-cost").unwrap();
+        low_cost.record(110, Evidence::Probe(false));
+        assert_eq!(
+            choose_ranked(&nodes, &ranking, "low-cost", false, 110),
+            "low-cost"
+        );
+        nodes
+            .get_mut("low-cost")
+            .unwrap()
+            .record(120, Evidence::Probe(false));
+        assert_eq!(
+            choose_ranked(&nodes, &ranking, "low-cost", false, 120),
+            "costly"
+        );
     }
     #[test]
     fn cost_aware_failover_keeps_quality_budget_and_stickiness() {

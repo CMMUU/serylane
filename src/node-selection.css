@@ -3,6 +3,15 @@
 .node-choice select { width: 100%; min-width: 0; text-overflow: ellipsis; }
 .node-choice .button { flex-shrink: 0; }
 .node-choice-help { color: var(--muted); font-size: 14px; line-height: 1.6; margin-block: 8px; }
+.openai-recommendations { margin-top: 16px; }
+.openai-recommendations h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.openai-recommendations ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.openai-recommendations li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 10px; padding-block: 8px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.openai-recommendation-rank { min-width: 2ch; color: var(--accent); font-variant-numeric: tabular-nums; }
+.openai-recommendation-node { overflow-wrap: anywhere; }
+.openai-recommendation-node strong { font-weight: 600; }
+.openai-recommendation-node small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.openai-recommendation-score { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; text-align: end; }
 .overview-node-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 20px; }
 .overview-node-grid > :only-child { grid-column: 1 / -1; }
 .overview-node { min-width: 0; }

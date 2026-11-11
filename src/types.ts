@@ -27,6 +27,9 @@ export type OpenAiNodeScore = {
   bandwidthMbps: number | null;
   score: number;
   checkedAt: string;
+  qualityScore?: number | null;
+  connectionSamples?: number;
+  connectionSuccesses?: number;
 };
 
 export type RouteSettings = { listenPort: number; mode: "native" | "compatible"; upstream: "chatgpt" | "openai_api"; outboundProxy: string; allowedUrls?: { url: string; enabled: boolean }[] };
@@ -39,7 +42,12 @@ export type RouteSnapshot = {
   codex: { configRevision: string; attached: boolean; hasBackup: boolean; provider: string; endpoint: string | null; warning: string | null; backupPath: string | null };
   stability: { enabled: boolean; running: boolean; eligible: boolean; profileId: string | null; revisionId: string | null; current: string | null; lastSwitch: number | null; message: string;
     selectionTarget?: RouteSettings["upstream"]; lastCheck?: number | null; commonFailure?: boolean;
-    nodes: { name: string; probeOk: boolean; successRate: number | null; samples: number; cooldownSeconds: number; recoveryPasses: number; modelCompleted: number; modelInterrupted: number; chatgpt?: RouteProbe; openaiApi?: RouteProbe }[] };
+    nodes: {
+      name: string; probeOk: boolean; successRate: number | null; samples: number; cooldownSeconds: number;
+      recoveryPasses: number; modelCompleted: number; modelInterrupted: number; chatgpt?: RouteProbe; openaiApi?: RouteProbe;
+      rank?: number | null; recommendationScore?: number | null; streamSamples?: number; connectionSamples?: number;
+    }[];
+  };
 };
 export type OpenAiPolicy = {
   stabilityEnabled?: boolean;
@@ -51,13 +59,14 @@ export type OpenAiPolicy = {
   healthyCount: number;
   lastBenchmarkedAt: string | null;
   benchmarkVersion: number;
+  independentBackup?: boolean;
 };
 
 export type OpenAiTaskPhase =
   | "idle"
   | "preparing"
   | "checking"
-  | "bandwidth"
+  | "rechecking"
   | "applying"
   | "completed"
   | "failed"

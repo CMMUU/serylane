@@ -97,7 +97,7 @@
           <p class="section-description">清晰的信息，独立的操作。macOS 原生双行网速，收紧左右留白，保留清晰字号。分层诊断按检查进度逐项展示，保留结果与原因。</p>
           <div class="feature-rail">
             <article><svg class="feature-icon icon"><use href="#i-usage"/></svg><h3>订阅，心中有数。</h3><p>查看用量、到期与更新进度。<br>高亮实际选用订阅，状态清晰一致。</p></article>
-            <article><svg class="feature-icon icon"><use href="#i-split"/></svg><h3>分流，各行其道。</h3><p>自选节点一键测延迟，AI 优选 1–10 个节点。<br>两种选点方式二选一，保留分流规则。</p></article>
+            <article><svg class="feature-icon icon"><use href="#i-split"/></svg><h3>分流，各行其道。</h3><p>自选节点一键测延迟，AI 推荐 1–10 个节点。<br>按连接表现和倍率排序，当前出口单独标示。</p></article>
             <article><svg class="feature-icon icon"><use href="#i-update"/></svg><h3>更新，有据可查。</h3><p>安装包与自动更新统一使用下载中心。<br>应用内更新校验项目签名与 SHA-256。</p></article>
           </div>
         </div>
@@ -138,7 +138,7 @@
         <details><summary>快速切换页面或点击刷新会影响代理吗？</summary><p>v0.7.32 优化菜单和按钮响应：重复读取合并，状态查询在后台执行，列表更新保留操作控件。慢请求显示局部刷新状态，不冻结其他导航；窗口后台时只减少界面轮询，不停止代理。<a href="/docs/#interaction-response">查看交互优化说明</a>，安装包以下载中心正式发行记录为准。</p></details>
         <details><summary>如何使用自选节点和 AI 代理？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>v0.7.31 支持至少 1 个合格节点，最多保留 10 个优选节点。单节点暂无备用，2 个及以上支持自动故障切换；仍保留地区、预算与质量条件。健康检查可查看进度、取消及逐节点结果。自选节点与 AI 代理二选一，域名路由独立且默认关闭；安装包以下载中心实际发行记录为准。<a href="/docs/#ai-health">查看功能说明与支持范围</a>，当前下载仍以下载中心正式发行记录为准。</p></details>
         <details open><summary>是否提供代理节点或订阅？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>没有。你需要自行准备订阅或本地配置。</p></details>
-        <details><summary>遇到 502 或模型重连时，如何判断问题？</summary><p>基础可达不等于模型会话完成；节点切换不自动重发请求。本轮暂时停用增强稳定灾备，保留基础 Fallback 和倍率预算。<a href="/docs/routing#stability">查看当前能力与验证边界</a>，实际可用版本以下载区为准。</p></details>
+        <details><summary>遇到 502 或模型重连时，如何判断问题？</summary><p>「AI 代理」可重新筛选节点，按连接表现和倍率查看推荐顺位及当前出口。普通系统代理下的真实模型流显示「待验证」。确认故障后，备用节点接管后续新连接。实际可用版本以下载区为准。<a href="/docs/routing#stability">查看 AI 推荐与验证说明</a></p></details>
         <details open><summary>安装后会自动接入 Codex 吗？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>不会。路由默认关闭，选工具、保存草稿、应用规则分别操作；不新增 Codex 接入。</p></details>
         <details><summary>系统代理和 TUN 都关闭，路由会怎样？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>v0.7.36 起，普通关闭使用统一停止操作，保留上次代理方式。已经启用的域名路由保留设置并显示暂停，等待代理启动；重新启动后再核对规则和接管入口。单独开启或关闭路由不会启动主代理或切换系统代理／TUN。显式 Manual 只提供本地代理入口。实际版本以下载中心为准，详见<a href="/docs/#proxy-routing-state">状态说明</a>。</p></details><details><summary>TUN 支持哪些平台，预检通过后会怎样？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>Windows 使用管理员会话，TUN 仍为实验性。macOS 有辅助服务实现，但当前兼容包缺少所需 Developer ID 与公证，TUN 未就绪；Linux 暂未提供 TUN。预检通过后还需完成接管与外网验收；v0.7.35 增加 Windows 接口、路由、DNS 检查及短暂握手中断的有限重试，失败显示具体阶段和恢复结果。实际版本以下载中心为准，详见<a href="/docs/#tun-compatibility">平台与更新说明</a>。</p></details>
         <details open><summary>Windows TUN 可以直接日常使用吗？<svg class="icon"><use href="#i-chevron"/></svg></summary><p>目前为实验性功能，使用前请阅读<a href="/docs/#windows-tun">限制与恢复说明</a>。</p></details>

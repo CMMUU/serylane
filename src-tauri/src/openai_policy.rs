@@ -5,6 +5,9 @@ use crate::mihomo_api::MihomoApiClient;
 use crate::models::{
     AppSettings, NetworkMode, OpenAiNodeScore, OpenAiPolicy, RoutingMode, ValidationReport,
 };
+use crate::openai_ranking::{self, RankSignals};
+use crate::openai_stability::probe_target;
+use crate::route_health::{ProbeReport, ProbeState, Target};
 use crate::runtime;
 use crate::storage::AppStorage;
 use chrono::{DateTime, Utc};
@@ -22,13 +25,8 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-const OPENAI_HEALTH_URL: &str = "https://api.openai.com/v1/models";
-const OPENAI_EXPECTED_STATUS: &str = "401";
-const BANDWIDTH_URL: &str = "https://speed.cloudflare.com/__down";
-const BANDWIDTH_BYTES: usize = 2 * 1024 * 1024;
 const BENCHMARK_GROUP_NAME: &str = "__MIHOMO_DESKTOP_OPENAI_BENCHMARK__";
 const MAX_CANDIDATES: usize = 300;
-const BANDWIDTH_CANDIDATES: usize = 15;
 const SELECTED_NODES: usize = 10;
 const MIN_HEALTHY_NODES: usize = 1;
 
@@ -39,7 +37,7 @@ pub enum OpenAiTaskPhase {
     Idle,
     Preparing,
     Checking,
-    Bandwidth,
+    Rechecking,
     Applying,
     Completed,
     Failed,
@@ -256,18 +254,6 @@ struct CandidateNode {
     server_group: String,
 }
 
-#[derive(Debug, Clone)]
-struct ReachableNode {
-    candidate: CandidateNode,
-    first_delay_ms: u32,
-}
-
-#[derive(Debug, Clone)]
-struct BandwidthListener {
-    port: u16,
-    proxy: String,
-}
-
 pub fn start_generation(
     app: &AppHandle,
     profile_id: Uuid,
@@ -363,7 +349,7 @@ async fn generate_and_apply(
         0,
         candidates.len(),
         format!(
-            "符合条件 {eligible} 个，本轮检测 {} 个；最低 2 个，最多选用 10 个",
+            "符合条件 {eligible} 个，本轮检测 {} 个；至少 1 个，最多选用 10 个",
             candidates.len()
         ),
     )?;
@@ -467,6 +453,8 @@ async fn apply_policy_revision_checked(
             &permit,
         )
         .await?;
+        app.state::<crate::openai_stability::StabilityManager>()
+            .update_policy_status(app);
     } else {
         crate::user_rules::validate_config(app, &effective.yaml).await?;
         let revision = storage.save_revision(
@@ -503,189 +491,108 @@ async fn benchmark_nodes(
     let core = BenchmarkCore::start(app, source, &candidates).await?;
     check_cancelled(app)?;
 
-    let all_candidates = candidates.clone();
-    let api = core.api.clone();
-    let mut checks = stream::iter(candidates.into_iter().map(|candidate| {
-        let api = api.clone();
-        async move {
-            let result = api
-                .delay_expected(
-                    &candidate.name,
-                    OPENAI_HEALTH_URL,
-                    8_000,
-                    Some(OPENAI_EXPECTED_STATUS),
-                )
-                .await;
-            (candidate, result)
-        }
+    let api = &core.api;
+    let mut checks = stream::iter(candidates.into_iter().map(|candidate| async move {
+        let reports = probe_candidate(api, &candidate.name).await;
+        (candidate, reports)
     }))
     .buffer_unordered(8);
     let mut reachable = Vec::new();
-    let mut completed = 0usize;
-    while let Some((candidate, result)) = checks.next().await {
+    let mut completed = 0;
+    while let Some((candidate, reports)) = checks.next().await {
         check_cancelled(app)?;
         completed += 1;
+        if has_openai_connectivity(&reports) {
+            reachable.push((candidate, reports));
+        }
         app.state::<OpenAiPolicyTaskManager>()
             .diagnostics(|d| d.tested = completed)?;
-        if let Ok(payload) = result {
-            if let Some(delay) = payload
-                .get("delay")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|delay| u32::try_from(delay).ok())
-                .filter(|delay| *delay > 0 && *delay <= 8_000)
-            {
-                reachable.push(ReachableNode {
-                    candidate,
-                    first_delay_ms: delay,
-                });
-            }
-        }
         update_progress(
             app,
             OpenAiTaskPhase::Checking,
             completed,
             candidate_count,
             format!(
-                "OpenAI 可达性检测 {completed}/{candidate_count}，已通过 {} 个",
+                "ChatGPT 和 OpenAI API 连通性检测 {completed}/{candidate_count}，已通过 {} 个",
                 reachable.len()
             ),
         )?;
     }
 
+    let healthy_count = reachable.len();
     app.state::<OpenAiPolicyTaskManager>()
-        .diagnostics(|d| d.reachable = Some(reachable.len()))?;
-    if reachable.len() < MIN_HEALTHY_NODES {
+        .diagnostics(|d| d.reachable = Some(healthy_count))?;
+    if healthy_count < MIN_HEALTHY_NODES {
         return Err(AppError::Runtime(format!(
-            "仅 {} 个节点通过 OpenAI 可达性检测，至少需要 1 个",
-            reachable.len()
+            "仅 {healthy_count} 个节点通过 OpenAI 连通性检测，至少需要 1 个"
         )));
     }
-    let healthy_count = reachable.len();
-    reachable.sort_by_key(|node| node.first_delay_ms);
-    if !costs.value_mode() {
-        reachable.truncate(BANDWIDTH_CANDIDATES);
-    }
 
-    let bandwidth_total = reachable.len();
     update_progress(
         app,
-        OpenAiTaskPhase::Bandwidth,
+        OpenAiTaskPhase::Rechecking,
         0,
-        bandwidth_total,
-        if costs.value_mode() {
-            format!("省流检测：复测 {bandwidth_total} 个节点延迟，不下载带宽测试文件")
-        } else {
-            format!("正在创建 {bandwidth_total} 个隔离带宽测试入口")
-        },
+        healthy_count,
+        format!("正在复测 {healthy_count} 个节点的连通性和延迟"),
     )?;
-    let listener_ports: Vec<Option<u16>> = if costs.value_mode() {
-        vec![None; reachable.len()]
-    } else {
-        core.configure_bandwidth_listeners(app, source, &all_candidates, &reachable)
-            .await?
-            .into_iter()
-            .map(Some)
-            .collect()
-    };
-    let mut ranked = Vec::with_capacity(bandwidth_total);
-    let api = core.api.clone();
-    let mut bandwidth_checks = stream::iter(reachable.into_iter().zip(listener_ports).map(
-        |(node, port)| {
-            let api = api.clone();
-            async move {
-                let (delay_result, bandwidth_result) = tokio::join!(
-                    api.delay_expected(
-                        &node.candidate.name,
-                        OPENAI_HEALTH_URL,
-                        8_000,
-                        Some(OPENAI_EXPECTED_STATUS),
-                    ),
-                    async {
-                        match port {
-                            Some(port) => measure_bandwidth(port).await.ok(),
-                            None => None,
-                        }
-                    },
-                );
-                (node, delay_result, bandwidth_result)
-            }
-        },
-    ))
-    .buffer_unordered(3);
-    let mut bandwidth_completed = 0usize;
-    while let Some((node, delay_result, bandwidth_result)) = bandwidth_checks.next().await {
+    let mut rechecks = stream::iter(reachable.into_iter().map(|(candidate, first)| async move {
+        let second = probe_candidate(api, &candidate.name).await;
+        (candidate, first, second)
+    }))
+    .buffer_unordered(8);
+    let mut ranked = Vec::with_capacity(healthy_count);
+    let mut completed = 0;
+    while let Some((candidate, first, second)) = rechecks.next().await {
         check_cancelled(app)?;
-        update_progress(
-            app,
-            OpenAiTaskPhase::Bandwidth,
-            bandwidth_completed,
-            bandwidth_total,
-            format!(
-                "正在评估候选节点质量 {}/{}",
-                bandwidth_completed + 1,
-                bandwidth_total
-            ),
-        )?;
-        let second_delay = delay_result
-            .ok()
-            .and_then(|payload| payload.get("delay").and_then(serde_json::Value::as_u64))
-            .and_then(|delay| u32::try_from(delay).ok())
-            .filter(|delay| *delay > 0);
-        if costs.value_mode() && second_delay.is_none() {
-            bandwidth_completed += 1;
-            continue;
-        }
-        let second_delay = second_delay.unwrap_or(node.first_delay_ms.saturating_add(1_000));
-        let bandwidth_mbps = bandwidth_result;
-        let latency_ms = (node.first_delay_ms.saturating_add(second_delay)) / 2;
-        let jitter_ms = node.first_delay_ms.abs_diff(second_delay);
-        let score = if costs.value_mode() {
-            node_score(latency_ms, jitter_ms, None) / 0.65
-        } else {
-            node_score(latency_ms, jitter_ms, bandwidth_mbps)
-        };
-        let candidate = node.candidate;
-        let name = candidate.name.clone();
-        ranked.push((
-            candidate,
-            OpenAiNodeScore {
-                name,
-                latency_ms,
-                jitter_ms,
-                bandwidth_mbps: bandwidth_mbps.map(|value| round(value, 2)),
-                score: round(score, 1),
+        completed += 1;
+        let primary_failed_twice =
+            first[0].state == ProbeState::Failed && second[0].state == ProbeState::Failed;
+        if has_openai_connectivity(&second) && !primary_failed_twice {
+            let signals = benchmark_signals(&first, &second, costs.multiplier(&candidate.name));
+            let measured = OpenAiNodeScore {
+                name: candidate.name.clone(),
+                latency_ms: signals.latency_ms,
+                jitter_ms: signals.jitter_ms,
+                bandwidth_mbps: None,
+                score: round(openai_ranking::score(signals), 1),
                 checked_at: Utc::now(),
-            },
-        ));
-        bandwidth_completed += 1;
+                connection_samples: signals.connection_samples,
+                connection_successes: signals.connection_successes,
+                quality_score: openai_ranking::quality_score(&signals).map(|score| round(score, 1)),
+            };
+            ranked.push((candidate, measured));
+        }
         update_progress(
             app,
-            OpenAiTaskPhase::Bandwidth,
-            bandwidth_completed,
-            bandwidth_total,
+            OpenAiTaskPhase::Rechecking,
+            completed,
+            healthy_count,
             format!(
-                "质量评估 {}/{}，准备选出最多 10 个节点",
-                bandwidth_completed, bandwidth_total
+                "连通性复测 {completed}/{healthy_count}，合格 {} 个",
+                ranked.len()
             ),
         )?;
     }
 
-    if costs.value_mode() {
-        retain_value_candidates(&mut ranked);
-    }
     app.state::<OpenAiPolicyTaskManager>()
         .diagnostics(|d| d.quality_passed = Some(ranked.len()))?;
-    ranked.sort_by(|left, right| {
-        costs
-            .utility(&right.1.name, right.1.score)
-            .total_cmp(&costs.utility(&left.1.name, left.1.score))
-            .then_with(|| left.1.latency_ms.cmp(&right.1.latency_ms))
+    ranked.sort_by(|(_, left), (_, right)| compare_recommendations(left, right));
+    let selected_nodes = select_diverse_nodes(&ranked, SELECTED_NODES);
+    let independent_backup = ranked.first().is_some_and(|(primary, _)| {
+        ranked.iter().any(|(candidate, _)| {
+            candidate.server_group != primary.server_group
+                && selected_nodes
+                    .iter()
+                    .any(|node| node.name == candidate.name)
+        })
     });
-    let selected_nodes = select_diverse_nodes(ranked, SELECTED_NODES);
     app.state::<OpenAiPolicyTaskManager>()
         .diagnostics(|d| d.selected = Some(selected_nodes.len()))?;
     if selected_nodes.len() < MIN_HEALTHY_NODES {
-        return Err(AppError::Runtime(format!("初次检测通过 {healthy_count} 个，复测及基础质量筛选后剩余 {} 个；至少需要 1 个。原有策略未替换，请检查失败节点或补充合格节点。", selected_nodes.len())));
+        return Err(AppError::Runtime(format!(
+            "初次检测通过 {healthy_count} 个，复测后剩余 {} 个；至少需要 1 个。原有策略未替换。",
+            selected_nodes.len()
+        )));
     }
     Ok(OpenAiPolicy {
         runtime_costs: Default::default(),
@@ -698,14 +605,75 @@ async fn benchmark_nodes(
         candidate_count,
         healthy_count,
         last_benchmarked_at: Some(Utc::now()),
-        benchmark_version: 1,
+        benchmark_version: openai_ranking::BENCHMARK_VERSION,
+        independent_backup,
     })
+}
+
+async fn probe_candidate(api: &MihomoApiClient, name: &str) -> [ProbeReport; 2] {
+    let (chatgpt, openai_api) = tokio::join!(
+        probe_target(api, name, Target::Chatgpt),
+        probe_target(api, name, Target::OpenaiApi),
+    );
+    [chatgpt, openai_api]
+}
+
+fn has_openai_connectivity(reports: &[ProbeReport; 2]) -> bool {
+    reports
+        .iter()
+        .any(|report| report.state == ProbeState::Passed)
+}
+
+fn benchmark_signals(
+    first: &[ProbeReport; 2],
+    second: &[ProbeReport; 2],
+    traffic_multiplier: Option<f64>,
+) -> RankSignals {
+    let primary = [&first[0], &second[0]];
+    let mut primary_delays = primary.iter().filter_map(|report| {
+        report
+            .latency_ms
+            .filter(|_| report.state == ProbeState::Passed)
+    });
+    let first_delay = primary_delays.next().unwrap_or(0);
+    let second_delay = primary_delays.next().unwrap_or(first_delay);
+    let mut latency_ms = first_delay.max(second_delay);
+    if latency_ms == 0 {
+        latency_ms = [&first[1], &second[1]]
+            .iter()
+            .filter_map(|report| {
+                report
+                    .latency_ms
+                    .filter(|_| report.state == ProbeState::Passed)
+            })
+            .max()
+            .unwrap_or(0);
+    }
+    RankSignals {
+        connection_successes: primary
+            .iter()
+            .filter(|r| r.evidence() == Some(true))
+            .count(),
+        connection_samples: primary.iter().filter(|r| r.evidence().is_some()).count(),
+        latency_ms: latency_ms as u32,
+        jitter_ms: first_delay.abs_diff(second_delay) as u32,
+        traffic_multiplier,
+        ..Default::default()
+    }
+}
+
+fn compare_recommendations(left: &OpenAiNodeScore, right: &OpenAiNodeScore) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| right.connection_samples.cmp(&left.connection_samples))
+        .then_with(|| left.latency_ms.cmp(&right.latency_ms))
+        .then_with(|| left.name.cmp(&right.name))
 }
 
 struct BenchmarkCore {
     child: Child,
     directory: PathBuf,
-    settings: AppSettings,
     api: MihomoApiClient,
 }
 
@@ -757,7 +725,6 @@ impl BenchmarkCore {
         let mut core = Self {
             child,
             directory,
-            settings,
             api,
         };
         if let Err(error) = core.api.wait_ready(Duration::from_secs(20)).await {
@@ -766,40 +733,6 @@ impl BenchmarkCore {
             return Err(error);
         }
         Ok(core)
-    }
-
-    async fn configure_bandwidth_listeners(
-        &self,
-        app: &AppHandle,
-        source: &str,
-        candidates: &[CandidateNode],
-        reachable: &[ReachableNode],
-    ) -> AppResult<Vec<u16>> {
-        let mut reservations = Vec::with_capacity(reachable.len());
-        let mut listeners = Vec::with_capacity(reachable.len());
-        for node in reachable {
-            let reservation = TcpListener::bind(("127.0.0.1", 0))?;
-            let port = reservation.local_addr()?.port();
-            listeners.push(BandwidthListener {
-                port,
-                proxy: node.candidate.name.clone(),
-            });
-            reservations.push(reservation);
-        }
-        let config =
-            build_benchmark_config_with_listeners(source, &self.settings, candidates, &listeners)?;
-        let config_path = self.directory.join("bandwidth.yaml");
-        runtime::write_private_file(&config_path, config.as_bytes())?;
-        let binary = runtime::resolve_binary(Some(app))
-            .ok_or_else(|| AppError::Runtime("未找到 Mihomo sidecar".to_string()))?;
-        runtime::validate_file(&binary, &self.directory, &config_path)?;
-        drop(reservations);
-        self.api.reload_config(&config).await?;
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        Ok(listeners
-            .into_iter()
-            .map(|listener| listener.port)
-            .collect())
     }
 }
 
@@ -826,15 +759,6 @@ fn build_benchmark_config(
     source: &str,
     settings: &AppSettings,
     candidates: &[CandidateNode],
-) -> AppResult<String> {
-    build_benchmark_config_with_listeners(source, settings, candidates, &[])
-}
-
-fn build_benchmark_config_with_listeners(
-    source: &str,
-    settings: &AppSettings,
-    candidates: &[CandidateNode],
-    listeners: &[BandwidthListener],
 ) -> AppResult<String> {
     // This isolated core measures candidate nodes rather than user traffic.
     // A rule targeting a managed group must not break policy regeneration before
@@ -890,31 +814,6 @@ fn build_benchmark_config_with_listeners(
         "rules",
         Value::Sequence(vec![Value::String(format!("MATCH,{BENCHMARK_GROUP_NAME}"))]),
     );
-    if !listeners.is_empty() {
-        let listeners = listeners
-            .iter()
-            .enumerate()
-            .map(|(index, listener)| {
-                let mut mapping = Mapping::new();
-                insert(
-                    &mut mapping,
-                    "name",
-                    Value::String(format!("openai-bandwidth-{index}")),
-                );
-                insert(&mut mapping, "type", Value::String("mixed".to_string()));
-                insert(
-                    &mut mapping,
-                    "listen",
-                    Value::String("127.0.0.1".to_string()),
-                );
-                insert(&mut mapping, "port", Value::Number(listener.port.into()));
-                insert(&mut mapping, "proxy", Value::String(listener.proxy.clone()));
-                insert(&mut mapping, "udp", Value::Bool(false));
-                Value::Mapping(mapping)
-            })
-            .collect();
-        insert(root, "listeners", Value::Sequence(listeners));
-    }
     serde_yaml::to_string(&document).map_err(|error| AppError::Config(error.to_string()))
 }
 
@@ -966,78 +865,17 @@ fn extract_candidates(source: &str) -> AppResult<Vec<CandidateNode>> {
     Ok(candidates)
 }
 
-async fn measure_bandwidth(mixed_port: u16) -> AppResult<f64> {
-    let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{mixed_port}"))
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
-    let client = reqwest::Client::builder()
-        .proxy(proxy)
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
-    let started = std::time::Instant::now();
-    let response = client
-        .get(BANDWIDTH_URL)
-        .query(&[
-            ("bytes", BANDWIDTH_BYTES.to_string()),
-            ("nonce", Uuid::new_v4().to_string()),
-        ])
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .header(reqwest::header::CONNECTION, "close")
-        .send()
-        .await
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
-    if !response.status().is_success() {
-        return Err(AppError::Runtime(format!(
-            "带宽测试 HTTP {}",
-            response.status().as_u16()
-        )));
-    }
-    let mut downloaded = 0usize;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| AppError::Runtime(error.to_string()))?;
-        downloaded = downloaded.saturating_add(chunk.len());
-        if downloaded > BANDWIDTH_BYTES + 64 * 1024 {
-            break;
-        }
-    }
-    if downloaded < 256 * 1024 {
-        return Err(AppError::Runtime("带宽测试返回数据不足".to_string()));
-    }
-    let seconds = started.elapsed().as_secs_f64().max(0.001);
-    Ok(downloaded as f64 * 8.0 / seconds / 1_000_000.0)
-}
-
-fn node_score(latency_ms: u32, jitter_ms: u32, bandwidth_mbps: Option<f64>) -> f64 {
-    let latency = 40.0 * (1.0 - (f64::from(latency_ms) / 3_000.0).clamp(0.0, 1.0));
-    let jitter = 15.0 * (1.0 - (f64::from(jitter_ms) / 1_500.0).clamp(0.0, 1.0));
-    let bandwidth = 35.0 * (bandwidth_mbps.unwrap_or(0.0) / 200.0).clamp(0.0, 1.0);
-    (10.0 + latency + jitter + bandwidth).clamp(0.0, 100.0)
-}
-
-// Absolute health/cost/region requirements remain hard gates. The relative
-// quality window is a preference, not a reason to discard the only backup.
-fn retain_value_candidates(ranked: &mut Vec<(CandidateNode, OpenAiNodeScore)>) {
-    ranked.retain(|(_, n)| n.score.is_finite() && n.score >= 50.0);
-    let mut scores: Vec<_> = ranked.iter().map(|(_, n)| n.score).collect();
-    scores.sort_by(|a, b| b.total_cmp(a));
-    if let Some(best) = scores.first() {
-        let cutoff = (best - 15.0).max(50.0).min(*scores.get(1).unwrap_or(best));
-        ranked.retain(|(_, n)| n.score >= cutoff);
-    }
-}
-
 fn select_diverse_nodes(
-    ranked: Vec<(CandidateNode, OpenAiNodeScore)>,
+    ranked: &[(CandidateNode, OpenAiNodeScore)],
     limit: usize,
 ) -> Vec<OpenAiNodeScore> {
     let mut selected = Vec::new();
     let mut selected_names = BTreeSet::new();
     let mut server_counts: BTreeMap<String, usize> = BTreeMap::new();
     for max_per_server in [2usize, usize::MAX] {
-        for (candidate, score) in &ranked {
+        for (candidate, score) in ranked {
             if selected.len() >= limit {
+                selected.sort_by(compare_recommendations);
                 return selected;
             }
             if selected_names.contains(&score.name) {
@@ -1057,6 +895,7 @@ fn select_diverse_nodes(
             selected.push(score.clone());
         }
     }
+    selected.sort_by(compare_recommendations);
     selected
 }
 
@@ -1107,8 +946,8 @@ fn round(value: f64, digits: i32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_benchmark_config, build_benchmark_config_with_listeners, extract_candidates,
-        node_score, select_diverse_nodes, BandwidthListener, CandidateNode, BENCHMARK_GROUP_NAME,
+        benchmark_signals, build_benchmark_config, extract_candidates, select_diverse_nodes,
+        CandidateNode, ProbeReport, ProbeState, BENCHMARK_GROUP_NAME,
     };
     use crate::models::{AppSettings, OpenAiNodeScore};
     use chrono::Utc;
@@ -1267,34 +1106,6 @@ rules:
                 .and_then(Value::as_str),
             Some(expected_rule.as_str())
         );
-
-        let listeners = vec![BandwidthListener {
-            port: 17891,
-            proxy: "node-a".to_string(),
-        }];
-        let yaml =
-            build_benchmark_config_with_listeners(SOURCE, &settings, &candidates, &listeners)
-                .expect("listener config");
-        let document: Value = serde_yaml::from_str(&yaml).expect("listener yaml");
-        let listener = document
-            .as_mapping()
-            .and_then(|root| root.get(Value::String("listeners".to_string())))
-            .and_then(Value::as_sequence)
-            .and_then(|listeners| listeners.first())
-            .and_then(Value::as_mapping)
-            .expect("listener");
-        assert_eq!(
-            listener
-                .get(Value::String("listen".to_string()))
-                .and_then(Value::as_str),
-            Some("127.0.0.1")
-        );
-        assert_eq!(
-            listener
-                .get(Value::String("proxy".to_string()))
-                .and_then(Value::as_str),
-            Some("node-a")
-        );
     }
 
     #[test]
@@ -1316,40 +1127,43 @@ rules:
     }
 
     #[test]
-    fn value_relative_preference_keeps_two_absolute_qualified_backups() {
-        for (scores, expected) in [
-            (vec![95.0, 60.0], 2),
-            (vec![95.0, 49.0], 1),
-            (vec![95.0], 1),
-            (vec![95.0, 92.0, 80.0, 60.0], 3),
-            (vec![f64::NAN, 60.0, 50.0], 2),
-            (vec![], 0),
-        ] {
-            let mut candidates: Vec<_> = scores
-                .iter()
-                .enumerate()
-                .map(|(i, s)| ranked(&format!("JP-{i}"), "same-server", *s))
-                .collect();
-            super::retain_value_candidates(&mut candidates);
-            assert_eq!(candidates.len(), expected);
-            assert_eq!(
-                select_diverse_nodes(candidates, super::SELECTED_NODES).len(),
-                expected
-            );
-        }
-        let mut candidates: Vec<_> = (0..20)
-            .map(|i| ranked(&format!("US-{i}"), "same-server", 80.0))
-            .collect();
-        super::retain_value_candidates(&mut candidates);
+    fn openai_api_reachability_does_not_count_as_chatgpt_success() {
+        let api = ProbeReport {
+            state: ProbeState::Passed,
+            latency_ms: Some(110),
+            ..Default::default()
+        };
+        let primary = ProbeReport {
+            state: ProbeState::HttpUnverified,
+            latency_ms: Some(90),
+            ..Default::default()
+        };
+        let signals =
+            benchmark_signals(&[primary.clone(), api.clone()], &[primary, api], Some(1.0));
         assert_eq!(
-            select_diverse_nodes(candidates, super::SELECTED_NODES).len(),
-            10
+            (signals.connection_samples, signals.connection_successes),
+            (0, 0)
         );
+        assert_eq!(signals.latency_ms, 110);
+        assert_eq!(super::openai_ranking::quality_score(&signals), None);
     }
 
     #[test]
-    fn score_rewards_lower_latency_and_higher_bandwidth() {
-        assert!(node_score(100, 10, Some(100.0)) > node_score(800, 300, Some(20.0)));
+    fn candidate_selection_restores_score_order_after_diversity_pass() {
+        let ranked = vec![
+            ranked("a1", "shared", 99.0),
+            ranked("a2", "shared", 98.0),
+            ranked("a3", "shared", 97.0),
+            ranked("b1", "other", 80.0),
+        ];
+        let selected = select_diverse_nodes(&ranked, 4);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|node| node.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a1", "a2", "a3", "b1"]
+        );
     }
 
     #[test]
@@ -1360,7 +1174,7 @@ rules:
             ranked("a3", "shared", 97.0),
             ranked("b1", "other", 80.0),
         ];
-        let selected = select_diverse_nodes(ranked, 3);
+        let selected = select_diverse_nodes(&ranked, 3);
         assert_eq!(selected.len(), 3);
         assert!(selected.iter().any(|node| node.name == "b1"));
     }
@@ -1378,6 +1192,9 @@ rules:
                 bandwidth_mbps: Some(50.0),
                 score,
                 checked_at: Utc::now(),
+                connection_samples: 2,
+                connection_successes: 2,
+                quality_score: Some(score),
             },
         )
     }
