@@ -82,11 +82,27 @@ impl MihomoApiClient {
     }
 
     pub fn from_endpoint(controller_port: u16, secret: String) -> AppResult<Self> {
+        Self::from_endpoint_with_timeout(controller_port, secret, Duration::from_secs(10))
+    }
+
+    pub(crate) fn with_timeout(settings: &AppSettings, timeout: Duration) -> AppResult<Self> {
+        Self::from_endpoint_with_timeout(
+            settings.controller_port,
+            settings.controller_secret.clone(),
+            timeout,
+        )
+    }
+
+    fn from_endpoint_with_timeout(
+        controller_port: u16,
+        secret: String,
+        timeout: Duration,
+    ) -> AppResult<Self> {
         let base_url = Url::parse(&format!("http://127.0.0.1:{controller_port}/"))
             .map_err(|error| AppError::Runtime(error.to_string()))?;
         let client = reqwest::Client::builder()
             .no_proxy()
-            .timeout(Duration::from_secs(10))
+            .timeout(timeout)
             .build()
             .map_err(|error| AppError::Runtime(error.to_string()))?;
         Ok(Self {
@@ -305,18 +321,20 @@ impl MihomoApiClient {
         }
     }
 
-    pub async fn health_probe(
+    pub(crate) async fn health_probe(
         &self,
         proxy: &str,
         test_url: &str,
         expected: Option<&str>,
+        timeout_ms: u64,
+        controller_timeout: Duration,
     ) -> DelayProbe {
         let Ok(mut url) = self.path_url(&["proxies", proxy, "delay"]) else {
             return DelayProbe::Unknown;
         };
         url.query_pairs_mut()
             .append_pair("url", test_url)
-            .append_pair("timeout", "5000");
+            .append_pair("timeout", &timeout_ms.to_string());
         if let Some(expected) = expected {
             url.query_pairs_mut().append_pair("expected", expected);
         }
@@ -324,7 +342,7 @@ impl MihomoApiClient {
             .client
             .get(url)
             .bearer_auth(&self.secret)
-            .timeout(Duration::from_secs(7))
+            .timeout(controller_timeout)
             .send()
             .await
         else {
@@ -336,7 +354,7 @@ impl MihomoApiClient {
                 .await
                 .ok()
                 .and_then(|v| v["delay"].as_u64())
-                .filter(|v| *v > 0 && *v <= u16::MAX as u64)
+                .filter(|v| *v > 0 && *v <= timeout_ms)
             {
                 Some(delay) => DelayProbe::Passed(delay),
                 None => DelayProbe::Unknown,
