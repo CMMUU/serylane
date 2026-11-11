@@ -72,7 +72,31 @@ export function subscriptionAlerts(status: SubscriptionStatus | null | undefined
   ].join('');
 }
 
-export function subscriptionCardMarkup(subscription: SubscriptionOverview, task: OpenAiPolicyTask | null, now = Date.now(), refreshing = false): string {
+export function subscriptionRecommendationRanks(subscriptions: SubscriptionOverview[], now: number): Map<string, number> {
+  const candidates = subscriptions.flatMap(subscription => {
+    const { profile, status, latestMetadata } = subscription;
+    const policy = profile.openaiPolicy;
+    if (!policy.enabled || !(policy.benchmarkVersion >= 2) || profile.routingMode !== "rule") return [];
+    const usage = describeSubscriptionUsage(status?.usage ?? latestMetadata?.usage, now);
+    if (usage.expired || usage.exhausted) return [];
+    const best = Math.max(...policy.selectedNodes.flatMap(node => typeof node.qualityScore === "number" && Number.isFinite(node.qualityScore) ? [node.qualityScore] : []));
+    return Number.isFinite(best) ? [{ id: profile.id, best, independentBackup: policy.independentBackup === true }] : [];
+  }).sort((a, b) => b.best - a.best || a.id.localeCompare(b.id));
+
+  // Fixed score bands against each cluster leader keep the comparator transitive.
+  const ranks = new Map<string, number>();
+  let start = 0;
+  while (start < candidates.length) {
+    let end = start + 1;
+    while (end < candidates.length && candidates[start].best - candidates[end].best <= 3) end++;
+    const band = candidates.slice(start, end).sort((a, b) => Number(b.independentBackup) - Number(a.independentBackup));
+    for (const candidate of band) ranks.set(candidate.id, ranks.size + 1);
+    start = end;
+  }
+  return ranks;
+}
+
+export function subscriptionCardMarkup(subscription: SubscriptionOverview, task: OpenAiPolicyTask | null, now = Date.now(), refreshing = false, recommendationRank?: number): string {
   const { profile, summary, latestMetadata, latestValidation, status } = subscription;
   const usageData = status?.usage ?? latestMetadata?.usage;
   const usage = describeSubscriptionUsage(usageData, now);
@@ -93,9 +117,10 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
     : `<div class="subscription-usage-track" role="progressbar" aria-label="${escape(profile.displayName)} 套餐流量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${usage.progress.toFixed(2)}" aria-valuetext="已用 ${subscriptionBytes(usage.used)}，总额度 ${subscriptionBytes(usage.quota)}${usage.exhausted ? "，额度已用尽" : ""}"><span style="width:${usage.progress.toFixed(2)}%"></span></div>`;
   const id = escape(profile.id);
   const button = (action: string, label: string, extra = "") => `<button type="button" class="button button-quiet${action === "delete" ? " button-danger" : ""}" data-subscription-action="${action}" data-profile-id="${id}" ${refreshing ? "disabled" : extra}>${escape(refreshing && action === "refresh" ? "刷新中…" : label)}</button>`;
+  const recommendation = recommendationRank ? `<span class="subscription-recommendation-rank" title="上次筛选 AI 推荐第 ${recommendationRank} 名">${recommendationRank}.</span> ` : "";
   return `<article class="subscription-entry subscription-tile${subscription.active ? " is-active" : ""}${warning ? " has-warning" : ""}" data-render-key="${id}" data-subscription-id="${id}"${subscription.active ? ' aria-current="true"' : ''}>
     <div class="subscription-entry-head">
-      <div class="subscription-identity"><div><h3 title="${escape(profile.displayName)}">${escape(profile.displayName)}</h3><p>${subscription.active ? "已选用" : "未选用"} · ${mode}模式${summary ? ` · ${summary.nodeCount} 节点` : ""}</p></div></div>
+      <div class="subscription-identity"><div><h3 title="${escape(profile.displayName)}">${recommendation}${escape(profile.displayName)}</h3><p>${subscription.active ? "已选用" : "未选用"} · ${mode}模式${summary ? ` · ${summary.nodeCount} 节点` : ""}${recommendationRank ? " · 上次筛选 AI 推荐" : ""}</p></div></div>
       <div class="subscription-quick-actions">${button("refresh", "刷新")}${button("activate", subscription.active ? "已选用" : "选用", subscription.active ? "disabled" : "")}</div>
     </div>
     <section class="subscription-usage" aria-label="套餐流量"><div class="subscription-usage-label"><span>已用 <strong>${subscriptionBytes(usage.used)}</strong> / ${usage.quota === null ? "额度未提供" : subscriptionBytes(usage.quota)}</span><span>${usageData ? usage.state === "剩余流量" ? `剩余 ${subscriptionBytes(usage.remaining)}` : usage.state : "流量信息未提供"}</span></div>${progress}</section>

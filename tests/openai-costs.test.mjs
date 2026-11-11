@@ -12,7 +12,8 @@ test('multiplier input distinguishes unknown from invalid and never invents 1x',
 });
 test('cost controls clearly scope caps, unknown fallback and explicit save', () => {
   const html = costFormMarkup({ mode:'value', maxMultiplier:2, allowUnknown:false, nodes:[{name:'<img onerror="x">',multiplier:null}] });
-  assert.match(html,/仅性价比模式/); assert.match(html,/质量优先沿用原策略，不限制倍率/);
+  assert.match(html,/仅性价比模式/); assert.match(html,/不限倍率/);
+  assert.match(html,/两种预算模式都按同一套推荐权重选点/);
   assert.match(html,/手动覆盖优先/); assert.match(html,/placeholder="自动 \/ 未知" value=""/);
   assert.match(html,/拒绝新请求/); assert.match(html,/保存成本策略/);
   assert.doesNotMatch(html,/<img/); assert.doesNotMatch(html,/name="allowUnknown" type="checkbox" checked/);
@@ -29,11 +30,12 @@ test('country eligibility gates every managed entry point, including historical 
   const stability = read('src-tauri/src/openai_stability.rs');
   assert.match(stability, /if !valid[\s\S]*?api.select_proxy\(GROUP, "REJECT"\)/);
 });
-test('value benchmark filters before probing, skips bandwidth and checks policy revision before application', () => {
+test('benchmark filters before probing, rechecks connections without bulk downloads and checks policy revision before application', () => {
   const policy = read('src-tauri/src/openai_policy.rs');
   assert.ok(policy.indexOf('filter(|node| costs.allowed') < policy.indexOf('benchmark_nodes(app'));
-  assert.match(policy,/if costs.value_mode\(\) \{\s*vec!\[None; reachable.len\(\)\]/);
-  assert.match(policy,/None => None/); assert.match(policy,/costs.value_mode\(\) && second_delay.is_none\(\)/);
+  const benchmark = policy.slice(policy.indexOf('async fn benchmark_nodes'), policy.indexOf('async fn probe_candidate'));
+  assert.equal((benchmark.match(/probe_candidate\(/g) ?? []).length, 2);
+  assert.doesNotMatch(policy,/measure_bandwidth|BANDWIDTH_BYTES/);
   assert.match(policy,/storage.openai_costs\(profile_id\)\?\.revision != costs/);
 });
 test('manual selection and transactional budget filtering reject stale versions', () => {

@@ -64,6 +64,7 @@
 .subscription-tile .subscription-identity { min-width: 0; align-items: center; }
 .subscription-tile .subscription-identity > div { min-width: 0; }
 .subscription-tile .subscription-identity h3 { margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; }
+.subscription-recommendation-rank { color: var(--accent); font-variant-numeric: tabular-nums; }
 .subscription-tile .subscription-identity p { margin: 2px 0 0; font-size: 13px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subscription-tile .subscription-mark { width: 38px; height: 38px; flex-basis: 38px; border-radius: 10px; color: var(--muted); background: var(--accent-soft); border: 0; box-shadow: none; }
 .subscription-mark svg { width: 23px; height: 23px; }

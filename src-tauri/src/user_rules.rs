@@ -1429,6 +1429,9 @@ mod tests {
                     bandwidth_mbps: None,
                     score: 90.0,
                     checked_at: Utc::now(),
+                    connection_samples: 0,
+                    connection_successes: 0,
+                    quality_score: None,
                 })
                 .collect(),
             ..Default::default()

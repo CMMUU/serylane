@@ -170,6 +170,7 @@ pub fn build_effective_config_with_policy(
                 root,
                 policy,
                 &policy.runtime_costs.resolve(source)?,
+                routing_mode,
                 &mut summary,
             )?;
         }
@@ -424,13 +425,14 @@ fn apply_openai_policy(
     root: &mut Mapping,
     policy: &OpenAiPolicy,
     costs: &crate::openai_cost::ResolvedCosts,
+    routing_mode: RoutingMode,
     summary: &mut ProfileSummary,
 ) -> AppResult<()> {
     if !policy.enabled {
         return Ok(());
     }
 
-    let enhanced = crate::capabilities::ENHANCED_STABILITY && policy.stability_enabled;
+    let managed = routing_mode == RoutingMode::Rule && crate::openai_stability::manages(policy);
     let available_nodes: BTreeSet<String> = root
         .get(Value::String("proxies".to_string()))
         .and_then(Value::as_sequence)
@@ -458,9 +460,9 @@ fn apply_openai_policy(
         }
     }
 
-    // A retired enhanced Selector preference becomes Fallback priority only.
-    // Never resurrect an absent or over-budget node from the old intent file.
-    if !enhanced {
+    // Put a valid manual choice first during startup, before the live manager
+    // can apply it. Legacy Fallback continues to treat this as priority.
+    if !managed || crate::openai_ranking::is_ranked(policy) {
         if let Some(index) = policy
             .runtime_manual_node
             .as_ref()
@@ -468,9 +470,11 @@ fn apply_openai_policy(
         {
             let preferred = selected.remove(index);
             selected.insert(0, preferred);
-            summary.warnings.push(
-                "增强稳定策略已暂停；原手动节点作为基础 Fallback 优先项，失效时仍可回退".into(),
-            );
+            if !managed {
+                summary.warnings.push(
+                    "增强稳定策略已暂停；原手动节点作为基础 Fallback 优先项，失效时仍可回退".into(),
+                );
+            }
         }
     }
     let insufficient = selected.is_empty();
@@ -506,7 +510,7 @@ fn apply_openai_policy(
         &mut group,
         "type",
         Value::String(
-            if enhanced || insufficient {
+            if managed || insufficient {
                 "select"
             } else {
                 "fallback"
@@ -520,7 +524,7 @@ fn apply_openai_policy(
         Value::Sequence(
             selected
                 .into_iter()
-                .chain((enhanced || insufficient).then(|| "REJECT".to_string()))
+                .chain((managed || insufficient).then(|| "REJECT".to_string()))
                 .map(Value::String)
                 .collect(),
         ),
@@ -1021,12 +1025,36 @@ rules:
             .unwrap();
         assert_eq!(candidates.len(), 2);
         assert!(!candidates.iter().any(|n| n.as_str() == Some("REJECT")));
+        policy.benchmark_version = crate::openai_ranking::BENCHMARK_VERSION;
+        policy.stability_enabled = false;
+        policy.runtime_manual_node = Some("JP sample-2".into());
+        let ranked = build_effective_config_with_policy(
+            &source,
+            &AppSettings {
+                proxy_mode: crate::manual_outbound::ProxyMode::Ai,
+                ..Default::default()
+            },
+            RoutingMode::Rule,
+            Some(&policy),
+        )
+        .unwrap();
+        let ranked_doc: Value = serde_yaml::from_str(&ranked.yaml).unwrap();
+        let group = &ranked_doc["proxy-groups"][0];
+        assert_eq!(group["type"].as_str(), Some("select"));
+        assert_eq!(group["proxies"][0].as_str(), Some("JP sample-2"));
+        assert_eq!(group["proxies"][1].as_str(), Some("JP sample"));
+        assert_eq!(group["proxies"][2].as_str(), Some("REJECT"));
         if let Some(binary) = std::env::var_os("MIHOMO_TEST_BINARY") {
             let root = tempfile::tempdir().unwrap();
-            let path = root.path().join("stable-selector.yaml");
-            std::fs::write(&path, stable.yaml).unwrap();
-            crate::runtime::validate_file(std::path::Path::new(&binary), root.path(), &path)
-                .expect("native stable selector");
+            for (name, yaml) in [
+                ("legacy-fallback.yaml", stable.yaml),
+                ("ranked-selector.yaml", ranked.yaml),
+            ] {
+                let path = root.path().join(name);
+                std::fs::write(&path, yaml).unwrap();
+                crate::runtime::validate_file(std::path::Path::new(&binary), root.path(), &path)
+                    .expect("native OpenAI strategy config");
+            }
         }
     }
 
@@ -1216,6 +1244,9 @@ rules:
             latency_ms: 100,
             jitter_ms: 5,
             bandwidth_mbps: Some(50.0),
+            connection_samples: 0,
+            connection_successes: 0,
+            quality_score: None,
             score,
             checked_at: Utc::now(),
         }

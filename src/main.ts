@@ -16,9 +16,9 @@ import "./subscription-cards.css";
 import "./node-selection.css";
 import "./manual-outbound.css";
 import { manualOutboundMarkup, mountManualOutbound, nodeGridMarkup, type ManualOutboundState } from "./manual-outbound";
-import { generalGroups, currentNodeMarkup, nodeSelectionMarkup, type ProxyMap } from "./node-selection";
+import { generalGroups, currentNodeMarkup, nodeSelectionMarkup, openAiRecommendations, openAiRecommendationMarkup, type ProxyMap } from "./node-selection";
 import { mountOpenAiCosts, openAiCostsMarkup } from "./openai-costs";
-import { subscriptionCardMarkup, newestSubscriptionStatus, synchronizedProfiles } from "./subscription-cards";
+import { subscriptionCardMarkup, subscriptionRecommendationRanks, newestSubscriptionStatus, synchronizedProfiles } from "./subscription-cards";
 import { subscriptionImportMarkup, subscriptionNetworkMarkup, describeSubscriptionImport } from "./subscription-import";
 import { NAV_ITEMS, navigationMarkup, type ViewName } from "./ui";
 import { preferencesMarkup } from "./settings-view";
@@ -56,6 +56,7 @@ import type {
   ProfileDetails,
   ProfileRecord,
   RuntimeStatus,
+  RouteSnapshot,
   SessionResumeStatus,
   StartupStatus,
   SystemProxyStatus,
@@ -1029,7 +1030,12 @@ function renderSubscriptions() {
   list.className = "subscription-manager-list";
   const expanded = new Set(Array.from(list.querySelectorAll<HTMLDetailsElement>(".subscription-more[open]"))
     .map((details) => details.closest<HTMLElement>("[data-subscription-id]")?.dataset.subscriptionId));
-  stableMarkup(list, subscriptions.map((subscription) => subscriptionCardMarkup({ ...subscription, active: subscription.profile.id === store.activeProfile?.profile.id }, store.openAiTask, Date.now(), subscriptionRefreshing.has(subscription.profile.id))).join(""));
+  const now = Date.now();
+  const recommendationRanks = subscriptionRecommendationRanks(subscriptions, now);
+  stableMarkup(list, subscriptions.map((subscription) => subscriptionCardMarkup(
+    { ...subscription, active: subscription.profile.id === store.activeProfile?.profile.id },
+    store.openAiTask, now, subscriptionRefreshing.has(subscription.profile.id), recommendationRanks.get(subscription.profile.id),
+  )).join(""));
   for (const details of list.querySelectorAll<HTMLDetailsElement>(".subscription-more")) {
     details.open = expanded.has(details.closest<HTMLElement>("[data-subscription-id]")?.dataset.subscriptionId);
   }
@@ -2077,7 +2083,7 @@ function openAiTaskPhaseLabel(task: OpenAiPolicyTask): string {
     idle: "等待创建",
     preparing: "准备独立检测环境",
     checking: "检测 OpenAI 可达性",
-    bandwidth: "评估节点质量",
+    rechecking: "复测连通性",
     applying: "校验并应用配置",
     completed: "配置已生成",
     failed: "生成失败",
@@ -2112,9 +2118,16 @@ function renderOpenAiPolicy() {
     ? store.subscriptions.find((subscription) => subscription.profile.id === task?.profileId)
         ?.profile.displayName ?? "其他订阅"
     : null;
-  const proxyMap = (store.proxies?.proxies ?? {}) as Record<string, any>;
-  const runtimeGroup = store.runtime?.phase === "running" ? proxyMap[OPENAI_GROUP_NAME] : undefined;
-  const currentNode = runtimeGroup?.now ?? policy.selectedNodes[0]?.name ?? "—";
+  const matchingProxies = store.proxies?.profileId === active.profile.id && store.proxies?.revisionId === active.profile.activeRevisionId
+    ? store.proxies : null;
+  const proxyMap = (matchingProxies?.proxies ?? {}) as ProxyMap;
+  const runtimeGroup = store.runtime?.phase === "running" && active.profile.routingMode === "rule" && store.manualOutbound?.mode === "ai"
+    ? proxyMap[OPENAI_GROUP_NAME] : undefined;
+  const ranking = policy.benchmarkVersion >= 2;
+  const rankingSnapshot = runtimeGroup ? matchingProxies?.openaiRanking as RouteSnapshot["stability"] | undefined : undefined;
+  const recommendations = openAiRecommendations(active.profile, rankingSnapshot, runtimeGroup?.all);
+  const candidates = ranking ? recommendations.map(node => node.name) : policy.selectedNodes.map(node => node.name).filter(name => runtimeGroup?.all?.includes(name));
+  const currentNode = runtimeGroup?.now ?? (ranking ? recommendations.find(node => node.rank !== null)?.name : policy.selectedNodes[0]?.name) ?? "—";
   const progress = task?.total
     ? Math.min(100, Math.round((task.completed / task.total) * 100))
     : running
@@ -2125,7 +2138,7 @@ function renderOpenAiPolicy() {
     : anotherTaskRunning
       ? `${runningProfileName} 正在生成 OpenAI 容灾`
     : policy.enabled
-      ? `${policy.selectedNodes.length} 个可用节点${policy.selectedNodes.length === 1 ? " · 单节点运行，暂无备用" : policy.selectedNodes.length === 2 ? " · 一主一备" : ""} · ${policy.healthyCount}/${policy.candidateCount} 个候选通过`
+      ? `${policy.selectedNodes.length} 个候选节点${policy.selectedNodes.length === 1 ? " · 暂无备用" : ""} · ${policy.healthyCount}/${policy.candidateCount} 个候选通过`
       : "尚未创建托管策略";
   const markup = `
     <div class="openai-policy-head">
@@ -2156,14 +2169,16 @@ function renderOpenAiPolicy() {
     ${taskForActive && task?.diagnostics ? `<p class="hint openai-selection-report">可提取 ${task.diagnostics.extracted} · 地区排除 ${task.diagnostics.excludedRegion} · 成本排除 ${task.diagnostics.excludedCost} · 符合条件 ${task.diagnostics.eligible} · 本轮检测 ${task.diagnostics.tested} · 初检通过 ${task.diagnostics.reachable ?? '待检测'} · 质量通过 ${task.diagnostics.qualityPassed ?? '待检测'} · 入选 ${task.diagnostics.selected ?? '待确定'}</p>` : ''}
     ${active.profile.routingMode !== "rule" ? '<p class="warning-box">当前为全局或直连模式，AI 专用分流规则暂不参与。需要 AI 分流时，请先在「自选节点」选择规则模式，再切回 AI 代理。</p>' : ""}
     ${taskForActive && task?.phase === "failed" && task.error ? `<div class="openai-error">${escapeHtml(task.error)}</div>` : ""}
-    ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, nodeSelectionBusy || Boolean(task?.running), policy.selectedNodes.map(node => node.name).filter(name => runtimeGroup.all?.includes(name)), proxyMap) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，请在「自选节点」页切换为普通策略组选点。</p>'}
+    ${rankingSnapshot?.profileId === active.profile.id && rankingSnapshot.revisionId === active.profile.activeRevisionId && rankingSnapshot.running && rankingSnapshot.commonFailure ? '<p class="hint">多个出口同时探测失败，等待复查。</p>' : ""}
+    ${ranking ? openAiRecommendationMarkup(recommendations, runtimeGroup?.now, runtimeGroup ? proxyMap : undefined) : policy.enabled ? '<p class="hint">重新筛选节点后可查看推荐顺序。</p>' : ""}
+    ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, nodeSelectionBusy || Boolean(task?.running), candidates, proxyMap, recommendations) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，请在「自选节点」页切换为普通策略组选点。</p>'}
     <div class="openai-policy-stats">
-      <div><span>${runtimeGroup?.now ? "当前节点" : "候选首选（非运行状态）"}</span><strong>${escapeHtml(currentNode)}</strong></div>
+      <div><span>${runtimeGroup?.now ? "当前节点" : "候选首选"}</span><strong>${escapeHtml(currentNode)}</strong></div>
       <div><span>自动维护</span><strong>${policy.autoMaintain ? "订阅更新后执行" : "仅手动执行"}</strong></div>
       <div><span>上次筛选</span><strong>${formatPolicyDate(policy.lastBenchmarkedAt)}</strong></div>
-      <div><span>故障策略</span><strong>${policy.selectedNodes.length === 1 ? "单节点运行 · 暂无备用" : runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : "基础 Fallback · 可能自动回切"}</strong></div>
+      <div><span>故障策略</span><strong>${runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : policy.selectedNodes.length === 1 ? "单节点 · 暂无备用" : ranking ? "按推荐顺序接替 · 健康节点保持" : "基础 Fallback · 可能自动回切"}</strong></div>
     </div>
-    <p class="hint">稳定优先可独立用于系统代理或 TUN，无需开启本地路由或接入 Codex。基础探测不是模型请求验证；已断开的流无法无缝续接。</p>
+    <p class="hint">${ranking ? "评分权重为模型流完成率 45%、连通性 25%、流量倍率 20%、延迟与波动 10%。缺少可归因的模型流样本时，按现有证据暂定推荐。" : "基础探测仅验证接口可达。"} AI 自动选点通过当前订阅的规则模式生效，只作用于后续新连接。</p>
   `;
   // Preserve focused controls and disclosure state during polling. Do not replace
   // the card between pointer-down/up or every time an unchanged status is read.

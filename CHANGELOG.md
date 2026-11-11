@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.38 - 2026-11-11
+
+- Rank OpenAI failover candidates using connection reliability, traffic multiplier and response timing. Give verified model completion the largest weight when enough results can be attributed to the same node.
+- Show numbered AI node and subscription recommendations. Keep the current healthy node in automatic mode and use the next eligible recommendation after repeated failures and cooldown.
+- Replace bulk bandwidth downloads with two lightweight ChatGPT and OpenAI API reachability rounds. Mark recommendations as provisional until real model-stream evidence is available.
+
 ## 0.7.37 - 2026-11-02
 
 - Show layered diagnostic checks as they execute, with one checking row, retained completed results and a final summary; remove the all-at-once result render.

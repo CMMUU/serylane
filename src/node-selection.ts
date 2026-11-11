@@ -1,10 +1,11 @@
-import type { CurrentNodeDetails, RoutingMode } from "./types";
+import type { CurrentNodeDetails, ProfileRecord, RouteSnapshot, RoutingMode } from "./types";
 
 export const OPENAI_GROUP = "🤖 OpenAI 自动灾备";
 export type NodeMetadata = { regions: string[]; regionStatus: "supported" | "unsupported" | "restricted" | "unknown" | "ambiguous"; regionReason: string; eligible: boolean; ruleVersion: string; ruleSource: string; checkedAt: string; nameMultiplier: number | null; multiplierSource: "name" | "manual" | "unknown" | "conflict" | "invalid" };
 export const multiplierSourceLabel = (source: NodeMetadata["multiplierSource"] | undefined): string => ({ name: "名称识别", manual: "手动覆盖", unknown: "倍率未知", conflict: "倍率冲突", invalid: "倍率无效" })[source ?? "unknown"];
 export type ProxyNode = { history?: { delay: number; time?: string }[]; type?: string; now?: string; all?: string[]; fixed?: string | boolean; manualNode?: string | null; alive?: boolean; udp?: boolean; trafficMultiplier?: number | null; withinCostBudget?: boolean; metadata?: NodeMetadata };
 export type ProxyMap = Record<string, ProxyNode>;
+export type OpenAiRecommendation = { name: string; rank: number | null; score: number | null; streamSamples: number; connectionSamples: number; cooling: boolean; unavailable: boolean };
 export const escapeNode = (value: unknown): string => String(value ?? "—").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 export const canSelectNode = (node: ProxyNode): boolean => ["Selector", "Fallback", "URLTest"].includes(node.type ?? "") && Array.isArray(node.all);
 export const canRestoreAuto = (group: string, node: ProxyNode): boolean => Boolean(node.manualNode && group === OPENAI_GROUP) || Boolean(node.fixed && ["Fallback", "URLTest"].includes(node.type ?? ""));
@@ -30,14 +31,64 @@ export function resolvedNode(proxies: ProxyMap, group: string): { name: string |
   return { name: null, chain };
 }
 
-export function nodeSelectionMarkup(group: string, node: ProxyNode, busy: boolean, candidates = node.all ?? [], prices?: ProxyMap): string {
+export function openAiRecommendations(
+  profile: Pick<ProfileRecord, "id" | "activeRevisionId" | "openaiPolicy">,
+  snapshot?: RouteSnapshot["stability"],
+  available?: string[],
+): OpenAiRecommendation[] {
+  const policy = profile.openaiPolicy;
+  if (!policy.enabled || !(policy.benchmarkVersion >= 2)) return [];
+  const hasLiveRanking = snapshot?.running && snapshot.eligible && snapshot.lastCheck &&
+    snapshot.profileId === profile.id && snapshot.revisionId === profile.activeRevisionId;
+  const names = policy.selectedNodes.filter(node => available?.includes(node.name) ?? true);
+  const rows = names.map((node, index): OpenAiRecommendation => {
+    const live = hasLiveRanking ? snapshot.nodes.find(row => row.name === node.name) : undefined;
+    return {
+      name: node.name,
+      rank: hasLiveRanking ? live?.rank ?? null : index + 1,
+      score: hasLiveRanking ? live?.recommendationScore ?? null : node.score,
+      streamSamples: live?.streamSamples ?? 0,
+      connectionSamples: live?.connectionSamples ?? node.connectionSamples ?? 0,
+      cooling: (live?.cooldownSeconds ?? 0) > 0,
+      unavailable: Boolean(hasLiveRanking && !live?.probeOk),
+    };
+  });
+  return rows.sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER));
+}
+
+export function openAiRecommendationMarkup(rows: OpenAiRecommendation[], current?: string, prices?: ProxyMap): string {
+  if (!rows.length) return "";
+  const status = (row: OpenAiRecommendation) => [
+    row.name === current ? "当前使用" : "",
+    row.cooling ? "冷却中 · 暂停自动选点" : row.unavailable ? "暂不参与自动选点" : "",
+    row.streamSamples >= 3 ? `模型流样本 ${row.streamSamples} 条` : row.streamSamples > 0 ? `真实模型流待验证（${row.streamSamples} 条样本）` : "真实模型流待验证",
+    row.connectionSamples > 0 ? `连通性样本 ${row.connectionSamples} 次` : "",
+  ].filter(Boolean).join(" · ");
+  return `<section class="openai-recommendations" aria-labelledby="openai-recommendation-title">
+    <h4 id="openai-recommendation-title">推荐顺序</h4>
+    <ul role="list">${rows.map(row => {
+      const multiplier = prices?.[row.name]?.trafficMultiplier;
+      return `<li>
+        <span class="openai-recommendation-rank">${row.rank === null ? "—" : `${row.rank}.`}</span>
+        <span class="openai-recommendation-node"><strong>${escapeNode(row.name)}</strong><small>${status(row)}</small></span>
+        <span class="openai-recommendation-score">${prices ? `${multiplier == null ? "倍率未知" : `${multiplier}×`} · ` : ""}${row.score === null ? "评分待更新" : `${Math.round(row.score * 10) / 10} 分`}</span>
+      </li>`;
+    }).join("")}</ul>
+  </section>`;
+}
+
+export function nodeSelectionMarkup(group: string, node: ProxyNode, busy: boolean, candidates = node.all ?? [], prices?: ProxyMap, recommendations?: OpenAiRecommendation[]): string {
   if (!canSelectNode(node)) return '<p class="node-choice-help">此组由配置决定出口，不支持单节点手动选择。</p>';
   const selected = node.manualNode || (typeof node.fixed === "string" ? node.fixed : null) || node.now;
   const mode = node.manualNode ? "手动固定 · 自动切换已暂停" : node.type === "Selector" ? (group === OPENAI_GROUP ? "自动 · 稳定优先" : "手动选择") : node.fixed ? "手动优先 · 失效时由核心回退" : "自动选择";
   return `<form class="node-choice" data-node-group="${escapeNode(group)}">
     <label><span>${escapeNode(mode)}</span><select aria-label="${escapeNode(group)} · 选择节点" ${busy || !candidates.length ? "disabled" : ""}>
     ${!candidates.includes(selected ?? "") ? '<option value="" selected disabled>请选择节点</option>' : ""}
-    ${candidates.map(name => `<option value="${escapeNode(name)}" ${name === selected ? "selected" : ""} ${group === OPENAI_GROUP && prices?.[name]?.metadata?.eligible !== true ? "disabled" : ""}>${escapeNode(name)}${prices ? ` · ${prices[name]?.trafficMultiplier == null ? "倍率未知" : `${prices[name].trafficMultiplier}×`}` : ""}${group === OPENAI_GROUP && prices?.[name]?.metadata?.eligible !== true ? ` · ${escapeNode(prices?.[name]?.metadata?.regionReason ?? "地区待确认")}` : ""}</option>`).join("")}</select></label>
+    ${candidates.map(name => {
+      const recommendation = recommendations?.find(row => row.name === name);
+      const label = recommendation?.rank != null ? `${recommendation.rank}. ${name}` : name;
+      return `<option value="${escapeNode(name)}" ${name === selected ? "selected" : ""} ${group === OPENAI_GROUP && prices?.[name]?.metadata?.eligible !== true ? "disabled" : ""}>${escapeNode(label)}${prices ? ` · ${prices[name]?.trafficMultiplier == null ? "倍率未知" : `${prices[name].trafficMultiplier}×`}` : ""}${recommendation?.cooling ? " · 冷却中" : ""}${group === OPENAI_GROUP && prices?.[name]?.metadata?.eligible !== true ? ` · ${escapeNode(prices?.[name]?.metadata?.regionReason ?? "地区待确认")}` : ""}</option>`;
+    }).join("")}</select></label>
     <button type="submit" class="button button-primary" ${busy || !candidates.length ? "disabled" : ""}>应用节点</button>
     ${canRestoreAuto(group, node) ? `<button type="button" class="button button-quiet" data-node-auto="${escapeNode(group)}" ${busy ? "disabled" : ""}>恢复自动</button>` : ""}
   </form>${node.manualNode && !candidates.includes(node.manualNode) ? '<p class="node-choice-help">原手动节点已不在候选中，请重新选择或恢复自动；不会静默恢复自动。</p>' : ""}`;

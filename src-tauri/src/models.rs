@@ -26,6 +26,12 @@ pub struct OpenAiNodeScore {
     pub bandwidth_mbps: Option<f64>,
     pub score: f64,
     pub checked_at: DateTime<Utc>,
+    #[serde(default)]
+    pub connection_samples: usize,
+    #[serde(default)]
+    pub connection_successes: usize,
+    #[serde(default)]
+    pub quality_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +59,8 @@ pub struct OpenAiPolicy {
     pub last_benchmarked_at: Option<DateTime<Utc>>,
     #[serde(default = "default_openai_benchmark_version")]
     pub benchmark_version: u32,
+    #[serde(default)]
+    pub independent_backup: bool,
 }
 
 impl Default for OpenAiPolicy {
@@ -69,6 +77,7 @@ impl Default for OpenAiPolicy {
             healthy_count: 0,
             last_benchmarked_at: None,
             benchmark_version: default_openai_benchmark_version(),
+            independent_backup: false,
         }
     }
 }

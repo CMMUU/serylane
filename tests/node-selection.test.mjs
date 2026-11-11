@@ -5,7 +5,7 @@ import ts from "typescript";
 import vm from "node:vm";
 const source = readFileSync(new URL("../src/node-selection.ts", import.meta.url), "utf8");
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { generalGroups, resolvedNode, nodeSelectionMarkup, currentNodeMarkup, canRestoreAuto, OPENAI_GROUP } = await import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
+const { generalGroups, resolvedNode, nodeSelectionMarkup, currentNodeMarkup, canRestoreAuto, openAiRecommendations, openAiRecommendationMarkup, OPENAI_GROUP } = await import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
 const map = { PROXY: { type: "Selector", now: "AUTO", all: ["AUTO", "B"] }, AUTO: { type: "URLTest", now: "B", all: ["B"] }, B: { type: "Trojan", trafficMultiplier: 1 }, GLOBAL: { type: "Selector", now: "PROXY", all: ["PROXY"] }, [OPENAI_GROUP]: { type: "Selector", now: "B", all: ["B"] } };
 test("ordinary selection is independent of OpenAI, direct and global are explicit", () => {
   assert.deepEqual(generalGroups(map, "rule"), ["PROXY", "AUTO"]);
@@ -37,6 +37,29 @@ test("names are escaped in labels, attributes, options and details", () => {
   const name = 'x"><img src=x onerror=alert(1)>';
   const html = nodeSelectionMarkup(name, { type: "Selector", all: [name], now: name }, false);
   assert.doesNotMatch(html, /<img/); assert.match(html, /&quot;&gt;&lt;img/);
+});
+test("recommendations follow only the matching live revision and distinguish current use from rank", () => {
+  const profile = {
+    id: "subscription-1", activeRevisionId: "r1",
+    openaiPolicy: { enabled: true, benchmarkVersion: 2, selectedNodes: [{ name: "A<&", score: 80, connectionSamples: 4 }, { name: "B", score: 78 }] },
+  };
+  const snapshot = { profileId: profile.id, revisionId: "r1", running: true, eligible: true, lastCheck: 1, nodes: [
+    { name: "A<&", rank: 2, recommendationScore: 68, probeOk: true, streamSamples: 0, connectionSamples: 4 },
+    { name: "B", rank: 1, recommendationScore: 90, probeOk: false, cooldownSeconds: 20, streamSamples: 2 },
+  ] };
+  const live = openAiRecommendations(profile, snapshot, ["A<&", "B"]);
+  assert.deepEqual(live.map(row => row.name), ["B", "A<&"]);
+  const markup = openAiRecommendationMarkup(live, "A<&");
+  assert.match(markup, /1\.[\s\S]+>B<[\s\S]+冷却中 · 暂停自动选点/);
+  assert.match(markup, /2\.[\s\S]+A&lt;&amp;<[\s\S]+当前使用/);
+  assert.match(markup, /真实模型流待验证（2 条样本）/);
+  const picker = nodeSelectionMarkup(OPENAI_GROUP, { type: "Selector", all: ["A<&", "B"], now: "A<&" }, false, live.map(row => row.name), undefined, live);
+  assert.match(picker, /value="B"[^>]*>1\. B · 冷却中/);
+  assert.match(picker, /value="A&lt;&amp;" selected[^>]*>2\. A&lt;&amp;/);
+  for (const stale of [{ ...snapshot, revisionId: "old" }, { ...snapshot, profileId: "other" }, { ...snapshot, lastCheck: null }]) {
+    assert.deepEqual(openAiRecommendations(profile, stale).map(row => [row.name, row.rank, row.streamSamples]), [["A<&", 1, 0], ["B", 2, 0]]);
+  }
+  assert.deepEqual(openAiRecommendations({ ...profile, openaiPolicy: { ...profile.openaiPolicy, benchmarkVersion: 1 } }, snapshot), []);
 });
 test("manual intent is checked again after probes and Selector auto bypasses DELETE", () => {
   const stability = readFileSync(new URL("../src-tauri/src/openai_stability.rs", import.meta.url), "utf8");
