@@ -54,11 +54,15 @@ export function describeSubscriptionUsage(usage: SubscriptionUsage | null | unde
   };
 }
 
-export function subscriptionAlerts(status: SubscriptionStatus | null | undefined): string {
-  if (!status) return '';
-  const split = Boolean(status.config || status.quota);
-  const config = status.config, quota = status.quota;
-  const legacyError = !config ? status.legacyLastError ?? (!split ? status.lastError : null) : null;
+function subscriptionNotices(status: SubscriptionStatus | null | undefined, hasUsage: boolean) {
+  const config = status?.config, quota = status?.quota;
+  const legacyError = !config ? status?.legacyLastError ?? (!quota ? status?.lastError : null) : null;
+  const configFailure = Boolean(config?.lastError);
+  const quotaFailure = Boolean(quota?.lastError);
+  const heading = configFailure && quotaFailure ? "配置和用量更新未完成"
+    : configFailure ? "订阅配置更新未完成"
+      : legacyError ? "上次订阅检查未完成"
+        : quotaFailure ? "用量信息暂未更新" : null;
   const paths: Record<string, string> = {serylane: '经 Serylane 当前核心', direct: '直连', local_proxy: '经指定本地代理'};
   const detail = (observation: NonNullable<SubscriptionStatus['config']>) => {
     const parts = [paths[observation.path ?? '']];
@@ -66,10 +70,12 @@ export function subscriptionAlerts(status: SubscriptionStatus | null | undefined
     if (observation.elapsedMs) parts.push(`耗时 ${(observation.elapsedMs / 1000).toFixed(1)} 秒`);
     return parts.filter(Boolean).join(' · ');
   };
-  return [config?.lastError ? `<p class="subscription-alert is-error">订阅配置更新未完成 · ${escape(config.lastError)}<br><small>${escape(detail(config))}</small></p>` : '',
-    quota?.lastError ? `<p class="subscription-alert">用量信息暂未更新 · 保留上次记录。${escape(quota.lastError)}</p>` : '',
+  const configDetail = configFailure && config ? detail(config) : "";
+  const markup = [config?.lastError ? `<p class="subscription-alert is-error">订阅配置更新未完成 · ${escape(config.lastError)}${configDetail ? `<br><small>${escape(configDetail)}</small>` : ""}</p>` : '',
+    quota?.lastError ? `<p class="subscription-alert">用量信息暂未更新${hasUsage ? " · 保留上次记录" : ""}。${escape(quota.lastError)}</p>` : '',
     legacyError ? `<p class="subscription-alert">上次订阅检查未完成 · ${escape(legacyError)}（旧版记录，未区分配置与用量）</p>` : '',
   ].join('');
+  return { heading, tone: configFailure ? "error" : heading ? "warning" : null, markup };
 }
 
 export function subscriptionRecommendationRanks(subscriptions: SubscriptionOverview[], now: number): Map<string, number> {
@@ -96,12 +102,13 @@ export function subscriptionRecommendationRanks(subscriptions: SubscriptionOverv
   return ranks;
 }
 
-export function subscriptionCardMarkup(subscription: SubscriptionOverview, task: OpenAiPolicyTask | null, now = Date.now(), refreshing = false, recommendationRank?: number): string {
+export function subscriptionCardMarkup(subscription: SubscriptionOverview, task: OpenAiPolicyTask | null, now = Date.now(), refreshing = false, recommendationRank?: number, expanded = false): string {
   const { profile, summary, latestMetadata, latestValidation, status } = subscription;
   const usageData = status?.usage ?? latestMetadata?.usage;
   const usage = describeSubscriptionUsage(usageData, now);
   const sampleAt = status?.usageUpdatedAt ?? (latestMetadata?.usage ? subscription.latestFetchedAt : null);
-  const noCurrentSample = Boolean(status?.checkedAt && sampleAt && status.checkedAt !== sampleAt);
+  const usageCheckedAt = status?.quota?.checkedAt ?? (!status?.config && !status?.quota ? status?.checkedAt : null);
+  const noCurrentSample = Date.parse(usageCheckedAt ?? "") > Date.parse(sampleAt ?? "");
   const host = profile.source.type === "remote_subscription" ? profile.source.host : "远程订阅";
   const taskForProfile = task?.profileId === profile.id;
   const generating = Boolean(taskForProfile && task?.running);
@@ -110,24 +117,61 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
   const policyText = generating ? `正在生成灾备${taskProgress}` : failed ? "上次灾备生成失败" : profile.openaiPolicy.enabled ? `OpenAI 灾备 · ${profile.openaiPolicy.selectedNodes.length} 个节点` : "未启用 OpenAI 灾备";
   const configuration = !latestValidation ? "尚未验证配置" : latestValidation.valid ? "配置校验通过" : "配置校验未通过";
   const mode = profile.routingMode === "global" ? "全局" : profile.routingMode === "direct" ? "直连" : "规则";
-  const warning = usage.exhausted || usage.expired;
-  const usageNote = !usageData ? "刷新订阅以获取用量；服务商未提供时显示 —。" : noCurrentSample ? "本次检查未获取新用量，保留上次采样。" : "每 5 分钟直接检查订阅用量；余额变化即更新，不切换订阅或重载配置。";
+  const warning = usage.expired || (usage.percent !== null && usage.percent >= 90);
+  const usageNote = !usageData ? "刷新订阅以获取用量。服务商未提供的字段显示为 —。" : noCurrentSample ? "本次检查未获取新用量，保留上次采样。" : "每 5 分钟直接检查订阅用量。用量更新与配置更新独立。";
+  const notices = subscriptionNotices(status, Boolean(usageData));
+  const observation = notices.heading ?? (noCurrentSample ? "用量沿用上次采样" : sampleAt ? `用量采样 ${subscriptionDate(sampleAt)}` : usageData ? "尚无用量采样时间" : "流量信息未提供");
+  const observationTone = notices.tone ?? (noCurrentSample ? "warning" : null);
+  const remaining = usageData ? usage.state === "剩余流量" ? `剩余 ${subscriptionBytes(usage.remaining)}` : usage.state : "";
   const progress = usage.progress === null
     ? '<div class="subscription-usage-track is-unknown" aria-hidden="true"></div>'
     : `<div class="subscription-usage-track" role="progressbar" aria-label="${escape(profile.displayName)} 套餐流量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${usage.progress.toFixed(2)}" aria-valuetext="已用 ${subscriptionBytes(usage.used)}，总额度 ${subscriptionBytes(usage.quota)}${usage.exhausted ? "，额度已用尽" : ""}"><span style="width:${usage.progress.toFixed(2)}%"></span></div>`;
   const id = escape(profile.id);
   const button = (action: string, label: string, extra = "") => `<button type="button" class="button button-quiet${action === "delete" ? " button-danger" : ""}" data-subscription-action="${action}" data-profile-id="${id}" ${refreshing ? "disabled" : extra}>${escape(refreshing && action === "refresh" ? "刷新中…" : label)}</button>`;
-  const recommendation = recommendationRank ? `<span class="subscription-recommendation-rank" title="上次筛选 AI 推荐第 ${recommendationRank} 名">${recommendationRank}.</span> ` : "";
-  return `<article class="subscription-entry subscription-tile${subscription.active ? " is-active" : ""}${warning ? " has-warning" : ""}" data-render-key="${id}" data-subscription-id="${id}"${subscription.active ? ' aria-current="true"' : ''}>
+  const recommendation = recommendationRank ? `<span class="subscription-recommendation-rank" title="上次筛选 AI 推荐第 ${recommendationRank} 名">${recommendationRank}.</span>` : "";
+  return `<article class="subscription-entry subscription-tile${subscription.active ? " is-active" : ""}${warning ? " has-warning" : ""}" data-render-key="${id}" data-subscription-id="${id}" tabindex="0"${subscription.active ? ' aria-current="true"' : ''}>
     <div class="subscription-entry-head">
-      <div class="subscription-identity"><div><h3 title="${escape(profile.displayName)}">${recommendation}${escape(profile.displayName)}</h3><p>${subscription.active ? "已选用" : "未选用"} · ${mode}模式${summary ? ` · ${summary.nodeCount} 节点` : ""}${recommendationRank ? " · 上次筛选 AI 推荐" : ""}</p></div></div>
+      <div class="subscription-identity">
+        <h3 title="${escape(profile.displayName)}">${recommendation}<span class="subscription-name">${escape(profile.displayName)}</span></h3>
+        <p>${mode}模式${summary ? ` · ${summary.nodeCount} 节点` : ""}${recommendationRank ? " · 上次筛选 AI 推荐" : ""}</p>
+      </div>
       <div class="subscription-quick-actions">${button("refresh", "刷新")}${button("activate", subscription.active ? "已选用" : "选用", subscription.active ? "disabled" : "")}</div>
     </div>
-    <section class="subscription-usage" aria-label="套餐流量"><div class="subscription-usage-label"><span>已用 <strong>${subscriptionBytes(usage.used)}</strong> / ${usage.quota === null ? "额度未提供" : subscriptionBytes(usage.quota)}</span><span>${usageData ? usage.state === "剩余流量" ? `剩余 ${subscriptionBytes(usage.remaining)}` : usage.state : "流量信息未提供"}</span></div>${progress}</section>
-    <div class="subscription-compact-facts"><span class="${usage.expired ? "is-expired" : ""}">到期 ${usage.expires}${usage.expired ? " · 已到期" : ""}</span><span>更新 ${subscriptionDate(subscription.latestFetchedAt)}</span></div>
-    ${subscriptionAlerts(status)}
-    ${!status?.quota?.lastError && !status?.lastError && noCurrentSample ? '<p class="subscription-alert">本次检查未获取新用量，保留上次采样。</p>' : ''}
-    <details class="subscription-more"><summary aria-label="${escape(profile.displayName)} 详情与更多操作">更多<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="subscription-more-body"><p>${escape(host)} · 凭据已隐藏</p><div class="subscription-transfer"><span>上传 ${subscriptionBytes(usage.upload)}</span><span>下载 ${subscriptionBytes(usage.download)}</span><span>已用 ${subscriptionBytes(usage.used)}</span></div><p>${configuration}${summary ? ` · ${summary.nodeCount} 节点 · ${summary.proxyProviderCount} 提供器` : ""}</p><div class="subscription-observation"><p>${status?.checkedAt ? `最近检查 ${subscriptionDate(status.checkedAt)}` : "尚未检查用量"}</p><p>${usageNote}</p></div><dl><div><dt>用量采样</dt><dd>${sampleAt ? subscriptionDate(sampleAt) : "尚无采样"}</dd></div><div><dt>配置更新</dt><dd>${subscriptionDate(subscription.latestFetchedAt)}</dd></div><div><dt>配置文件</dt><dd>${subscriptionBytes(latestMetadata?.bytes)} · ${subscription.revisionCount} 个版本</dd></div></dl><p>${policyText}${failed ? `：${escape(task?.error ?? "请重试")}` : ""}</p><div class="toolbar">${button(generating ? "openai-cancel" : "openai-generate", generating ? `停止生成${taskProgress}` : profile.openaiPolicy.enabled ? "重新生成灾备" : "OpenAI 灾备", task?.running && !taskForProfile ? "disabled" : "")}${button("edit", "编辑信息")}${button("versions", "版本")}${button("delete", "删除")}</div></div></details>
+    <section class="subscription-usage" aria-label="套餐流量">
+      <div class="subscription-usage-label">
+        <span>已用 <strong>${subscriptionBytes(usage.used)}</strong> / ${usage.quota === null ? "额度未提供" : subscriptionBytes(usage.quota)}</span>
+        <span>${remaining}</span>
+      </div>
+      ${progress}
+    </section>
+    <dl class="subscription-facts">
+      <div${usage.expired ? ' class="is-expired"' : ""}>
+        <dt>${usage.expired ? "到期时间 · 已到期" : "到期时间"}</dt>
+        <dd>${usage.expires}</dd>
+      </div>
+      <div><dt>配置更新</dt><dd>${subscriptionDate(subscription.latestFetchedAt)}</dd></div>
+    </dl>
+    <details class="subscription-more"${expanded ? " open" : ""}>
+      <summary aria-label="${escape(profile.displayName)}，${escape(observation)}，详情与更多操作">
+        <span class="subscription-observation${observationTone ? ` is-${observationTone}` : ""}">${escape(observation)}</span>
+        <span class="subscription-more-label">详情<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
+      </summary>
+      <div class="subscription-more-body">
+        ${notices.markup}
+        <dl class="subscription-detail-facts">
+          <div><dt>订阅来源</dt><dd>${escape(host)} · 凭据已隐藏</dd></div>
+          <div><dt>配置状态</dt><dd>${configuration}${summary ? ` · ${summary.nodeCount} 节点 · ${summary.proxyProviderCount} 提供器` : ""}</dd></div>
+          <div><dt>上传</dt><dd>${subscriptionBytes(usage.upload)}</dd></div>
+          <div><dt>下载</dt><dd>${subscriptionBytes(usage.download)}</dd></div>
+          <div><dt>用量采样</dt><dd>${sampleAt ? subscriptionDate(sampleAt) : "尚无采样"}</dd></div>
+          <div><dt>最近用量检查</dt><dd>${subscriptionDate(usageCheckedAt)}</dd></div>
+          <div><dt>配置文件</dt><dd>${subscriptionBytes(latestMetadata?.bytes)} · ${subscription.revisionCount} 个版本</dd></div>
+          <div><dt>灾备状态</dt><dd>${policyText}${failed ? ` · ${escape(task?.error ?? "请重试")}` : ""}</dd></div>
+        </dl>
+        <p class="subscription-usage-note">${usageNote}</p>
+        <div class="toolbar">${button(generating ? "openai-cancel" : "openai-generate", generating ? `停止生成${taskProgress}` : profile.openaiPolicy.enabled ? "重新生成灾备" : "OpenAI 灾备", task?.running && !taskForProfile ? "disabled" : "")}${button("edit", "编辑信息")}${button("versions", "版本")}${button("delete", "删除")}</div>
+      </div>
+    </details>
   </article>`;
 }
 

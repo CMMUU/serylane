@@ -12,7 +12,6 @@ use crate::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::sync::atomic::AtomicU64;
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
@@ -21,11 +20,22 @@ use std::{
     },
     time::Duration,
 };
+use std::{future::Future, net::IpAddr, sync::atomic::AtomicU64};
 use tauri::{AppHandle, Manager};
+use tokio::time::Instant;
 use uuid::Uuid;
 pub const GROUP: &str = "🤖 OpenAI 自动灾备";
 const WINDOW: u64 = 900;
 const COOLDOWN: u64 = 300;
+const ACTIVE_INTERVAL: Duration = Duration::from_secs(8);
+const RANKED_MIN_GAP: Duration = Duration::from_secs(2);
+const STANDBY_INTERVAL: Duration = Duration::from_secs(60);
+const CONFIRM_INTERVAL: Duration = Duration::from_secs(24);
+const CONTROLLER_BUDGET: Duration = Duration::from_millis(1500);
+const RANKED_DELAY_MS: u64 = 2500;
+const RANKED_REQUEST_BUDGET: Duration = Duration::from_secs(3);
+const SWEEP_BUDGET: Duration = Duration::from_millis(6500);
+const STANDBY_CONCURRENCY: usize = 3;
 
 pub(crate) fn manages(policy: &OpenAiPolicy) -> bool {
     policy.enabled
@@ -41,11 +51,27 @@ fn now() -> u64 {
 }
 
 pub(crate) async fn probe_target(api: &MihomoApiClient, name: &str, target: Target) -> ProbeReport {
+    probe_target_with_budget(api, name, target, 5000, Duration::from_secs(7)).await
+}
+
+async fn probe_target_with_budget(
+    api: &MihomoApiClient,
+    name: &str,
+    target: Target,
+    delay_ms: u64,
+    request_budget: Duration,
+) -> ProbeReport {
     let (url, expected) = target.probe();
-    let (state, latency_ms) = match api.health_probe(name, url, Some(expected)).await {
+    let (state, latency_ms) = match api
+        .health_probe(name, url, Some(expected), delay_ms, request_budget)
+        .await
+    {
         DelayProbe::Passed(ms) => (ProbeState::Passed, Some(ms)),
         DelayProbe::Unknown => (ProbeState::Unknown, None),
-        DelayProbe::Failed => match api.health_probe(name, url, None).await {
+        DelayProbe::Failed => match api
+            .health_probe(name, url, None, delay_ms, request_budget)
+            .await
+        {
             // HTTP worked but the expected response did not. This could be a
             // challenge, service error or transient recovery: neither model
             // success nor enough evidence to punish this node.
@@ -61,7 +87,116 @@ pub(crate) async fn probe_target(api: &MihomoApiClient, name: &str, target: Targ
     }
 }
 
-fn all_exits_failed(checks: &[(String, ProbeReport, ProbeReport)], target: Target) -> bool {
+type NodeCheck = (String, ProbeReport, ProbeReport);
+
+struct RankedRound {
+    checks: Vec<NodeCheck>,
+    confirmed_failure: bool,
+    checked_confirmation: bool,
+}
+
+async fn ranked_node_check<F, P>(probe: &F, name: String, dual_target: bool) -> NodeCheck
+where
+    F: Fn(String, Target) -> P,
+    P: Future<Output = ProbeReport>,
+{
+    let (chatgpt, openai) = tokio::join!(probe(name.clone(), Target::Chatgpt), async {
+        if dual_target {
+            probe(name.clone(), Target::OpenaiApi).await
+        } else {
+            ProbeReport::default()
+        }
+    });
+    (name, chatgpt, openai)
+}
+
+async fn ranked_sweep<F, P>(probe: &F, standby: &[String], dual_target: bool) -> Vec<NodeCheck>
+where
+    F: Fn(String, Target) -> P,
+    P: Future<Output = ProbeReport>,
+{
+    use futures_util::{stream, StreamExt};
+    let count = if dual_target {
+        STANDBY_CONCURRENCY
+    } else {
+        standby.len()
+    };
+    stream::iter(
+        standby
+            .iter()
+            .take(count)
+            .cloned()
+            .map(|name| ranked_node_check(probe, name, dual_target)),
+    )
+    .buffer_unordered(STANDBY_CONCURRENCY)
+    .take_until(tokio::time::sleep(SWEEP_BUDGET))
+    .collect()
+    .await
+}
+
+async fn ranked_round<F, P>(
+    probe: &F,
+    current: Option<&str>,
+    standby: &[String],
+    periodic: bool,
+    can_confirm: bool,
+) -> RankedRound
+where
+    F: Fn(String, Target) -> P,
+    P: Future<Output = ProbeReport>,
+{
+    let (primary, mut checks) = tokio::join!(
+        async {
+            match current {
+                Some(name) => Some(ranked_node_check(probe, name.to_owned(), periodic).await),
+                None => None,
+            }
+        },
+        async {
+            if periodic {
+                ranked_sweep(probe, standby, true).await
+            } else {
+                Vec::new()
+            }
+        }
+    );
+    let mut confirmed_failure = false;
+    let mut checked_confirmation = false;
+    if let Some((name, mut chatgpt, openai)) = primary {
+        if chatgpt.state == ProbeState::Failed && can_confirm {
+            checked_confirmation = true;
+            let (confirmation, urgent) =
+                tokio::join!(probe(name.clone(), Target::Chatgpt), async {
+                    if checks
+                        .iter()
+                        .any(|(_, chatgpt, _)| chatgpt.state == ProbeState::Passed)
+                    {
+                        Vec::new()
+                    } else {
+                        let remaining: Vec<_> = standby
+                            .iter()
+                            .filter(|candidate| {
+                                !checks.iter().any(|(checked, _, _)| checked == *candidate)
+                            })
+                            .cloned()
+                            .collect();
+                        ranked_sweep(probe, &remaining, false).await
+                    }
+                });
+            confirmed_failure = confirmation.state == ProbeState::Failed;
+            chatgpt = confirmation;
+            checks.extend(urgent);
+        }
+        checks.push((name, chatgpt, openai));
+    }
+    RankedRound {
+        checks,
+        confirmed_failure,
+        checked_confirmation,
+    }
+}
+
+fn all_exits_failed(checks: &[NodeCheck], target: Target) -> bool {
     checks.len() >= 2
         && checks.iter().all(|(_, chatgpt, api)| {
             (match target {
@@ -121,7 +256,9 @@ impl NodeHealth {
             }
         }
         self.chatgpt = chatgpt;
-        self.openai_api = openai_api;
+        if openai_api.checked_at != 0 {
+            self.openai_api = openai_api;
+        }
     }
     fn prune(&mut self, time: u64) {
         while self
@@ -365,9 +502,13 @@ struct HealthState {
     current: Option<String>,
     epoch: u64,
     nodes: BTreeMap<String, NodeHealth>,
-    identities: BTreeMap<String, [u8; 32]>,
+    identities: BTreeMap<String, NodeIdentity>,
     ranking: Vec<RankedNode>,
     ranked_run: Option<(u32, chrono::DateTime<chrono::Utc>)>,
+    ranked_poll: bool,
+    last_ranked_sweep: Option<Instant>,
+    last_ranked_confirmation: Option<Instant>,
+    resolved_costs: Option<Arc<ResolvedCosts>>,
     reselect: bool,
     snapshot: StabilitySnapshot,
 }
@@ -377,7 +518,7 @@ impl HealthState {
         &mut self,
         profile: Option<Uuid>,
         revision: Option<Uuid>,
-        identities: BTreeMap<String, [u8; 32]>,
+        identities: BTreeMap<String, NodeIdentity>,
     ) {
         if self.profile == profile && self.revision == revision {
             return;
@@ -405,6 +546,9 @@ impl HealthState {
             self.current = None;
         }
         self.ranking.clear();
+        self.resolved_costs = None;
+        self.last_ranked_sweep = None;
+        self.last_ranked_confirmation = None;
         self.snapshot.last_check = None;
         self.snapshot.common_failure = false;
         self.epoch += 1;
@@ -412,9 +556,37 @@ impl HealthState {
         self.revision = revision;
         self.identities = identities;
     }
+
+    // Distinct configured server addresses are independent candidates for
+    // this check, without asserting distinct public egress IPs.
+    fn independent_servers(&self, left: &str, right: &str) -> bool {
+        self.identities
+            .get(left)
+            .and_then(|node| node.server.as_ref())
+            .zip(
+                self.identities
+                    .get(right)
+                    .and_then(|node| node.server.as_ref()),
+            )
+            .is_some_and(|(a, b)| a != b)
+    }
+
+    fn distinct_nodes(&self, left: &str, right: &str) -> bool {
+        self.identities
+            .get(left)
+            .zip(self.identities.get(right))
+            .is_some_and(|(a, b)| a.route != b.route)
+    }
 }
 
-fn node_identities(source: &str) -> AppResult<BTreeMap<String, [u8; 32]>> {
+#[derive(PartialEq, Eq)]
+struct NodeIdentity {
+    config: [u8; 32],
+    route: [u8; 32],
+    server: Option<[u8; 32]>,
+}
+
+fn node_identities(source: &str) -> AppResult<BTreeMap<String, NodeIdentity>> {
     let document: serde_yaml::Value = serde_yaml::from_str(source)
         .map_err(|_| AppError::Config("无法读取稳定策略节点身份".into()))?;
     let mut identities = BTreeMap::new();
@@ -422,7 +594,31 @@ fn node_identities(source: &str) -> AppResult<BTreeMap<String, [u8; 32]>> {
         if let Some(name) = node["name"].as_str() {
             let bytes = serde_yaml::to_string(node)
                 .map_err(|_| AppError::Config("无法核对稳定策略节点身份".into()))?;
-            identities.insert(name.to_string(), Sha256::digest(bytes.as_bytes()).into());
+            let mut route = node.clone();
+            if let Some(mapping) = route.as_mapping_mut() {
+                mapping.remove(serde_yaml::Value::String("name".into()));
+            }
+            let route = serde_yaml::to_string(&route)
+                .map_err(|_| AppError::Config("无法核对稳定策略节点配置".into()))?;
+            let server = node["server"]
+                .as_str()
+                .map(|server| server.trim().trim_end_matches('.'))
+                .filter(|server| !server.is_empty())
+                .map(|server| {
+                    let server = server.trim_start_matches('[').trim_end_matches(']');
+                    let normalized = server
+                        .parse::<IpAddr>()
+                        .map_or_else(|_| server.to_ascii_lowercase(), |ip| ip.to_string());
+                    Sha256::digest(normalized.as_bytes()).into()
+                });
+            identities.insert(
+                name.to_string(),
+                NodeIdentity {
+                    config: Sha256::digest(bytes.as_bytes()).into(),
+                    route: Sha256::digest(route.as_bytes()).into(),
+                    server,
+                },
+            );
         }
     }
     Ok(identities)
@@ -499,6 +695,7 @@ impl StabilityManager {
     pub(crate) fn resume_ranked_selection(&self) {
         if let Ok(mut s) = self.inner.lock() {
             s.reselect = true;
+            s.last_ranked_sweep = None;
         }
         self.schedule_check();
     }
@@ -534,6 +731,7 @@ impl StabilityManager {
                 self.schedule_check();
             } else {
                 s.ranked_run = None;
+                s.ranked_poll = false;
                 s.reselect = false;
             }
         }
@@ -620,15 +818,15 @@ impl StabilityManager {
     pub fn start(&self, app: AppHandle) {
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            let mut timer = tokio::time::interval(Duration::from_secs(60));
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut earliest = tokio::time::Instant::now();
+            let mut next = Instant::now();
+            let mut earliest = next;
             while !manager.stopped.load(Ordering::Acquire) {
-                tokio::select! { _ = timer.tick() => {}, _ = manager.wake.notified() => {} }
+                tokio::select! { _ = tokio::time::sleep_until(next) => {}, _ = manager.wake.notified() => {} }
                 tokio::time::sleep_until(earliest).await;
                 if manager.stopped.load(Ordering::Acquire) {
                     break;
                 }
+                let started = Instant::now();
                 if manager.tick(&app).await.is_err() {
                     crate::app_log::record(
                         1,
@@ -643,8 +841,15 @@ impl StabilityManager {
                 }
                 // No overlapping rounds or accumulated interval catch-up. A burst
                 // of client retries can request one follow-up, not a probe storm.
-                earliest = tokio::time::Instant::now() + Duration::from_secs(30);
-                timer.reset();
+                let finished = Instant::now();
+                let ranked = manager.inner.lock().is_ok_and(|s| s.ranked_poll);
+                if ranked {
+                    earliest = finished + RANKED_MIN_GAP;
+                    next = (started + ACTIVE_INTERVAL).max(earliest);
+                } else {
+                    earliest = finished + Duration::from_secs(30);
+                    next = finished + STANDBY_INTERVAL;
+                }
             }
         });
     }
@@ -715,10 +920,15 @@ impl StabilityManager {
                 s.snapshot.message = "等待代理核心运行，尚未进行节点检查".into();
                 s.current = None;
                 s.ranked_run = None;
+                s.ranked_poll = false;
             }
             return Ok(());
         }
-        let api = MihomoApiClient::new(&settings)?;
+        let api = if ranked {
+            MihomoApiClient::with_timeout(&settings, CONTROLLER_BUDGET)?
+        } else {
+            MihomoApiClient::new(&settings)?
+        };
         let proxies = api.proxies().await?;
         let group = &proxies["proxies"][GROUP];
         if group["type"].as_str() != Some("Selector") {
@@ -731,13 +941,14 @@ impl StabilityManager {
             .flatten()
         {
             let _permit = crate::user_rules::acquire_configuration(app)?;
-            crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
-            crate::manual_outbound::require_revision(
-                &storage.settings()?,
-                settings.proxy_mode_revision,
-            )?;
+            let live_settings = storage.settings()?;
+            crate::manual_outbound::require_proxy_mode(&live_settings)?;
+            crate::manual_outbound::require_revision(&live_settings, settings.proxy_mode_revision)?;
             let latest = active.map(|id| storage.load_profile(id)).transpose()?;
-            if storage.state()?.active_profile_id != active
+            let live_run = app.state::<MihomoRuntime>().status(Some(app));
+            if live_settings.controller_port != settings.controller_port
+                || live_settings.controller_secret != settings.controller_secret
+                || storage.state()?.active_profile_id != active
                 || latest.as_ref().and_then(|p| p.active_revision_id) != revision
                 || !latest.as_ref().is_some_and(|p| {
                     p.routing_mode == RoutingMode::Rule && manages(&p.openai_policy)
@@ -748,7 +959,9 @@ impl StabilityManager {
                     .flatten()
                     .as_deref()
                     != Some(&node)
-                || app.state::<MihomoRuntime>().status(Some(app)).phase != RuntimePhase::Running
+                || live_run.phase != RuntimePhase::Running
+                || live_run.pid != run_before.pid
+                || live_run.started_at != run_before.started_at
             {
                 return Ok(());
             }
@@ -780,6 +993,7 @@ impl StabilityManager {
                 Some("REJECT".into())
             };
             s.snapshot.running = false;
+            s.ranked_poll = false;
             s.snapshot.message = if valid {
                 "手动选点中，稳定策略已暂停自动切换；可在代理页恢复自动"
             } else {
@@ -790,10 +1004,28 @@ impl StabilityManager {
         }
         let cost_preferences =
             storage.openai_costs(active.ok_or_else(|| AppError::Conflict("无活动配置".into()))?)?;
-        let costs = cost_preferences.resolve(&storage.load_revision_source(
-            active.unwrap(),
-            revision.ok_or_else(|| AppError::Conflict("无配置版本".into()))?,
-        )?)?;
+        let cached = self
+            .inner
+            .lock()
+            .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?
+            .resolved_costs
+            .as_ref()
+            .filter(|costs| costs.preferences.revision == cost_preferences.revision)
+            .cloned();
+        let costs = match cached {
+            Some(costs) => costs,
+            None => {
+                let costs = Arc::new(cost_preferences.resolve(&storage.load_revision_source(
+                    active.unwrap(),
+                    revision.ok_or_else(|| AppError::Conflict("无配置版本".into()))?,
+                )?)?);
+                self.inner
+                    .lock()
+                    .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?
+                    .resolved_costs = Some(costs.clone());
+                costs
+            }
+        };
         let mut allowed: Vec<String> = policy
             .selected_nodes
             .iter()
@@ -820,46 +1052,103 @@ impl StabilityManager {
         if !ranked && regional_candidates < 2 {
             allowed.clear();
         }
-        let probe_epoch = {
+        let current_eligible = allowed.contains(&current);
+        let (probe_epoch, ranked_plan) = {
             let mut s = self
                 .inner
                 .lock()
                 .map_err(|_| AppError::Runtime("稳定性状态不可用".into()))?;
-            if s.current.as_ref() != Some(&current) {
+            let changed_outlet = s.current.as_ref() != Some(&current);
+            if changed_outlet {
                 s.epoch += 1;
                 s.current = Some(current.clone());
+                s.last_ranked_confirmation = None;
             }
+            let lost_eligibility = s.ranked_poll && !current_eligible;
             s.snapshot.running = true;
             s.snapshot.eligible = !allowed.is_empty();
-            s.epoch
+            s.ranked_poll = ranked && current_eligible;
+            let plan = ranked.then(|| {
+                let periodic = changed_outlet
+                    || lost_eligibility
+                    || s.last_ranked_sweep
+                        .is_none_or(|last| last.elapsed() >= STANDBY_INTERVAL);
+                let mut standby: Vec<_> = allowed
+                    .iter()
+                    .filter(|name| **name != current)
+                    .cloned()
+                    .collect();
+                standby.sort_by_key(|name| {
+                    let same_server = current_eligible && !s.independent_servers(name, &current);
+                    (
+                        !periodic && same_server,
+                        s.nodes.get(name).map_or(0, |n| n.chatgpt.checked_at),
+                        same_server,
+                    )
+                });
+                let can_confirm = s
+                    .last_ranked_confirmation
+                    .is_none_or(|last| last.elapsed() >= CONFIRM_INTERVAL);
+                (standby, periodic, can_confirm)
+            });
+            (s.epoch, plan)
         };
-        use futures_util::{stream, StreamExt};
-        let checks = stream::iter(allowed.iter().cloned().map(|name| {
-            let api = api.clone();
-            async move {
-                // Sequential per node, only two nodes in flight. No account credentials,
-                // model requests, throughput tests or runtime selection changes.
-                let chatgpt = probe_target(&api, &name, Target::Chatgpt).await;
-                let openai_api = probe_target(&api, &name, Target::OpenaiApi).await;
-                (name, chatgpt, openai_api)
-            }
-        }))
-        .buffer_unordered(2)
-        .collect::<Vec<_>>()
-        .await;
+        let (checks, periodic, double_failure, checked_confirmation) =
+            if let Some((standby, periodic, can_confirm)) = ranked_plan {
+                let result = ranked_round(
+                    &|name, target| {
+                        let api = api.clone();
+                        async move {
+                            probe_target_with_budget(
+                                &api,
+                                &name,
+                                target,
+                                RANKED_DELAY_MS,
+                                RANKED_REQUEST_BUDGET,
+                            )
+                            .await
+                        }
+                    },
+                    current_eligible.then_some(current.as_str()),
+                    &standby,
+                    periodic,
+                    can_confirm,
+                )
+                .await;
+                (
+                    result.checks,
+                    periodic,
+                    result.confirmed_failure,
+                    result.checked_confirmation,
+                )
+            } else {
+                use futures_util::{stream, StreamExt};
+                let checks = stream::iter(allowed.iter().cloned().map(|name| {
+                    let api = api.clone();
+                    async move {
+                        let chatgpt = probe_target(&api, &name, Target::Chatgpt).await;
+                        let openai_api = probe_target(&api, &name, Target::OpenaiApi).await;
+                        (name, chatgpt, openai_api)
+                    }
+                }))
+                .buffer_unordered(2)
+                .collect::<Vec<_>>()
+                .await;
+                (checks, false, false, false)
+            };
         // A stopped/reloaded core is not evidence that every candidate is broken.
         // Gate both recording and selection, not just the eventual controller write.
         let _permit = crate::user_rules::acquire_configuration(app)?;
-        crate::manual_outbound::require_proxy_mode(&storage.settings()?)?;
-        crate::manual_outbound::require_revision(
-            &storage.settings()?,
-            settings.proxy_mode_revision,
-        )?;
+        let live_settings = storage.settings()?;
+        crate::manual_outbound::require_proxy_mode(&live_settings)?;
+        crate::manual_outbound::require_revision(&live_settings, settings.proxy_mode_revision)?;
         let run_after = app.state::<MihomoRuntime>().status(Some(app));
         if self.stopped.load(Ordering::Acquire)
             || run_after.phase != RuntimePhase::Running
             || run_before.pid != run_after.pid
             || run_before.started_at != run_after.started_at
+            || live_settings.controller_port != settings.controller_port
+            || live_settings.controller_secret != settings.controller_secret
             || (!ranked && crate::local_routing::stability_target(app)? != target)
             || storage.state()?.active_profile_id != active
         {
@@ -905,31 +1194,90 @@ impl StabilityManager {
             }
             // When every probed exit fails together, do not churn through exits.
             // The current within-budget exit is held while the shared fault is checked.
-            let common_failure = all_exits_failed(&checks, target);
-            s.snapshot.common_failure = common_failure;
+            let common_failure = all_exits_failed(&checks, target)
+                && (!ranked
+                    || checks.iter().any(|(left, _, _)| {
+                        checks
+                            .iter()
+                            .any(|(right, _, _)| s.distinct_nodes(left, right))
+                    }));
             let time = now();
-            s.snapshot.last_check = Some(time);
+            let observed_at = Instant::now();
+            if periodic {
+                s.last_ranked_sweep = Some(observed_at);
+            }
+            if checked_confirmation {
+                s.last_ranked_confirmation = Some(observed_at);
+            }
+            if checks
+                .iter()
+                .any(|(name, chatgpt, _)| *name == current && chatgpt.state == ProbeState::Passed)
+            {
+                s.last_ranked_confirmation = None;
+            }
+            let has_pass = checks
+                .iter()
+                .any(|(_, chatgpt, _)| chatgpt.state == ProbeState::Passed);
+            if !checks.is_empty() {
+                s.snapshot.last_check = Some(time);
+                s.snapshot.common_failure =
+                    common_failure || (ranked && s.snapshot.common_failure && !has_pass);
+            }
+            let verified_fault = ranked
+                && double_failure
+                && checks.iter().any(|(name, chatgpt, _)| {
+                    chatgpt.state == ProbeState::Passed && s.distinct_nodes(name, &current)
+                });
+            let mut verified: Vec<_> = checks
+                .iter()
+                .filter(|(name, chatgpt, _)| {
+                    chatgpt.state == ProbeState::Passed
+                        && (!verified_fault || s.distinct_nodes(name, &current))
+                })
+                .map(|(name, _, _)| name.clone())
+                .collect();
             for (name, chatgpt, openai_api) in checks {
+                let primary = name == current;
+                let neutral = common_failure
+                    || (ranked
+                        && chatgpt.state == ProbeState::Failed
+                        && (!has_pass || (primary && !verified_fault)));
                 let health = s.nodes.entry(name).or_default();
-                health.probes(target, chatgpt, openai_api, time, common_failure);
+                health.probes(target, chatgpt, openai_api, time, neutral);
+                if primary && verified_fault {
+                    health.record(time, Evidence::Probe(false));
+                }
             }
             if ranked {
                 s.ranking = rank_nodes(policy, &s.nodes, &allowed, &costs, time);
             }
             s.snapshot.message = "根据目标连通性和节点权重选择后续新连接的出口".into();
-            if common_failure && allowed.contains(&current) && costs.allowed(&current) {
+            if s.snapshot.common_failure && current_eligible {
                 s.snapshot.message = "多个出口的目标检测同时失败，可能是公共网络或目标服务异常；保留当前合预算出口复查，未反复切换".into();
                 (current.clone(), false)
             } else if ranked {
-                let candidate = choose_ranked(
-                    &s.nodes,
-                    &s.ranking,
-                    &current,
-                    s.reselect || s.ranked_run != run,
-                    time,
-                );
-                let verified = s.nodes.get(&candidate).is_some_and(|n| n.usable(time));
-                (candidate, verified)
+                if verified_fault
+                    && verified.iter().any(|name| {
+                        s.independent_servers(name, &current)
+                            && s.nodes.get(name).is_some_and(|node| node.usable(time))
+                    })
+                {
+                    verified.retain(|name| s.independent_servers(name, &current));
+                }
+                let initial_choice = s.ranked_run != run && verified.contains(&current);
+                let reselect = s.reselect || initial_choice;
+                let candidate = if reselect || verified_fault || !current_eligible {
+                    choose_ranked(&s.nodes, &s.ranking, &current, reselect, time, &verified)
+                } else {
+                    current.clone()
+                };
+                let choice_verified = verified.contains(&candidate)
+                    && s.nodes.get(&candidate).is_some_and(|n| n.usable(time));
+                if double_failure && candidate == current {
+                    s.snapshot.message =
+                        "当前节点探测异常，等待备用节点核验，暂时保留当前出口".into();
+                }
+                (candidate, choice_verified)
             } else {
                 (
                     choose_with_costs(&s.nodes, &current, &allowed, time, &costs),
@@ -984,6 +1332,8 @@ impl StabilityManager {
             "原节点持续失败，已为后续新连接切换出口；原有连接未被主动关闭"
         }
         .into();
+        s.ranked_poll = ranked && candidate != "REJECT";
+        s.last_ranked_confirmation = None;
         s.current = Some(candidate);
         s.snapshot.last_switch = Some(now());
         Ok(())
@@ -996,8 +1346,10 @@ fn choose_ranked(
     current: &str,
     reselect: bool,
     time: u64,
+    verified: &[String],
 ) -> String {
-    let keep_current = ranking.iter().any(|node| node.name == current)
+    let current_eligible = ranking.iter().any(|node| node.name == current);
+    let keep_current = current_eligible
         && nodes.get(current).is_some_and(|node| {
             node.consecutive_failures < 2
                 && node.cooldown_until <= time
@@ -1009,13 +1361,14 @@ fn choose_ranked(
     ranking
         .iter()
         .find(|node| {
-            nodes
-                .get(&node.name)
-                .is_some_and(|health| health.usable(time))
+            verified.contains(&node.name)
+                && nodes
+                    .get(&node.name)
+                    .is_some_and(|health| health.usable(time))
         })
         .map(|node| node.name.clone())
         .unwrap_or_else(|| {
-            if keep_current {
+            if current_eligible {
                 current.into()
             } else {
                 "REJECT".into()
@@ -1391,24 +1744,25 @@ mod tests {
             ("unverified".into(), NodeHealth::default()),
         ]);
         let allowed = ["low-cost".into(), "costly".into(), "unverified".into()];
+        let verified = ["low-cost".into(), "costly".into()];
         let ranking = rank_nodes(&policy, &nodes, &allowed, &costs, 100);
         assert_eq!(ranking[0].name, "unverified");
         assert_eq!(
-            choose_ranked(&nodes, &ranking, "REJECT", true, 100),
+            choose_ranked(&nodes, &ranking, "REJECT", true, 100, &verified),
             "low-cost"
         );
         assert_eq!(
-            choose_ranked(&nodes, &ranking, "costly", false, 100),
+            choose_ranked(&nodes, &ranking, "costly", false, 100, &verified),
             "costly"
         );
         assert_eq!(
-            choose_ranked(&nodes, &ranking, "costly", true, 100),
+            choose_ranked(&nodes, &ranking, "costly", true, 100, &verified),
             "low-cost"
         );
         let low_cost = nodes.get_mut("low-cost").unwrap();
         low_cost.record(110, Evidence::Probe(false));
         assert_eq!(
-            choose_ranked(&nodes, &ranking, "low-cost", false, 110),
+            choose_ranked(&nodes, &ranking, "low-cost", false, 110, &verified),
             "low-cost"
         );
         nodes
@@ -1416,9 +1770,122 @@ mod tests {
             .unwrap()
             .record(120, Evidence::Probe(false));
         assert_eq!(
-            choose_ranked(&nodes, &ranking, "low-cost", false, 120),
+            choose_ranked(&nodes, &ranking, "low-cost", false, 120, &verified),
             "costly"
         );
+        assert_eq!(
+            choose_ranked(&nodes, &ranking, "low-cost", false, 120, &[]),
+            "low-cost",
+            "a previous pass is insufficient to switch during ambiguous failure"
+        );
+    }
+
+    #[test]
+    fn standby_can_share_a_host_but_a_renamed_alias_is_not_corroboration() {
+        let source = r#"
+proxies:
+  - {name: main, type: socks5, server: sample.invalid, port: 1080}
+  - {name: alias, type: socks5, server: sample.invalid, port: 1080}
+  - {name: same, type: socks5, server: SAMPLE.invalid., port: 1081}
+  - {name: separate, type: socks5, server: other.invalid, port: 1080}
+"#;
+        let mut state = HealthState::default();
+        state.reconcile(
+            Some(Uuid::new_v4()),
+            Some(Uuid::new_v4()),
+            node_identities(source).unwrap(),
+        );
+        assert!(!state.distinct_nodes("main", "alias"));
+        assert!(state.distinct_nodes("main", "same"));
+        assert!(!state.independent_servers("main", "same"));
+        assert!(state.independent_servers("main", "separate"));
+    }
+
+    #[tokio::test]
+    async fn ranked_steady_state_only_checks_the_active_target() {
+        let calls = Mutex::new(Vec::new());
+        let probe = |name, target| {
+            calls.lock().unwrap().push((name, target));
+            std::future::ready(report(ProbeState::Passed))
+        };
+        let standby = ["backup".into()];
+        let round = ranked_round(&probe, Some("active"), &standby, false, true).await;
+        assert!(!round.checked_confirmation);
+        assert_eq!(
+            calls.into_inner().unwrap(),
+            [("active".into(), Target::Chatgpt)]
+        );
+    }
+
+    #[tokio::test]
+    async fn ranked_periodic_sweep_limits_backup_traffic() {
+        let calls = Mutex::new(Vec::new());
+        let probe = |name, target| {
+            calls.lock().unwrap().push((name, target));
+            std::future::ready(report(ProbeState::Passed))
+        };
+        let standby = ["b".into(), "c".into(), "d".into(), "e".into()];
+        let round = ranked_round(&probe, Some("a"), &standby, true, true).await;
+        assert!(!round.checked_confirmation);
+        let calls = calls.into_inner().unwrap();
+        assert_eq!(calls.len(), (1 + STANDBY_CONCURRENCY) * 2);
+        assert!(!calls.iter().any(|(name, _)| name == "e"));
+    }
+
+    #[tokio::test]
+    async fn ranked_failure_confirmation_and_standby_check_overlap() {
+        use std::sync::atomic::AtomicUsize;
+        let initial = AtomicUsize::new(0);
+        let concurrent = tokio::sync::Barrier::new(2);
+        let probe = |name: String, target| {
+            let initial = &initial;
+            let concurrent = &concurrent;
+            async move {
+                assert_eq!(target, Target::Chatgpt);
+                if name == "active" {
+                    if initial.fetch_add(1, Ordering::Relaxed) == 1 {
+                        concurrent.wait().await;
+                    }
+                    report(ProbeState::Failed)
+                } else {
+                    concurrent.wait().await;
+                    report(ProbeState::Passed)
+                }
+            }
+        };
+        let standby = ["backup".into()];
+        let round = tokio::time::timeout(
+            Duration::from_secs(2),
+            ranked_round(&probe, Some("active"), &standby, false, true),
+        )
+        .await
+        .expect("confirmation and standby probe run in parallel");
+        assert!(round.confirmed_failure && round.checked_confirmation);
+        assert_eq!(initial.load(Ordering::Relaxed), 2);
+        assert_eq!(round.checks[0].0, "backup");
+        assert_eq!(round.checks[0].1.state, ProbeState::Passed);
+    }
+
+    #[tokio::test]
+    async fn ranked_unknown_never_starts_confirmation() {
+        for first in [ProbeState::Unknown, ProbeState::HttpUnverified] {
+            let probe = |name: String, _| {
+                assert_eq!(name, "active");
+                std::future::ready(report(first))
+            };
+            let round = ranked_round(&probe, Some("active"), &["backup".into()], false, true).await;
+            assert!(!round.confirmed_failure && !round.checked_confirmation);
+            assert_eq!(round.checks[0].1.state, first);
+        }
+    }
+
+    #[test]
+    fn ranked_steady_state_control_plane_budget_fits_30_seconds() {
+        let previous_periodic_round = CONTROLLER_BUDGET * 2 + SWEEP_BUDGET;
+        let detection_wait = ACTIVE_INTERVAL.max(previous_periodic_round + RANKED_MIN_GAP);
+        let new_round = SWEEP_BUDGET * 2 + CONTROLLER_BUDGET * 3;
+        assert!(RANKED_REQUEST_BUDGET * 2 <= SWEEP_BUDGET);
+        assert!(detection_wait + new_round <= Duration::from_secs(30));
     }
     #[test]
     fn cost_aware_failover_keeps_quality_budget_and_stickiness() {

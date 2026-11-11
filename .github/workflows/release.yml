@@ -64,6 +64,8 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Verify proxy quality measurements with isolated evidence
+        run: npm run test:quality
       - name: Validate Apple release mode and explicit compatibility scope
         id: apple_signing
         env:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.39 - 2026-11-11
+
+- Align subscription summaries across quota, expiry and update states, with full details available on demand.
+- Confirm active OpenAI exit failures promptly and select verified standby exits for new connections.
+- Add a reproducible ten-metric quality report, an isolated fixture suite and a comparator acceptance plan.
+
 ## 0.7.38 - 2026-11-11
 
 - Rank OpenAI failover candidates using connection reliability, traffic multiplier and response timing. Give verified model completion the largest weight when enough results can be attributed to the same node.

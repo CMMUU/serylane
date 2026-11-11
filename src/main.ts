@@ -1035,13 +1035,8 @@ function renderSubscriptions() {
   stableMarkup(list, subscriptions.map((subscription) => subscriptionCardMarkup(
     { ...subscription, active: subscription.profile.id === store.activeProfile?.profile.id },
     store.openAiTask, now, subscriptionRefreshing.has(subscription.profile.id), recommendationRanks.get(subscription.profile.id),
+    expanded.has(subscription.profile.id),
   )).join(""));
-  for (const details of list.querySelectorAll<HTMLDetailsElement>(".subscription-more")) {
-    details.open = expanded.has(details.closest<HTMLElement>("[data-subscription-id]")?.dataset.subscriptionId);
-  }
-  for (const card of list.querySelectorAll<HTMLElement>("[data-subscription-id]")) {
-    card.tabIndex = 0;
-  }
 }
 
 function renderSubscriptionActivationHint() {

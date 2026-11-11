@@ -1,7 +1,7 @@
 {
   "name": "serylane",
   "private": true,
-  "version": "0.7.38",
+  "version": "0.7.39",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -15,7 +15,7 @@
     "core:prepare": "node scripts/prepare-mihomo.mjs",
     "core:prepare:all": "node scripts/prepare-mihomo.mjs --all",
     "test:core": "npm run core:prepare && node scripts/smoke-mihomo.mjs",
-    "check": "npm run test:branding && npm run test:licenses && npm run test:theme && npm run test:ui && npm run test:update && npm run test:rules && npm run test:programs && npm run test:routing && npm run test:subscriptions && npm run build && cargo check --manifest-path src-tauri/Cargo.toml",
+    "check": "npm run test:branding && npm run test:licenses && npm run test:theme && npm run test:ui && npm run test:update && npm run test:rules && npm run test:programs && npm run test:routing && npm run test:subscriptions && npm run test:quality && npm run build && cargo check --manifest-path src-tauri/Cargo.toml",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:branding": "node scripts/check-branding.mjs",
     "test:licenses": "node scripts/check-licenses.mjs",
@@ -25,7 +25,8 @@
     "test:rules": "node --test tests/rules.test.mjs",
     "test:programs": "node --test tests/programs.test.mjs",
     "test:routing": "node --test tests/local-routing.test.mjs tests/domain-routing.test.mjs",
-    "test:subscriptions": "node --test tests/subscriptions.test.mjs tests/subscription-fixture.test.mjs tests/subscription-task.test.mjs"
+    "test:subscriptions": "node --test tests/subscriptions.test.mjs tests/subscription-fixture.test.mjs tests/subscription-task.test.mjs",
+    "test:quality": "node --test tests/proxy-quality.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

@@ -28,8 +28,9 @@ test("subscription AI ranks use comparable quality and a near-tie backup, indepe
   legacy.profile.openaiPolicy.benchmarkVersion = 1;
   assert.deepEqual([...subscriptionRecommendationRanks([primary, weaker, backup, expired, legacy], now)], [["backup", 1], ["primary", 2], ["weaker", 3]]);
   const html = subscriptionCardMarkup(backup, null, now, false, 1);
-  assert.match(html, /AI 推荐第 1 名">1\.<\/span> 测试订阅/);
-  assert.match(html, /未选用/);
+  assert.match(html, /AI 推荐第 1 名">1\.<\/span><span class="subscription-name">测试订阅/);
+  assert.match(html, /上次筛选 AI 推荐<\/p>/);
+  assert.match(html, /data-subscription-action="activate"[^>]*>选用/);
   assert.doesNotMatch(html, /aria-current/);
 });
 
@@ -78,7 +79,17 @@ test("checked-at and usage sample time remain distinct after a metadata-less ref
   const record = subscription(); record.status.usageUpdatedAt = "2026-09-01T00:00:00Z";
   const card = subscriptionCardMarkup(record, null, now);
   assert.match(card, /本次检查未获取新用量，保留上次采样/);
-  assert.match(card, /最近检查/); assert.match(card, /用量采样/);
+  assert.match(card, /最近用量检查/); assert.match(card, /用量采样/);
+});
+test("a newer configuration observation does not make an unchanged quota sample appear stale", () => {
+  const record = subscription();
+  record.status.checkedAt = "2026-09-08T00:00:00Z";
+  record.status.config = { checkedAt: record.status.checkedAt, lastError: null };
+  record.status.quota = { checkedAt: record.status.usageUpdatedAt, lastError: null };
+  const card = subscriptionCardMarkup(record, null, now);
+  assert.doesNotMatch(card, /用量沿用上次采样|本次检查未获取新用量/);
+  record.status.quota.checkedAt = record.status.checkedAt;
+  assert.match(subscriptionCardMarkup(record, null, now), /用量沿用上次采样/);
 });
 test("historical profiles without usage stay unknown rather than borrowing response bytes", () => {
   const record = subscription(); delete record.status;
@@ -273,11 +284,22 @@ test("real subscription DTO preserves the friendly cause through the import cont
 });
 test("normal card folds secondary facts but retains visible failure and expiry", () => {
   const card = subscriptionCardMarkup(subscription(), null, now);
-  const [compact, more] = card.split('<details class="subscription-more">');
-  assert.doesNotMatch(compact, /每 5 分钟|上传|下载|配置校验通过|最近检查/);
+  const [compact, more] = card.split('<div class="subscription-more-body">');
+  assert.doesNotMatch(compact, /每 5 分钟|上传|下载|配置校验通过|最近用量检查/);
   assert.match(more, /每 5 分钟|上传|配置校验通过/);
+  assert.match(compact, /到期时间[\s\S]*配置更新/);
   const record = subscription(); record.status.lastError = "连接失败";
-  assert.match(subscriptionCardMarkup(record, null, now).split('<details')[0], /上次订阅检查未完成/);
+  const [failureSummary, failureDetails] = subscriptionCardMarkup(record, null, now).split('<div class="subscription-more-body">');
+  assert.match(failureSummary, /上次订阅检查未完成/);
+  assert.doesNotMatch(failureSummary, /连接失败/);
+  assert.match(failureDetails, /连接失败/);
+});
+test("expanded state is rendered without closing and reopening a live details element", () => {
+  assert.match(subscriptionCardMarkup(subscription(), null, now, false, undefined, true), /<details class="subscription-more" open>/);
+  assert.match(subscriptionCardMarkup(subscription(), null, now), /tabindex="0"/);
+  const main = read("main.ts");
+  assert.match(main, /expanded\.has\(subscription\.profile\.id\)/);
+  assert.doesNotMatch(main, /details\.open = expanded\.has/);
 });
 
 test("configuration remote records follow subscriptions while local YAML remains separate", () => {

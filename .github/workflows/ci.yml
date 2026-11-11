@@ -24,6 +24,8 @@ jobs:
         run: node --test scripts/test-create-release-tag.mjs
       - name: Test verified-artifact release recovery boundaries
         run: node --test scripts/test-release-recovery.mjs
+      - name: Verify proxy quality measurements with isolated evidence
+        run: npm run test:quality
 
   test:
     strategy:
