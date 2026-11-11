@@ -17,7 +17,10 @@ mod macos_title;
 use std::sync::OnceLock;
 
 pub const TRAFFIC_EVENT: &str = "global-traffic";
+#[cfg(not(target_os = "macos"))]
 pub const TRAY_ID: &str = "main";
+#[cfg(target_os = "macos")]
+static NATIVE_BRAND_READY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +37,8 @@ pub struct GlobalTrafficMonitor {
     shutdown: Arc<AtomicBool>,
     started: AtomicBool,
     snapshot: Arc<Mutex<GlobalTrafficSnapshot>>,
+    tray_queued: Arc<AtomicBool>,
+    last_tray_key: Arc<Mutex<String>>,
 }
 
 impl Default for GlobalTrafficMonitor {
@@ -42,6 +47,8 @@ impl Default for GlobalTrafficMonitor {
             enabled: Arc::new(AtomicBool::new(true)),
             shutdown: Arc::new(AtomicBool::new(false)),
             started: AtomicBool::new(false),
+            tray_queued: Arc::new(AtomicBool::new(false)),
+            last_tray_key: Arc::new(Mutex::new(String::new())),
             snapshot: Arc::new(Mutex::new(GlobalTrafficSnapshot {
                 enabled: true,
                 ..Default::default()
@@ -60,8 +67,18 @@ impl GlobalTrafficMonitor {
         let enabled_flag = Arc::clone(&self.enabled);
         let shutdown = Arc::clone(&self.shutdown);
         let snapshot = Arc::clone(&self.snapshot);
+        let tray_queued = self.tray_queued.clone();
+        let last_tray_key = self.last_tray_key.clone();
         tauri::async_runtime::spawn(async move {
-            run_monitor(app, enabled_flag, shutdown, snapshot).await;
+            run_monitor(
+                app,
+                enabled_flag,
+                shutdown,
+                snapshot,
+                tray_queued,
+                last_tray_key,
+            )
+            .await;
         });
     }
 
@@ -73,7 +90,7 @@ impl GlobalTrafficMonitor {
             ..Default::default()
         };
         store_and_publish(app, &self.snapshot, next.clone());
-        update_tray(app, &next);
+        queue_tray_update(app, &self.snapshot, &self.tray_queued, &self.last_tray_key);
     }
 
     pub fn snapshot(&self) -> GlobalTrafficSnapshot {
@@ -93,13 +110,14 @@ async fn run_monitor(
     enabled: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     snapshot: Arc<Mutex<GlobalTrafficSnapshot>>,
+    tray_queued: Arc<AtomicBool>,
+    last_tray_key: Arc<Mutex<String>>,
 ) {
     let mut networks = Networks::new_with_refreshed_list();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut collecting = false;
     let mut last_sample_at = Instant::now();
-    let mut last_tray_key = String::new();
 
     loop {
         interval.tick().await;
@@ -108,6 +126,9 @@ async fn run_monitor(
         }
         if !enabled.load(Ordering::Acquire) {
             collecting = false;
+            // A disabled display change deferred by menu tracking must still
+            // commit once tracking ends, even with traffic collection off.
+            queue_tray_update(&app, &snapshot, &tray_queued, &last_tray_key);
             continue;
         }
         if !collecting {
@@ -120,7 +141,7 @@ async fn run_monitor(
                 ..Default::default()
             };
             store_and_publish(&app, &snapshot, initial.clone());
-            update_tray_if_changed(&app, &initial, &mut last_tray_key);
+            queue_tray_update(&app, &snapshot, &tray_queued, &last_tray_key);
             continue;
         }
 
@@ -140,7 +161,7 @@ async fn run_monitor(
             interfaces,
         };
         store_and_publish(&app, &snapshot, next.clone());
-        update_tray_if_changed(&app, &next, &mut last_tray_key);
+        queue_tray_update(&app, &snapshot, &tray_queued, &last_tray_key);
     }
 }
 
@@ -216,6 +237,35 @@ fn store_and_publish(
     let _ = app.emit(TRAFFIC_EVENT, next);
 }
 
+// One pending UI callback reads the latest sample when it actually runs. A
+// busy menu/AppKit loop must not stop sampling or accumulate stale tray work.
+fn queue_tray_update(
+    app: &AppHandle,
+    snapshot: &Arc<Mutex<GlobalTrafficSnapshot>>,
+    queued: &Arc<AtomicBool>,
+    last_key: &Arc<Mutex<String>>,
+) {
+    if queued.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let handle = app.clone();
+    let state = snapshot.clone();
+    let pending = queued.clone();
+    let key = last_key.clone();
+    if app
+        .run_on_main_thread(move || {
+            let next = state.lock().ok().map(|value| value.clone());
+            if let (Some(next), Ok(mut key)) = (next, key.lock()) {
+                update_tray_if_changed(&handle, &next, &mut key);
+            }
+            pending.store(false, Ordering::Release);
+        })
+        .is_err()
+    {
+        queued.store(false, Ordering::Release);
+    }
+}
+
 fn update_tray_if_changed(
     app: &AppHandle,
     snapshot: &GlobalTrafficSnapshot,
@@ -237,6 +287,12 @@ fn update_tray_if_changed(
         format_tray_rate(snapshot.upload_bytes_per_second),
         format_tray_rate(snapshot.download_bytes_per_second)
     );
+    #[cfg(target_os = "macos")]
+    if crate::macos_interaction::menu_tracking() {
+        // Keep sampling/publishing traffic. Commit only the latest title after
+        // native menu tracking ends, without moving its hit target underneath it.
+        return;
+    }
     if key == *last_key {
         return;
     }
@@ -244,78 +300,64 @@ fn update_tray_if_changed(
     update_tray(app, snapshot);
 }
 
+#[cfg(not(target_os = "macos"))]
 fn update_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
-        eprintln!("global traffic tray icon not found");
         return;
     };
     if !snapshot.enabled {
-        // tray-icon 0.24's macOS None setter leaves the previous native title
-        // intact. An empty string explicitly removes both rows.
         let _ = tray.set_title(Some(""));
-        #[cfg(target_os = "macos")]
-        if let Err(error) = macos_title::clear(&tray) {
-            eprintln!("global traffic native tray reset failed: {error}");
-        }
         if let Some(icon) = app.default_window_icon() {
             let _ = tray.set_icon_with_as_template(Some(icon.clone()), false);
         }
         let _ = tray.set_tooltip(Some("Serylane"));
         return;
     }
-
-    #[cfg(not(target_os = "macos"))]
     let upload = format_tray_rate(snapshot.upload_bytes_per_second);
-    #[cfg(not(target_os = "macos"))]
     let download = format_tray_rate(snapshot.download_bytes_per_second);
-    #[cfg(not(target_os = "macos"))]
-    let tooltip = format!("Serylane\n↑ {upload}\n↓ {download}");
+    #[cfg(target_os = "linux")]
+    let _ = tray.set_title(Some(format!("↑ {upload}\n↓ {download}")));
+    let _ = tray.set_tooltip(Some(format!("Serylane\n↑ {upload}\n↓ {download}")));
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        // Only the shared S mark remains an image. Numbers use AppKit text at
-        // its real point size, independently of tray-icon's 18pt image scaling.
-        let native = tray
-            .set_icon_with_as_template(Some(native_macos_brand_icon()), true)
-            .map_err(|error| error.to_string())
-            .and_then(|()| {
-                macos_title::update(
-                    &tray,
-                    snapshot.upload_bytes_per_second,
-                    snapshot.download_bytes_per_second,
-                )
-            });
-        match native {
-            Ok(()) => return,
-            Err(error) => eprintln!("global traffic native tray fallback: {error}"),
+#[cfg(target_os = "macos")]
+fn update_tray(_app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
+    let native = (|| -> Result<(), String> {
+        if !snapshot.enabled {
+            macos_title::clear()?;
+            crate::macos_interaction::set_icon(&native_macos_brand_icon(), true)?;
+            NATIVE_BRAND_READY.store(true, Ordering::Release);
+            return Ok(());
         }
-        let _ = tray.set_title(Some(""));
-        let _ = macos_title::clear(&tray);
+        if !NATIVE_BRAND_READY.load(Ordering::Acquire) {
+            crate::macos_interaction::set_icon(&native_macos_brand_icon(), true)?;
+        }
+        macos_title::update(
+            snapshot.upload_bytes_per_second,
+            snapshot.download_bytes_per_second,
+        )?;
+        NATIVE_BRAND_READY.store(true, Ordering::Release);
+        Ok(())
+    })();
+    if let Err(error) = native {
+        NATIVE_BRAND_READY.store(false, Ordering::Release);
+        eprintln!("global traffic native tray fallback: {error}");
+        let _ = macos_title::clear();
         let (icon, is_template) = render_macos_tray_icon(
             snapshot.upload_bytes_per_second,
             snapshot.download_bytes_per_second,
         );
-        if let Err(error) = tray.set_icon_with_as_template(Some(icon), is_template) {
-            eprintln!("global traffic tray icon update failed: {error}");
-        } else if let Err(error) = macos_title::update_bitmap(
-            &tray,
-            snapshot.upload_bytes_per_second,
-            snapshot.download_bytes_per_second,
-        ) {
-            eprintln!("global traffic bitmap tray layout failed: {error}");
+        if crate::macos_interaction::set_icon(&icon, is_template).is_ok() {
+            let _ = macos_title::update_bitmap(
+                snapshot.upload_bytes_per_second,
+                snapshot.download_bytes_per_second,
+            );
         }
     }
-
-    #[cfg(target_os = "linux")]
-    {
-        let _ = tray.set_title(Some(format!("↑ {upload}\n↓ {download}")));
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = tray.set_tooltip(Some(tooltip));
 }
 
 #[cfg(target_os = "macos")]
-fn native_macos_brand_icon() -> tauri::image::Image<'static> {
+pub(crate) fn native_macos_brand_icon() -> tauri::image::Image<'static> {
     macos_layout::brand_icon().clone()
 }
 

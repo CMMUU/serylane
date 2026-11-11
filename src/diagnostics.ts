@@ -1,7 +1,7 @@
 import type { BinaryInfo, NetworkMode, ProfileDetails, RuntimeStatus, SystemProxyStatus } from './types';
 
-export type DiagnosticStage = 'local_proxy' | 'controller' | 'http_proxy';
-export type ConnectivityCheck = { stage: DiagnosticStage; success: boolean; latencyMs: number | null; detail: string };
+export type DiagnosticStage = 'local_proxy' | 'controller' | 'http_proxy' | 'node_dns' | 'node_transport' | 'node_request';
+export type ConnectivityCheck = { outcome?: 'pass' | 'fail' | 'warn' | 'skipped' | null; stage: DiagnosticStage; success: boolean; latencyMs: number | null; detail: string };
 type Result = { status: 'pass' | 'warn' | 'fail' | 'skipped'; detail: string };
 export type DiagnosticRow = { id: string; label: string; status: Result['status'] | 'running'; detail: string };
 export type DiagnosticSnapshot = {
@@ -21,7 +21,9 @@ export function createDiagnostics(options: {
   activeProfile(): Promise<ProfileDetails | null>;
   systemProxy(): Promise<SystemProxyStatus>;
   proxies(): Promise<unknown>;
-  diagnosticStep(stage: DiagnosticStage): Promise<ConnectivityCheck>;
+  diagnosticStep(stage: DiagnosticStage, node?: string): Promise<ConnectivityCheck>;
+  networkContext?(): Promise<{ observed: boolean; stale: boolean; routeKnown: boolean; dnsKnown: boolean; tailscale: string; detail: string }>;
+  diagnosticNode?(): string;
   error(error: unknown): string;
   changed(snapshot: DiagnosticSnapshot): void;
 }) {
@@ -33,33 +35,33 @@ export function createDiagnostics(options: {
     const count = (status: DiagnosticRow['status']) => rows.filter(row => row.status === status).length;
     const checking = rows.find(row => row.status === 'running');
     const message = notice || (phase === 'running'
-      ? `${checking ? `正在检测：${checking.label}` : '正在准备诊断'} · 已完成 ${completed}/8 项`
+      ? `${checking ? `正在检测：${checking.label}` : '正在准备诊断'} · 已完成 ${completed}/${options.networkContext ? 12 : 8} 项`
       : phase === 'completed'
         ? `诊断完成 · 通过 ${count('pass')} · 注意 ${count('warn')} · 未通过 ${count('fail')} · 跳过 ${count('skipped')}`
         : '按顺序检查核心、配置、端口与实际代理请求。');
     return { phase, pending, rows: rows.map(row => ({ ...row })), message };
   }
   const publish = () => options.changed(snapshot());
-  function invalidate(message = '代理、配置或页面状态已变化，诊断已中断，请重新诊断。') {
-    if (phase !== 'running') return;
+  function invalidate(message = '代理、配置或页面状态已变化，诊断已中断，请重新诊断。', includeCompleted = false) {
+    if (phase !== 'running' && !(includeCompleted && phase === 'completed')) return;
     serial++;
     phase = 'interrupted'; notice = message;
-    rows = rows.map(row => row.status === 'running'
+    rows = rows.map(row => includeCompleted || row.status === 'running'
       ? { ...row, status: 'skipped', detail: '本项结果未采用，请重新诊断。' } : row);
     publish();
   }
   function run(): Promise<void> {
     if (flight) return flight;
     if (!options.allowed()) return Promise.resolve();
-    const request = ++serial, context = options.context(), mode = options.networkMode();
+    const request = ++serial, context = options.context(), mode = options.networkMode(), node = options.diagnosticNode?.();
     const current = () => request === serial && context === options.context() && options.allowed();
     let running = false, runtimeKnown = false;
     phase = 'running'; pending = true; rows = []; notice = ''; publish();
     const networkSkip = () => running ? null : runtimeKnown ? '核心未运行，未执行本项检查。' : '运行状态读取失败，未执行本项检查。';
     const networkStep = (stage: DiagnosticStage) => async (): Promise<Result> => {
-      const result = await options.diagnosticStep(stage);
+      const result = await options.diagnosticStep(stage, node);
       if (result.stage !== stage) throw new Error('诊断步骤不匹配，请重新诊断。');
-      return { status: result.success ? 'pass' : 'fail', detail: result.detail + (result.latencyMs == null ? '' : ` · ${result.latencyMs} ms`) };
+      return { status: result.outcome ?? (result.success ? 'pass' : 'fail'), detail: result.detail + (result.latencyMs == null ? '' : ` · ${result.latencyMs} ms`) };
     };
     const steps: Array<{ id: string; label: string; check(): Promise<Result>; skip?(): string | null }> = [
       { id: 'binary', label: 'Mihomo sidecar', check: async () => {
@@ -88,6 +90,14 @@ export function createDiagnostics(options: {
       { id: 'controller', label: '控制接口端口', skip: networkSkip, check: networkStep('controller') },
       { id: 'http_proxy', label: '实际代理请求', skip: networkSkip, check: networkStep('http_proxy') },
     ];
+    if (options.networkContext) {
+      steps.unshift({ id: 'network_context', label: '网络与 Tailscale 出口环境', check: async () => {
+        const state = await options.networkContext!();
+        return { status: state.observed && !state.stale && state.routeKnown && state.dnsKnown && !['unknown', 'exit_node_offline', 'exit_node_pending'].includes(state.tailscale) ? 'pass' : 'warn', detail: state.detail };
+      } });
+      for (const [id, label] of [['node_dns', '节点地址 · 系统 DNS 对照'], ['node_transport', '节点外层 · 系统 TCP 对照'], ['node_request', '所选节点 · 实际协议请求']] as const)
+        steps.push({ id, label, skip: networkSkip, check: networkStep(id) });
+    }
     flight = Promise.resolve().then(async () => {
       for (const step of steps) {
         if (!current()) { invalidate(); return; }

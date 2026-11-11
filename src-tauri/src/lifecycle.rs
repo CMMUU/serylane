@@ -33,6 +33,7 @@ pub enum Purpose {
     Runtime,
     Validation,
     Version,
+    NetworkObservation,
 }
 
 impl Purpose {
@@ -41,6 +42,7 @@ impl Purpose {
             Self::Runtime => "runtime",
             Self::Validation => "validation",
             Self::Version => "version",
+            Self::NetworkObservation => "network_observation",
         }
     }
 }

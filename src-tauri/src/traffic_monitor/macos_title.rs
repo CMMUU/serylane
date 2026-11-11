@@ -1,5 +1,5 @@
 //! Native, two-row macOS traffic title. No custom status-item view or bitmap
-//! text: the existing Tauri button keeps ownership of its menu and events.
+//! text: the native status-item adapter keeps ownership of its menu and events.
 
 use objc2::{rc::Retained, AnyThread, MainThreadMarker};
 use objc2_app_kit::{
@@ -147,12 +147,19 @@ pub(super) fn apply_to_item(
     // setting attributed runs alone leaves the default menu font's baseline.
     let font =
         unsafe { NSFont::monospacedDigitSystemFontOfSize_weight(FONT_SIZE, NSFontWeightMedium) };
-    button.setFont(Some(&font));
+    if button
+        .font()
+        .is_none_or(|current| current.pointSize() != FONT_SIZE)
+    {
+        button.setFont(Some(&font));
+    }
     button.setAlignment(NSTextAlignment::Left);
     button.setImagePosition(NSCellImagePosition::ImageLeft);
     let title = build_title(upload, download);
     button.setAttributedTitle(&title);
-    item.setLength(macos_layout::item_width());
+    if item.length() != macos_layout::item_width() {
+        item.setLength(macos_layout::item_width());
+    }
     // NSStatusBarButton's cell can anchor a multiline title at the original
     // single-line baseline (unlike an ordinary NSButton). Center the actual
     // two-line title using the live button geometry, not an OS-specific offset.
@@ -194,26 +201,20 @@ pub(super) fn apply_bitmap_to_item(
         macos_layout::CONTENT_HEIGHT,
     ));
     button.setImagePosition(NSCellImagePosition::ImageOnly);
-    item.setLength(macos_layout::item_width());
+    if item.length() != macos_layout::item_width() {
+        item.setLength(macos_layout::item_width());
+    }
     Ok(())
 }
 
-pub(super) fn update_bitmap(
-    tray: &tauri::tray::TrayIcon,
-    upload: u64,
-    download: u64,
-) -> Result<(), String> {
-    tray.with_inner_tray_icon(move |inner| {
-        let mtm = MainThreadMarker::new().ok_or("bitmap tray update is not on the main thread")?;
-        let item = inner
-            .ns_status_item()
-            .ok_or("native status item is missing")?;
-        apply_bitmap_to_item(&item, mtm)?;
-        inner
-            .set_tooltip(Some(tooltip(upload, download)))
-            .map_err(|error| error.to_string())
+pub(super) fn update_bitmap(upload: u64, download: u64) -> Result<(), String> {
+    crate::macos_interaction::with_status_item(|item, mtm| {
+        apply_bitmap_to_item(item, mtm)?;
+        item.button(mtm)
+            .ok_or("native status button is missing")?
+            .setToolTip(Some(&NSString::from_str(&tooltip(upload, download))));
+        Ok(())
     })
-    .map_err(|error| error.to_string())?
 }
 
 pub(super) fn clear_item(item: &NSStatusItem, mtm: MainThreadMarker) -> Result<(), String> {
@@ -227,38 +228,24 @@ pub(super) fn clear_item(item: &NSStatusItem, mtm: MainThreadMarker) -> Result<(
     Ok(())
 }
 
-pub(super) fn update(
-    tray: &tauri::tray::TrayIcon,
-    upload: u64,
-    download: u64,
-) -> Result<(), String> {
-    tray.with_inner_tray_icon(move |inner| {
-        let mtm = MainThreadMarker::new().ok_or("native tray update is not on the main thread")?;
-        let item = inner
-            .ns_status_item()
-            .ok_or("native status item is missing")?;
-        apply_to_item(&item, upload, download, mtm)?;
-        // This public setter also refreshes tray-icon's event/hover view after
-        // the native title and fixed item width have changed.
-        inner
-            .set_tooltip(Some(tooltip(upload, download)))
-            .map_err(|error| error.to_string())
+pub(super) fn update(upload: u64, download: u64) -> Result<(), String> {
+    crate::macos_interaction::with_status_item(|item, mtm| {
+        apply_to_item(item, upload, download, mtm)?;
+        item.button(mtm)
+            .ok_or("native status button is missing")?
+            .setToolTip(Some(&NSString::from_str(&tooltip(upload, download))));
+        Ok(())
     })
-    .map_err(|error| error.to_string())?
 }
 
-pub(super) fn clear(tray: &tauri::tray::TrayIcon) -> Result<(), String> {
-    tray.with_inner_tray_icon(|inner| {
-        let mtm = MainThreadMarker::new().ok_or("native tray reset is not on the main thread")?;
-        let item = inner
-            .ns_status_item()
-            .ok_or("native status item is missing")?;
-        clear_item(&item, mtm)?;
-        inner
-            .set_tooltip(Some("Serylane"))
-            .map_err(|error| error.to_string())
+pub(super) fn clear() -> Result<(), String> {
+    crate::macos_interaction::with_status_item(|item, mtm| {
+        clear_item(item, mtm)?;
+        item.button(mtm)
+            .ok_or("native status button is missing")?
+            .setToolTip(Some(&NSString::from_str("Serylane")));
+        Ok(())
     })
-    .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]

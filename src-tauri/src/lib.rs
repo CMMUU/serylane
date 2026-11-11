@@ -13,6 +13,8 @@ mod error;
 mod lifecycle;
 mod local_routing;
 #[cfg(target_os = "macos")]
+mod macos_interaction;
+#[cfg(target_os = "macos")]
 mod macos_service;
 #[cfg(target_os = "macos")]
 mod macos_update_install;
@@ -21,8 +23,10 @@ mod macos_upgrade;
 mod manual_outbound;
 mod mihomo_api;
 mod models;
+mod network_context;
 mod network_safety;
 mod node_details;
+mod node_diagnostics;
 mod node_metadata;
 mod node_selection;
 mod node_test;
@@ -75,12 +79,15 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use storage::AppStorage;
+#[cfg(not(target_os = "macos"))]
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WindowEvent,
 };
-use traffic_monitor::{GlobalTrafficMonitor, GlobalTrafficSnapshot, TRAY_ID};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+#[cfg(not(target_os = "macos"))]
+use traffic_monitor::TRAY_ID;
+use traffic_monitor::{GlobalTrafficMonitor, GlobalTrafficSnapshot};
 use tun_service::TunHelperStatus;
 use user_rules::{UserRule, UserRulesState, UserRulesValidation};
 use uuid::Uuid;
@@ -191,21 +198,32 @@ async fn rollback_user_rules(
 }
 
 #[tauri::command]
-fn set_app_theme(app: AppHandle, theme: String) -> Result<PublicAppSettings, AppErrorDto> {
+async fn set_app_theme(app: AppHandle, theme: String) -> Result<PublicAppSettings, AppErrorDto> {
     appearance::native_theme(&theme).map_err(dto)?;
-    let storage = AppStorage::from_app(&app).map_err(dto)?;
-    let settings = appearance::persist_theme(&storage, &theme).map_err(dto)?;
-    appearance::apply_native_theme(&app, &settings.theme).map_err(dto)?;
-    Ok(PublicAppSettings::from(&settings))
+    ui_read::write(move || {
+        let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
+        let storage = AppStorage::from_app(&app).map_err(dto)?;
+        let settings = appearance::persist_theme(&storage, &theme).map_err(dto)?;
+        appearance::apply_native_theme(&app, &settings.theme).map_err(dto)?;
+        Ok(PublicAppSettings::from(&settings))
+    })
+    .await
 }
 
 #[tauri::command]
-fn update_settings(
+async fn update_settings(
     app: AppHandle,
-    state: State<'_, MihomoRuntime>,
-    traffic: State<'_, GlobalTrafficMonitor>,
     settings: PublicAppSettings,
 ) -> Result<PublicAppSettings, AppErrorDto> {
+    ui_read::write(move || update_settings_inner(app, settings)).await
+}
+
+fn update_settings_inner(
+    app: AppHandle,
+    settings: PublicAppSettings,
+) -> Result<PublicAppSettings, AppErrorDto> {
+    let state = app.state::<MihomoRuntime>();
+    let traffic = app.state::<GlobalTrafficMonitor>();
     let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
     let current = storage.settings().map_err(dto)?;
@@ -1320,6 +1338,7 @@ async fn start_ai_health_check(
     profile_id: Uuid,
     revision_id: Uuid,
     mode_revision: Uuid,
+    network_revision: Option<Uuid>,
 ) -> Result<node_test::Snapshot, AppErrorDto> {
     node_test::start_kind(
         app,
@@ -1327,6 +1346,7 @@ async fn start_ai_health_check(
         revision_id,
         mode_revision,
         node_test::Kind::Ai,
+        network_revision,
     )
     .await
     .map_err(dto)
@@ -1338,10 +1358,17 @@ async fn start_node_test(
     profile_id: Uuid,
     revision_id: Uuid,
     mode_revision: Uuid,
+    network_revision: Option<Uuid>,
 ) -> Result<node_test::Snapshot, AppErrorDto> {
-    node_test::start(app, profile_id, revision_id, mode_revision)
-        .await
-        .map_err(dto)
+    node_test::start(
+        app,
+        profile_id,
+        revision_id,
+        mode_revision,
+        network_revision,
+    )
+    .await
+    .map_err(dto)
 }
 #[tauri::command]
 async fn node_test_status(app: AppHandle) -> Result<Option<node_test::Snapshot>, AppErrorDto> {
@@ -1361,8 +1388,13 @@ async fn test_proxy_delay(
     proxy: String,
     url: Option<String>,
     timeout_ms: Option<u32>,
+    network_revision: Option<Uuid>,
 ) -> Result<Value, AppErrorDto> {
-    api_client(&app)?
+    let before = network_context::refresh(&app).await;
+    if network_revision.is_some_and(|r| r != before.revision) {
+        return Err(dto(AppError::Conflict("网络环境已变化，请重新测速".into())));
+    }
+    let result = api_client(&app)?
         .delay(
             &proxy,
             url.as_deref()
@@ -1370,7 +1402,14 @@ async fn test_proxy_delay(
             timeout_ms.unwrap_or(5_000),
         )
         .await
-        .map_err(dto)
+        .map_err(dto)?;
+    let after = network_context::refresh(&app).await;
+    if before.revision != after.revision || after.stale {
+        return Err(dto(AppError::Conflict(
+            "网络环境在测速期间变化，结果已丢弃，请重新测试".into(),
+        )));
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1413,11 +1452,13 @@ async fn run_connectivity_diagnostics(app: AppHandle) -> Result<Vec<DiagnosticCh
 async fn run_connectivity_diagnostic_step(
     app: AppHandle,
     stage: DiagnosticStage,
+    node: Option<String>,
 ) -> Result<DiagnosticCheck, AppErrorDto> {
     let lifecycle = &lifecycle::PROCESS_LIFECYCLE;
     let ticket = lifecycle
         .ticket()
         .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
+    let diagnostic_app = app.clone();
     let settings = ui_read::run(move || {
         AppStorage::from_app(&app)
             .and_then(|storage| storage.settings())
@@ -1427,7 +1468,24 @@ async fn run_connectivity_diagnostic_step(
     lifecycle
         .check(ticket)
         .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
-    let result = diagnostics::run_step(&settings, stage).await;
+    let result = match stage {
+        DiagnosticStage::NodeDns => {
+            node_diagnostics::run(&diagnostic_app, "node_dns", node.as_deref())
+                .await
+                .map_err(dto)?
+        }
+        DiagnosticStage::NodeTransport => {
+            node_diagnostics::run(&diagnostic_app, "node_transport", node.as_deref())
+                .await
+                .map_err(dto)?
+        }
+        DiagnosticStage::NodeRequest => {
+            node_diagnostics::run(&diagnostic_app, "node_request", node.as_deref())
+                .await
+                .map_err(dto)?
+        }
+        _ => diagnostics::run_step(&settings, stage).await,
+    };
     lifecycle
         .check(ticket)
         .map_err(|error| AppError::Conflict(error.to_string()).dto())?;
@@ -1534,12 +1592,15 @@ fn cleanup_resources(app: &AppHandle, deadline: std::time::Instant) {
 }
 
 fn show_home_window(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    macos_interaction::reveal(app);
+    #[cfg(not(target_os = "macos"))]
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-        let _ = app.emit("navigate-view", "overview");
     }
+    // Revealing a window is not navigation. Keep the user's current page/draft.
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1576,6 +1637,7 @@ pub fn run() {
         .manage(SubscriptionImportGuard::default())
         .manage(subscription_task::TaskManager::default())
         .manage(node_test::NodeTestManager::default())
+        .manage(network_context::NetworkContext::default())
         .manage(OpenAiPolicyTaskManager::default())
         .manage(GlobalTrafficMonitor::default())
         .manage(user_rules::ConfigurationMutationGuard::default())
@@ -1622,43 +1684,76 @@ pub fn run() {
             storage
                 .mark_clean_shutdown(false)
                 .map_err(|error| error.to_string())?;
-            let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-            let stop_item = MenuItem::with_id(app, "stop", "停止 Mihomo", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &stop_item, &quit_item])?;
-            let mut tray = TrayIconBuilder::with_id(TRAY_ID).tooltip("Serylane");
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
+            #[cfg(target_os = "macos")]
+            {
+                use macos_interaction::MenuAction;
+                let handle = app.handle().clone();
+                macos_interaction::install(
+                    &traffic_monitor::native_macos_brand_icon(),
+                    &[
+                        ("显示主窗口", MenuAction::Show),
+                        ("停止 Mihomo", MenuAction::Stop),
+                        ("退出", MenuAction::Quit),
+                    ],
+                    None,
+                    move |action| match action {
+                        MenuAction::Show => show_home_window(&handle),
+                        MenuAction::Stop => {
+                            let app = handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = stop_runtime_by_user(&app).await;
+                            });
+                        }
+                        MenuAction::Quit => {
+                            cleanup_app(&handle);
+                            handle.exit(0);
+                        }
+                        MenuAction::Hide => {}
+                    },
+                    macos_interaction::journal,
+                )
+                .map_err(std::io::Error::other)?;
             }
-            tray.menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_home_window(tray.app_handle());
-                    }
-                })
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        show_home_window(app);
-                    }
-                    "stop" => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = stop_runtime_by_user(&app).await;
-                        });
-                    }
-                    "quit" => {
-                        cleanup_app(app);
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
-                .build(app)?;
+            #[cfg(not(target_os = "macos"))]
+            {
+                let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+                let stop_item = MenuItem::with_id(app, "stop", "停止 Mihomo", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show_item, &stop_item, &quit_item])?;
+                let mut tray = TrayIconBuilder::with_id(TRAY_ID).tooltip("Serylane");
+                if let Some(icon) = app.default_window_icon() {
+                    tray = tray.icon(icon.clone());
+                }
+                tray.menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            show_home_window(tray.app_handle());
+                        }
+                    })
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => {
+                            show_home_window(app);
+                        }
+                        "stop" => {
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = stop_runtime_by_user(&app).await;
+                            });
+                        }
+                        "quit" => {
+                            cleanup_app(app);
+                            app.exit(0);
+                        }
+                        _ => {}
+                    })
+                    .build(app)?;
+            }
             app.state::<GlobalTrafficMonitor>()
                 .start(app.handle().clone(), settings.show_global_traffic);
             let _ = app
@@ -1677,6 +1772,7 @@ pub fn run() {
                 }
             }
             subscription_quota::start(app.handle().clone());
+            network_context::start(app.handle().clone());
             let pruning_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -1695,6 +1791,8 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                #[cfg(target_os = "macos")]
+                macos_interaction::cancel_reveal();
                 let _ = window.hide();
             } else if window.label() == "main" && matches!(event, WindowEvent::Destroyed) {
                 cleanup_app(window.app_handle());
@@ -1785,6 +1883,7 @@ pub fn run() {
             start_node_test,
             start_ai_health_check,
             node_test_status,
+            network_context::network_context_status,
             cancel_node_test,
             test_proxy_delay,
             test_proxy_group,
@@ -1804,7 +1903,13 @@ pub fn run() {
         .run(|app, event| {
             // Tao maps confirmed Windows WM_ENDSESSION to LoopDestroyed,
             // which reaches Tauri as Exit (not necessarily Window::Destroyed).
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Reopen { .. }) {
+                show_home_window(app);
+            }
             if matches!(event, tauri::RunEvent::Exit) {
+                #[cfg(target_os = "macos")]
+                macos_interaction::uninstall();
                 cleanup_app(app);
             }
         });

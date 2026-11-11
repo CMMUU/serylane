@@ -202,8 +202,8 @@ pub struct UserRulesValidation {
     pub preview: String,
 }
 
-/// Shared by configuration mutations (including async policy reloads), not by
-/// appearance edits. A permit owns its Arc and can safely span an await.
+/// Shared by configuration mutations, including appearance persistence and
+/// async policy reloads. A permit owns its Arc and can safely span an await.
 #[derive(Default)]
 pub struct ConfigurationMutationGuard {
     running: Arc<AtomicBool>,
