@@ -1,8 +1,8 @@
 # Serylane 官网
 
-当前本地候选采用用户于 2026-11-12 选择的 **B / Precision Routes**：英文优先、完整中文静态对应页、深色／浅色／跟随系统外观，以及可暂停的 SVG 分流动效。原生 HTML / CSS / JavaScript，无框架、第三方字体、动画依赖或分析脚本。Cloudflare Workers Static Assets 托管；仅上传 `public/` 和公开发布查询 Worker，不上传桌面程序源码、用户配置或密钥。
+当前官网采用用户于 2026-11-12 选择的 **B / Precision Routes**：英文优先、完整中文静态对应页、深色／浅色／跟随系统外观，以及可暂停的 SVG 分流动效。原生 HTML / CSS / JavaScript，无框架、第三方字体、动画依赖或分析脚本。Cloudflare Workers Static Assets 托管；仅上传 `public/` 和公开发布查询 Worker，不上传桌面程序源码、用户配置或密钥。
 
-**本轮状态：用户已明确授权官网上线，当前进入发布候选验证。** 分流光段周期调整为3.5秒（此前5秒），保持错峰、暂停和减少动态效果。只有可信main发布及线上内容/六架构下载验收通过后才记为完成；实时源码标记见 <https://serylane.cmmuu.com/build-info.json>。下方2026-09及本地验收记录均为历史证据，不代表本次已上线。结果与限制见 [QA.md](QA.md)，授权范围见 [project-gate.md](project-gate.md)。
+**本轮状态：2026-11-12 已发布并完成线上验收。** 英文 <https://serylane.cmmuu.com/>，中文 <https://serylane.cmmuu.com/zh/>。分流光段周期为3.5秒（此前5秒），保持错峰、暂停和减少动态效果。[官网PR #36](https://github.com/CMMUU/serylane/pull/36) 经独立审查、官网检查和六平台回归后合并；[正式发布作业](https://github.com/CMMUU/serylane/actions/runs/43200982269)成功。首轮线上源码为76ed5cd737d7685f826a9f70e00e730e525309d8，Worker为305da7cc-8ea0-47a0-a743-a31dd617c0b6；17资源源码字节、真实404、六架构v0.7.39下载HEAD与8组真实浏览器验收均通过，没有下载安装包正文或操作用户客户端。后续纯文档记录同步不改变已验收网页/Worker代码；当前源码标记以 <https://serylane.cmmuu.com/build-info.json>为准。旧镜像可见性守卫另有故障，按既有契约独立保留，不改镜像、CI、DNS或下载来源。结果与限制见 [QA.md](QA.md)，授权范围见 [project-gate.md](project-gate.md)。
 
 官网：<https://serylane.cmmuu.com/>。已于 **2026-09-08** 部署至 Cloudflare Workers Static Assets，首页与四篇文档 HTTPS 200、未知路径 404、`.html` 归一化 307、robots 和 sitemap 均已通过线上请求验收。首次边缘访问曾短暂超时，复核后上述页面均正常；本记录不代表持续可用性监控或搜索引擎已收录。
 

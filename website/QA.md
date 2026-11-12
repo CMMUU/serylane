@@ -1,5 +1,22 @@
 # 官网验收记录
 
+## 2026-11-12 · 正式上线验收
+
+本节为当前交付状态，后续候选/仅本地章节为历史阶段。用户授权发布与稍加速后，[PR #36](https://github.com/CMMUU/serylane/pull/36)经独立审查、官网静态检查及六平台/发布自动化7个CI任务全部通过，合并为76ed5cd737d7685f826a9f70e00e730e525309d8。[正式网站作业43200982269](https://github.com/CMMUU/serylane/actions/runs/43200982269)成功，以版本上传/切换将Worker305da7cc-8ea0-47a0-a743-a31dd617c0b6置为100%，未改域名/DNS/CSP/CI/客户端。
+
+### 生产L1（没有模拟发布数据）
+- sourceCommit/websiteTree与可信main一致；10个中英内容页和7个关键资源共17项实际GET的项目源码字节逐一匹配SHA-256。robots沿用既有严格规则，保留Cloudflare托管段，仅提取完整项目段进行比对，不关闭托管策略；其他16项比较完整响应正文。EN/ZH未知路由均真实404且noindex。
+- 最新正式版v0.7.39的六个同源架构入口全部HEAD302，版本、架构、下载中心地址/渠道/解析标记与实时目录一致；废弃GitHub/Gitee渠道覆写HEAD400。没有跟随安装包地址或下载包正文，不宣称实机安装/签名接受验收。
+- 真实线上Chromium8/8：中英×深浅×390/1440，无横溢，三个主题按钮、原生键盘、实际3.5s动画、暂停/继续/减少动态效果通过；真实发布查询8/8为200，浏览器异常0、站外资源请求0。工具传输沿用现有代理，不改用户网络或代理配置。
+- 后续仅同步README/QA/本门禁三篇记录，不改任何已验收网页、脚本、Worker或配置；最终实时来源以[build-info](https://serylane.cmmuu.com/build-info.json)为准。
+
+原始证据：[官网部署原始日志.log](/opt/workspace/codex/artifacts/serylane/2026-11-12/官网改版/官网部署原始日志.log)、[线上完整验收.log](/opt/workspace/codex/artifacts/serylane/2026-11-12/官网改版/线上完整验收.log)、[线上源码及下载验收结果.json](/opt/workspace/codex/artifacts/serylane/2026-11-12/官网改版/线上源码及下载验收结果.json)、[线上浏览器验收结果.json](/opt/workspace/codex/artifacts/serylane/2026-11-12/官网改版/线上浏览器验收结果.json)。八份截图以「线上-」开头，均为实际生产渲染，下载区显示真实v0.7.39，不是此前503模拟状态。
+
+### 独立旧镜像故障（未掩盖）
+[旧镜像同步作业](https://github.com/CMMUU/serylane/actions/runs/43199262342/job/131118074211)检出未改动的旧可信main1717def，85个离线测试通过，随后在同步写入前因Gitee可见性契约字段private不符而停止；不能据此断言仓库必为私有，因为日志未披露实际字段值。官网代码/配置未引起此失败。仓库AGENTS明确镜像不是产品下载来源或官网部署前提；官网走独立main-push作业并已完成全部线上校验。未更改镜像可见性、密钥、workflow或重试镜像；公开[PR说明](https://github.com/CMMUU/serylane/pull/36#issuecomment-6821086599)保留此失败。
+
+未验证真实Safari/手机硬件/辅助技术、真实用户性能、Search Console提交/索引或持续可用性；本次仅官网发布，未新发桌面安装包。
+
 ## 2026-11-12 · 上线前候选验收
 
 用户已明确授权发布官网，并要求分流稍加快。光段周期由5秒改为3.5秒，分支相位同步为-1.05秒/-2.1秒；暂停、减少动态效果、主题按钮、双语与下载协议不变。远端main与本轮基线一致为1717def，未合并其他客户端候选PR。
