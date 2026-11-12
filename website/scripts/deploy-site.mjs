@@ -45,6 +45,29 @@ async function currentMain() {
   assert.equal(response.status, 200, 'Cannot confirm current trusted main');
   return (await response.json()).object.sha;
 }
+// Canonical routes only: Static Assets redirects /zh/index.html to /zh/.
+// Keep all localized content and critical shared resources in the byte proof.
+export const STATIC_ASSETS = Object.freeze({
+  '/': 'index.html', '/zh/': 'zh/index.html',
+  '/docs/': 'docs/index.html', '/zh/docs/': 'zh/docs/index.html',
+  '/docs/routing': 'docs/routing.html', '/zh/docs/routing': 'zh/docs/routing.html',
+  '/docs/verification': 'docs/verification.html', '/zh/docs/verification': 'zh/docs/verification.html',
+  '/docs/privacy': 'docs/privacy.html', '/zh/docs/privacy': 'zh/docs/privacy.html',
+  '/site.js': 'site.js', '/theme.js': 'theme.js', '/styles.css': 'styles.css',
+  '/robots.txt': 'robots.txt', '/sitemap.xml': 'sitemap.xml',
+  '/assets/serylane-mark.png': 'assets/serylane-mark.png', '/favicon.png': 'favicon.png',
+});
+export async function staticAssetManifest() {
+  return Object.fromEntries(await Promise.all(Object.entries(STATIC_ASSETS)
+    .map(async ([route, path]) => [route, sha256(await readFile(root + 'public/' + path))])));
+}
+export async function verifyNotFound(fetcher = request) {
+  for (const path of ['/__serylane_missing_page__', '/zh/__serylane_missing_page__']) {
+    const response = await fetcher(origin + path);
+    assert.equal(response.status, 404, 'Unknown routes must return a real 404, not an SEO soft-404');
+    assert.match(await response.text(), /<meta name="robots" content="noindex/, 'Error pages must not be indexed');
+  }
+}
 export async function verifyStatic(expected, fetcher = request) {
   const marker = await fetcher(`${origin}/build-info.json`);
   assert.equal(marker.status, 200, 'Live build marker missing');
@@ -110,10 +133,7 @@ export async function main() {
   const config = JSON.parse(await readFile(root + 'wrangler.jsonc', 'utf8'));
   assert.equal(config.name, 'serylane-website');
   assert.deepEqual(config.routes, [{ pattern: 'serylane.cmmuu.com', custom_domain: true }]);
-  const files = {};
-  for (const path of ['index.html', 'site.js', 'styles.css', 'docs/index.html', 'robots.txt', 'sitemap.xml']) {
-    files[path === 'index.html' ? '/' : path === 'docs/index.html' ? '/docs/' : '/' + path] = sha256(await readFile(root + 'public/' + path));
-  }
+  const files = await staticAssetManifest();
   const expected = { sourceCommit: commit, websiteTree: git('rev-parse', 'HEAD:website'), files };
   // Generated deployment artifact; ignored by Git, no credentials or user data.
   await writeFile(root + 'public/build-info.json', JSON.stringify(expected) + '\n');
@@ -134,6 +154,7 @@ export async function main() {
   run(['versions', 'deploy', `${version}@100`, '--yes', '--message', `Website source ${commit}`]);
   console.log(`Activated ${version}. Verifying public site before reporting success.`);
   await retryRead(() => verifyStatic(expected));
+  await retryRead(verifyNotFound);
   await retryRead(verifyDownloads);
   console.log(`Website synchronized and verified: ${origin}, source ${commit}, Worker ${version}`);
 }

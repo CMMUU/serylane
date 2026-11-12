@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0d14">
+<title>使用入门与平台支持 — Serylane</title>
+<meta name="description" content="了解 Serylane 的订阅导入、下载架构选择、当前代理与域名路由能力，以及 Windows 实验性 TUN、macOS 兼容包和 Linux 的支持边界。">
+<link rel="canonical" href="https://serylane.cmmuu.com/zh/docs/">
+<link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/">
+<link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/">
+<link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="使用入门与平台支持 — Serylane">
+<meta property="og:description" content="了解 Serylane 的订阅导入、下载架构选择、当前代理与域名路由能力，以及 Windows 实验性 TUN、macOS 兼容包和 Linux 的支持边界。">
+<meta property="og:url" content="https://serylane.cmmuu.com/zh/docs/">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:site_name" content="Serylane">
+<meta property="og:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="使用入门与平台支持 — Serylane">
+<meta name="twitter:description" content="了解 Serylane 的订阅导入、下载架构选择、当前代理与域名路由能力，以及 Windows 实验性 TUN、macOS 兼容包和 Linux 的支持边界。">
+<meta name="twitter:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<link rel="icon" href="/assets/serylane-mark.png" type="image/png">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/styles.css">
+<script src="/site.js" defer></script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://serylane.cmmuu.com/zh/docs/#webpage","name":"使用入门与平台支持 — Serylane","url":"https://serylane.cmmuu.com/zh/docs/","inLanguage":"zh-CN","isPartOf":{"@type":"WebSite","@id":"https://serylane.cmmuu.com/#website","name":"Serylane"}}</script>
+</head>
+<body class="document-page">
+<a class="skip-link" href="#main">跳到主要内容</a>
+<header class="site-header page-width">
+<a class="brand" href="/zh/"><img src="/assets/serylane-mark.png" alt="" width="32" height="32"><span>Serylane</span></a>
+<button class="menu-toggle" type="button" aria-label="打开导航" aria-controls="main-nav" aria-expanded="false" data-menu-open-label="打开导航" data-menu-close-label="关闭导航"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="sr-only">主要导航</span></button>
+<nav id="main-nav" class="main-nav" aria-label="主要导航">
+<a href="/zh/#capabilities">能力</a>
+<a href="/zh/docs/" aria-current="page">文档</a>
+<a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
+<a href="/zh/#download" class="button button-secondary nav-download">下载</a>
+</nav>
+<div class="header-controls">
+<div class="locale-switch" role="group" aria-label="语言"><a href="/docs/" lang="en" hreflang="en">EN</a><span lang="zh-CN" aria-current="page">中文</span></div>
+<div class="theme-buttons" role="group" aria-label="外观主题"><button class="theme-button" type="button" data-theme-value="dark" aria-label="深色模式" title="深色模式" aria-pressed="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13.2A9 9 0 0 1 10.8 3.1a9 9 0 1 0 10.1 10.1Z"/></svg></button><button class="theme-button" type="button" data-theme-value="light" aria-label="浅色模式" title="浅色模式" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="theme-button" type="button" data-theme-value="system" aria-label="跟随系统" title="跟随系统" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button></div>
+</div>
+</header>
+<main id="main" class="document-main page-width">
+<p class="breadcrumb"><a href="/zh/">Serylane</a> / <span aria-current="page">使用入门</span></p>
+<h1>先完成配置，再了解边界。</h1>
+<p class="lead">Serylane 是管理你已有订阅与配置的独立桌面客户端，不提供代理节点或订阅服务。以下先说明当前用法，再保留明确标注的历史记录。</p>
+<div class="notice"><p>官网语言切换只影响网页，不代表桌面客户端新增英文界面。源码版本与可下载安装包分开；当前可用安装包始终以下载中心核验通过的正式发行记录为准。</p></div>
+<nav class="document-nav" aria-label="本页目录">
+<a href="#start">快速开始</a>
+<a href="#current-capabilities">当前能力</a>
+<a href="#download-center">下载与更新</a>
+<a href="#tun-compatibility">平台支持</a>
+<a href="#windows-tun">Windows TUN</a>
+<a href="/zh/docs/routing">域名路由</a>
+<a href="/zh/docs/verification">校验与签名</a>
+<a href="/zh/docs/privacy">隐私边界</a>
+<a href="#history">历史记录</a>
+</nav>
+<section id="start">
+<h2>快速开始</h2><ol><li>前往<a href="/zh/#download">下载区域</a>，选择系统与处理器架构，仅从下载中心获取对应安装包；暂时不可用时请稍后重试。以下载中心正式发行记录为准；没有对应附件时，不要下载其他架构的包代替。</li><li>根据对应版本的发布说明核对功能和平台要求；源码中的功能不代表已经进入当前安装包。</li><li>打开客户端，通过「订阅 → ＋ 添加订阅」添加自己的 Clash Meta / Mihomo YAML 订阅；本地 YAML 请在「配置」页面导入。订阅地址通常包含访问凭据，不要公开分享。</li><li>已有当前配置时，添加订阅默认不选用；只有勾选「添加后选用」才会替换当前配置。添加或选用不会自动启动代理，需要连接时再点击「启动」。使用系统代理或 TUN 前，先关闭其他代理客户端的同类接管功能，避免相互覆盖。</li><li>AI 工具域名路由是可选功能，不是日常代理使用的前置条件。没有需要时，保持默认关闭即可。</li></ol>
+</section>
+<section id="current-capabilities"><h2>当前可用能力</h2><ul><li><strong>系统代理：</strong>供遵循系统代理设置的应用使用，不保证覆盖全部程序与连接协议。</li><li><strong>域名路由：</strong>为常见 AI 工具和自定义域名指定当前订阅中的出口策略组；仅处理已进入核心的连接，在规则模式下生效。默认关闭，保存草稿和确认应用分开；主代理停止时保留策略并暂停，重新启动后核对规则与入口。不解密 TLS，不新增 Codex 接入。</li><li><strong>AI 代理：</strong>允许 1–10 个合格节点，重新筛选后显示推荐顺位，健康的当前节点继续使用。倍率预算适用于性价比模式，单节点没有备用出口。旧策略在重新筛选前继续使用基础 Fallback。</li><li><strong>程序代理：</strong>当前入口隐藏且功能关闭，既有记录保留，不扫描或启动外部应用。文档中的旧版应用绑定说明用于历史查询。</li></ul><p>增强稳定策略与新增 Codex 接入当前也停用。节点切换只影响后续连接，不重放模型请求，不承诺中断数据流无缝续接。HTTP 401 等探测结果只能说明接口可达，不代表账号或模型会话已验证。Manual 仅提供本地代理端口，不证明系统流量已接管。</p></section>
+<section id="subscription-workflow">
+<h2>订阅、节点测试与诊断</h2>
+<p>订阅卡片分别展示实际选用状态、配置刷新与套餐用量采样。添加但未选用的订阅不会高亮为当前配置；使用本地 YAML 时不高亮远程订阅。编辑不改变选用状态，新地址需要手动刷新。</p>
+<p>手动订阅下载可跟随 Serylane、使用直连，或选择已经运行的本地 HTTP 代理；不自动启动核心、不改系统代理，选定代理失败也不静默直连。获取和校验有有限重试与等待上限；失败保留原配置。保存开始前可取消，进入保存事务后等待结果，不打断半份提交。</p>
+<p>节点测试只说明基础连通性、超时与失败，不等于带宽、AI 登录或模型请求验证。测试不自动启动核心或主动改选出口，自动组仍按原策略运行。诊断逐项显示检查，核心停止时跳过网络项，不切换代理模式、不改变出口或路由。</p>
+</section>
+<section id="subscription-usage">
+<h2>理解订阅用量</h2><p>订阅卡片展示服务商返回的上传、下载、总套餐流量与到期信息。这些数据是订阅响应中的采样，不是客户端实时统计的账单。</p><p>未提供的字段会明确标注。刷新失败时，客户端可能保留上一次成功采样；请同时留意更新时间与错误说明。缺失数据不等于零用量、无限套餐或永久有效。</p>
+</section>
+<section id="download-center">
+<h2>统一下载与更新入口</h2><p>官网安装包和当前源码中的应用自动更新仅使用下载中心。官网每次点击重新核对最新正式版、系统与架构；下载中心不可用或对应文件未核验通过时提示失败与重试，不切换下载源，也不使用旧版本。</p><p>打开<a href="/zh/#download">下载区域</a>选择系统与架构。更新保留项目签名、大小和 SHA-256 校验。源码已修改不代表已安装的旧客户端行为改变；旧版首次升级仍使用自身逻辑，可通过官网下载同架构完整包。以下载中心实际发布版本为准。</p>
+</section>
+<section id="download-architectures">
+<h2>按系统与架构选择</h2>
+<ul>
+<li>Windows：<a href="/download/windows-x64">x64</a> · <a href="/download/windows-arm64">ARM64</a></li>
+<li>macOS：<a href="/download/macos-x64">Intel 芯片（x64）</a> · <a href="/download/macos-arm64">Apple 芯片（M 系列，ARM64）</a></li>
+<li>Linux：<a href="/download/linux-x64">x64</a> · <a href="/download/linux-arm64">ARM64</a></li>
+</ul>
+<p>六个入口不等于当前发行版的六种安装包都已存在。缺少或无法核验对应附件时，请稍后重试，不换架构或旧版本。</p>
+</section>
+<section id="mac-chip">
+<h2>选择 Mac 芯片版本</h2><p>macOS 安装包分为 <strong>Intel 芯片（x64）</strong> 与 <strong>Apple 芯片（M 系列，ARM64）</strong>。打开苹果菜单 →「关于本机」：显示 Intel 处理器时选 Intel 版；显示 Apple M 系列芯片时选 Apple 芯片版。不要仅凭 macOS 版本或机型年份猜测。</p><p><a href="/download/macos-x64">下载最新 Intel 芯片版</a> · <a href="/download/macos-arm64">下载最新 Apple 芯片（M 系列）版</a>。每次点击都会重新核对最新正式版；对应包暂时不可用时提示重试，不以另一种芯片的包代替。</p>
+</section>
+<section id="tun-compatibility">
+<h2>TUN 平台支持与当前边界</h2>
+<div class="notice"><p><strong>TUN 不能被描述为已经完成三平台日常网络接管验收。</strong>辅助服务源码或隔离自动化不代表真实路由、DNS、休眠唤醒和长期连接已验收。</p></div>
+<ul>
+<li><strong>Windows：</strong>仍为管理员会话下的实验性功能；真实路由、DNS、关机与恢复需独立验收。</li>
+<li><strong>macOS：</strong>具备辅助服务实现，但当前兼容包不含所需 Developer ID 身份与 Apple 公证，TUN 未就绪。重复授权或下载同一兼容包不会补齐缺失身份。</li>
+<li><strong>Linux：</strong>尚未实现 TUN 网络接管，相关入口不可用。本地代理、系统代理、程序代理与 TUN 是独立能力。</li>
+</ul>
+<p>先核对实际安装包的发布说明。<a href="/zh/docs/verification#macos-tun">查看 macOS 签名与辅助服务边界</a>。下方 <a href="#history-tun-v0-7-17">v0.7.17 启动流程</a>与 <a href="#tun-readiness">v0.7.35 分阶段检查</a>保留为历史记录，不是日常 TUN 使用验收结论。</p>
+</section>
+<section id="windows-tun">
+<h2>Windows TUN：实验性功能</h2><div class="notice"><p><strong>目前不将 Windows TUN 描述为已完成日常网络接管验收。</strong>管理员会话与内核进程生命周期已实现，但真实路由、DNS、停止和异常退出后的网络恢复仍需独立验收。</p></div><p>需要试用时，先保存工作并阅读当前版本发布说明。Windows 使用管理员会话：从托盘退出客户端后，自行选择「以管理员身份运行」。普通系统代理不要求管理员会话。</p><p>停止或退出时，客户端会按自身状态尝试恢复网络设置；关闭主窗口通常只是隐藏到托盘。系统代理恢复会核对控制权，避免覆盖后来由其他客户端设置的代理。不要同时开启多个客户端的系统代理或 TUN。</p><p>如果恢复失败，不要反复切换多个接管工具。先记录当前错误与状态，停止相关接管，再核对系统代理和 DNS 设置。遇到不明确的网络状态时，保留日志并通过<a href="https://github.com/CMMUU/serylane/issues" target="_blank" rel="noopener noreferrer">项目问题追踪</a>反馈，分享前删除订阅链接、令牌和个人信息。</p>
+</section>
+<section id="version-source"><h2>版本与开源说明</h2><p>完整功能、平台限制和升级注意事项，以对应版本的<a href="https://github.com/CMMUU/serylane/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">发布说明</a>为准。应用源码采用 GPL-3.0-only，第三方依赖沿用各自许可证。</p><p>这是独立项目，非 Mihomo、Clash 或 OpenAI 官方产品。Serylane 不承诺特定服务可达、节点稳定或已断开的数据流能够无缝续接。</p><p>GitHub 仅用于源码、变更记录与问题反馈，不是安装包备用源。历史标签、签名资产和真实旧文件名不因展示品牌变化而改写。</p></section>
+<section id="history">
+<h2>历史版本记录</h2>
+<div class="notice"><p>以下保留原版本记录，说明当时的源码、安装包和验收边界，不代表当前下载中心已经发布对应能力。程序代理、旧增强稳定策略和新增 Codex 接入当前仍停用；旧应用绑定与旧接入操作不适用于当前版本。版本号、历史限制与原有锚点保持不变。</p></div>
+<section id="subscription-cards">
+<h3>订阅列表与质量验收</h3><p>v0.7.39 统一订阅摘要中的选用状态、套餐用量、到期和配置更新。刷新异常时，摘要显示当前状态，展开可查看详细原因与用量采样。</p><p>十项代理质量目标和竞品对照可用隔离样例复跑。真实网络成绩按试验数据记录。<a href="https://github.com/CMMUU/serylane/blob/main/docs/%E4%BB%A3%E7%90%86%E8%B4%A8%E9%87%8F%E9%AA%8C%E6%94%B6.md" target="_blank" rel="noopener noreferrer">查看代理质量验收</a></p>
+</section>
+<section id="openai-ranking">
+<h3>v0.7.38：OpenAI 节点推荐</h3><p>在「AI 代理 → OpenAI 自动灾备」重新筛选节点，按可达性、延迟和流量倍率查看推荐顺位。普通系统代理下真实任务完成状态显示「待验证」。订阅的推荐顺位供手动选用。</p><p>健康的当前节点继续使用，确认故障后按当前订阅内的排名为后续新连接选点。旧筛选结果在重新筛选前继续使用基础 Fallback。实际可用版本以<a href="/zh/#download">下载区</a>为准。<a href="/zh/docs/routing#stability">查看 AI 推荐与验证说明</a></p>
+</section>
+<section id="progressive-diagnostics">
+<h3>v0.7.37：诊断逐项呈现</h3><p>进入「诊断」后，检查随实际执行过程逐条出现：当前项显示检测中，完成后立即展示结果，再进入下一项。顶部提示当前步骤和完成数量，已有结果保留。</p><p>单项失败会说明原因并继续后续独立检查；核心未运行时，网络项明确跳过。重新诊断替换上一轮结果，离开页面或代理/配置变化后不采用迟到结果。诊断不启动核心、不切换系统代理/TUN、不选择出口或更改路由。</p><p>检查只说明对应探测的结果，不代表模型请求或长连接已验证。此行为随 v0.7.37 安装包交付，实际可下载版本以<a href="/zh/#download">下载区</a>核验结果为准。</p>
+</section>
+<section id="proxy-routing-state">
+<h3>v0.7.36：主代理与路由状态一致</h3><p>普通关闭系统代理或 TUN 会使用与「停止」相同的操作，取消恢复并保留上次代理方式；停止成功后显示已关闭，可以再次启动。关闭失败或状态读取失败分别提示未完成和待核对，已有 Manual 本地端口设置保留。</p><p>路由策略的开关与当前状态分开：主代理停止时，已启用路由保留名单和出口，显示「已启用 · 暂停，等待代理启动」；再次启动后核对规则和实际系统代理／TUN 入口，才显示对应就绪状态。Manual 只说明本地代理入口，不能证明系统流量已接管。单独保存、开启或关闭路由不会启动主代理、改变恢复意图或切换接管模式。</p><p>启停、切换订阅或模式时旧核验失效，操作完成后重新读取；读取失败不沿用旧的成功高亮。路由出口缺失、非规则模式和规则不一致分别说明原因。系统全局流量是网卡收发统计，关闭代理后仍可能显示流量。真实主机、开机恢复和 TUN／长流仍需独立验收；安装包以<a href="/zh/#download">下载中心正式发行记录</a>为准，详细关系见<a href="/zh/docs/routing#proxy-routing-state">路由说明</a>。</p>
+</section>
+<section id="tun-readiness">
+<h3>v0.7.35：TUN DNS 与分阶段验收</h3><p>TUN 运行配置会启用并校验内置 DNS，保留有效的订阅解析设置和原始订阅；不因开启 DNS 增加局域网监听。Windows 分别检查接口、实际路由与 DNS 响应，再检查外网并复核本地状态，失败显示具体阶段与恢复结果。</p><p>外网探测最多 3 轮，共用 30 秒预算。短暂 TLS 握手中断可有限重试，证书错误不放宽；已成功或明确拒绝的目标不反复请求，不重放模型请求。OpenAI 401 只表示接口可达，不代表模型会话已验证。持续失败仍按原流程回退。</p><p>Windows TUN 仍为管理员会话下的实验性功能，macOS 签名限制与 Linux 暂不支持的边界不变。本次隔离测试不代表真实主机网络、IPv6 防泄漏、休眠恢复或 ChatGPT/Codex 长流已经验收；安装包以<a href="/zh/#download">下载中心正式发行记录</a>为准。</p>
+</section>
+<section id="windows-session-exit">
+<h3>v0.7.33：Windows 退出与状态探测</h3><p>状态刷新和停止操作不再为了获取版本启动 Mihomo。显式版本检查使用缓存并合并重复请求，核心文件更新后重新核对，减少空闲时的短进程创建。</p><p>Windows 准备关机或注销时暂停新核心任务；取消后恢复操作，确认退出后清理现有资源。安装更新单独管理暂停状态，失败不会错误解除系统关机状态。正常关闭到托盘不受影响。</p><p>Windows 清理等待设有 4 秒预算，并保留代理恢复记录；macOS 与 Linux 沿用各自清理语义。本轮不改变订阅、路由规则或 TUN 支持边界。隔离窗口消息测试与真实关机复测分别记录，实际安装包以<a href="/zh/#download">正式发行记录</a>为准。</p>
+</section>
+<section id="interaction-response">
+<h3>v0.7.32：菜单与按钮响应优化</h3><p>快速切页立即展示目标页面，重复点击当前菜单不重复加载；导航、轮询和手动刷新合并同类读取，旧结果不覆盖新页面。刷新按钮显示执行状态，失败保留当前内容并支持重试。</p><p>系统代理状态、连接反馈和配置摘要读取移到后台，系统命令设定期限。节点、订阅、连接及概览卡片更新时保留控件身份、焦点与展开状态；长节点、连接和生效规则列表每次显示 200 项，可继续加载，搜索覆盖完整数据。</p><p>窗口不可见时减少界面轮询，不停止代理或后台健康任务；实时代理所有权校验、写入互斥、下载路径和 TUN 支持边界不变。本机测试与模拟平台界面测试分别记录；实际安装包以<a href="/zh/#download">下载中心正式发行记录</a>为准。</p>
+</section>
+<section id="ai-health">
+<h3>v0.7.31：单节点、健康检查与订阅恢复</h3><p>AI 代理至少 1 个合格节点即可使用，最多保留 10 个。单节点无备用出口，2 个及以上可自动故障切换；地区、预算及质量条件保持。</p><p>立即健康检查显示进度、支持取消，保留完成时间与各节点的可达、超时、失败或暂未测得结果。切换订阅后隔离旧结果。基础连通性不等于账号登录或模型请求已验证；检测不主动改选出口，自动组仍按原策略运行。</p><p>订阅配置更新与后台用量查询分别展示，互不清除失败记录。请求保留有限重试、下载路径与阶段说明，连接最多 15 秒、单请求 30 秒、正文无进度 15 秒、整个获取过程 60 秒；原生配置校验独立限制。失败保留原配置；选定代理路径失败不静默改走直连，HTTPS 校验保持。</p><p>三平台共用修复，TUN 支持边界不变；实际安装包以<a href="/zh/#download">下载中心正式发行记录</a>为准。</p>
+</section>
+<section id="history-v0-7-27">
+<h3>v0.7.27：路由双入口与紧凑配置</h3><p>顶部全局「路由」和页内「开启／关闭路由」共享状态与操作锁。页面保留刷新状态，工具域名按需展开；草稿保存和确认应用仍分开，不切换系统代理／TUN，不新增 Codex 接入。下载版本以正式安装包为准。</p>
+</section>
+<section id="history-v0-7-25">
+<h3>v0.7.25：路由与交互更新</h3><p>路由使用常见 AI 工具预置与自定义域名，统一校验、去重和应用，不新增 Codex 接入。程序代理与增强稳定灾备暂时隐藏并关闭，保留基础 Fallback 与预算限制。订阅卡片支持右键或更多菜单编辑信息；保存不改变选用状态，新地址手动刷新。节点详情关闭后丢弃迟到结果，按钮选中悬浮保持清晰。</p><p>下面带版本号的章节记录旧版能力，涉及程序代理、增强稳定策略和旧 Codex 接入的操作不适用于当前版本；其他平台限制不变。</p>
+</section>
+<section id="update-routing">
+<h3>v0.7.24：下载、安装与路由名单</h3><p>官网下载时重新核对包身份，显示本次实际来源。客户端同时显示下载中心、网络路径、重试和安装阶段。网页只确认交给浏览器，不把它写成下载完成。</p><p>安装先检查空间、目录权限和服务记录，再停止代理。macOS 增加旧应用备份及失败回退；可选 TUN 服务待恢复不再成为后续更新锁。旧客户端若已被旧记录阻断，首次使用完整安装包替换原位置应用；新版保留原服务意图，不需要删除用户配置。Developer ID、公证与 TUN 支持边界不变。</p><p>系统代理兼容性检查仅 Windows 展示，其他平台代理能力不变。路由页可编辑 HTTPS URL 名单，不接管系统流量、不修改其他代理模式，也不自动接入 Codex。实际可下载版本以正式发行结果为准。</p>
+</section>
+<section id="node-testing">
+<h3>v0.7.23：一键测试、双节点与真实选用高亮</h3><p>自选节点页点击“测试全部”，检查当前配置策略组中的实际节点，包含已加载提供器；嵌套组防环去重，排除 DIRECT、REJECT 等伪节点。显示可用、超时、失败、暂未测得与未测试，可停止和重试。最多 4 个并发、单节点 5 秒探测、整轮 15 分钟、最多 1,000 个实际节点；超限提示拆分，不静默截断。</p><p>切换配置、模式或核心重启时旧结果失效。测试不自动启动核心，不主动改选出口；自动组仍按原策略运行。基础连通性不等于带宽、AI 登录或模型验证。</p><p>此历史版本的 AI 代理支持 2–10 个合格节点；当前版本已调整为 1–10 个，单节点没有备用出口。展示提取、地区、预算、探测和入选数量。保留硬性资格与质量要求，相对排名不再淘汰唯一合格备份。AI 筛选仍要求显式 proxies，只有 proxy-providers 的配置可在自选页使用。</p><p>订阅蓝色高亮只跟随实际选用项；添加但未选用、导入定位和键盘焦点不改变高亮。活动本地 YAML 时不高亮远程订阅。本轮不调整 TUN 或 Codex 接入；实际安装包以<a href="/zh/#download">下载中心发行结果</a>为准。</p>
+</section>
+<section id="compact-menu-bar">
+<h3>v0.7.21：更紧凑的 macOS 菜单栏</h3><p>双行网速状态项从 78pt 收紧到 64pt，减少约 18% 的横向占位。仅裁去 S 图标多余的透明画布，保持原始图形比例、9.5pt 数字和两行显示；速率变化时宽度保持稳定，不挤动旁边的菜单栏图标。</p><p>原生、字体位图和像素备用显示共用紧凑布局与同源 S。保留系统亮暗外观、菜单点击及悬停完整单位，不增加布局设置，不修改订阅、代理、TUN 或 Codex 路由。macOS 系统绘制的外层留白仍随系统外观变化；实际安装包以<a href="/zh/#download">下载区</a>核对的正式发行版本为准。</p>
+</section>
+<section id="subscription-pipeline">
+<h3>v0.7.20：订阅进度、取消与稳定性</h3><p>「订阅下载路径」仅影响本页手动添加与更新：默认跟随 Serylane，核心未运行时明确直连；也可选择直连或已运行的本地 HTTP 代理端口。不自动启动核心，不改系统代理，不扫描其他软件；代理失败不静默改走直连。后台用量检查仍跟随核心状态。</p><p>连接、完整下载、内容检查、等待配置操作、Mihomo 校验与保存分别显示。正文中断、限流和选定临时服务错误有限重试，遵循总预算与 Retry-After；格式错误与规则资源缺失分别说明。</p><p>保存开始前可取消；取消校验会结束子进程并清理临时文件。进入保存事务后等待结果，不中断半份提交。添加失败保留草稿和原有配置，成功后的列表读取失败不会被误报为添加失败。日志仅记录任务编号及固定阶段/路径/计数，不记录订阅链接与原始正文。继续保留紧凑卡片。</p><p>本轮不包含 TUN 修复或 Codex 路由接入；安装包以正式发行记录为准。macOS 兼容包的签名和 TUN 边界见对应发布说明。</p>
+</section>
+<section id="subscription-candidate">
+<h3>v0.7.19：订阅与自选节点</h3>
+<div class="notice"><p>历史记录：本节提到的旧 Codex 接入不是当前新增能力；当前仅保留按所有权检查的旧接入恢复，不按旧记录新增接入。</p></div><p>安装包可用性以下载中心的正式发行记录为准。本轮精简订阅卡片：名称、用量、到期和更新时间集中展示，更多操作按需展开，刷新失败仍直接显示；配置档案中的订阅同步更新，本地 YAML 独立保留。</p><p>核心已运行时，订阅下载和用量检查复用 Serylane 本地代理端口，不为下载自动启动核心。瞬时失败有限重试，HTTPS 校验与总等待上限保持；不同错误提供对应操作说明。</p><p>「自选节点」按订阅原策略组选点，支持搜索、延迟排序与测速，以及规则／全局／直连模式。与「AI 代理」二选一，自选模式保留订阅和用户分流规则；切换需确认，失败保留原配置。AI 专用分流在规则模式参与；Codex 路由接入独立，不受互斥切换影响。选点不自动开启系统代理或 TUN。</p><p>支持删除当前和最后一个订阅。当前配置删除前确认停止代理及恢复本应用接管的系统设置，不自动选用其他订阅。没有配置时仍可添加订阅或导入 YAML，本地原始文件不受影响。macOS 本轮为兼容包，TUN 所需 Developer ID 与公证另行推进。</p>
+</section>
+<section id="history-tun-v0-7-17">
+<h3>TUN 启动与平台兼容</h3><p><strong>当前边界：</strong>Windows 仍为管理员会话下的实验性功能；macOS 具备辅助服务实现，但当前兼容包不含所需 Developer ID 与 Apple 公证，TUN 未就绪；Linux 尚未实现 TUN 接管。源码中的辅助服务不能视为三端稳定性验收通过。下面记录 v0.7.17 引入的检查流程。</p><p>修复“预检完成却没有启动”的中断：权限和配置检查通过后，继续执行模式切换、启动和验收。预检通过不等于已接管网络；失败会保留具体阶段，切换后失败会尝试恢复原模式，并说明恢复结果。</p><p><strong>macOS：</strong>首次使用需安装并在系统设置批准辅助服务。本版辅助服务协议更新为 v2；旧服务显示“需要更新”时，先停止代理，再在设置中主动更新辅助服务，并按提示核对系统授权。正在检查不表示授权丢失，短暂连接异常不会自动重新安装。<strong>Windows：</strong>继续使用管理员会话，不调用 macOS Helper，TUN 仍为实验性。<strong>Linux：</strong>目前未实现 TUN 网络接管，相关入口置灰；应用快选、程序代理与 TUN 是独立能力。</p><p>应用日志区分预检、配置校验及启动，不记录订阅正文或凭据。跨平台自动化不等于真实路由、DNS、休眠唤醒和长期网络验收。本节描述 v0.7.17 源码行为，安装包以<a href="/zh/#download">实际发布版本</a>为准。</p>
+</section>
+<section id="app-binding">
+<h3>v0.7.16：三平台应用快选与更新跟随</h3><div class="notice"><p>历史记录：当前程序代理入口隐藏且功能关闭，不扫描或启动外部应用。以下为 v0.7.16 当时的设计与操作说明。</p></div><p>「程序代理」从已安装应用清单搜索选择，保留普通文件入口。Windows 以 MSIX / Store 包系列和应用 ID 绑定；macOS 选择完整 .app，以 Bundle ID、原选位置和可用签名身份绑定；Linux 读取 XDG .desktop，按 Desktop File ID 和来源关联。正常更新后重新解析，不凭最高版本目录替换应用，也不负责下载或安装更新。</p><p>缓存清单立即可搜索，后台单次刷新不锁编辑、不丢草稿与焦点；普通打开复用 30 秒缓存，「重新扫描」主动强刷。失败保留旧清单并显示状态；点击启动仍重新核对身份和入口，展示缓存不作为启动依据。</p><p>macOS 使用 NSWorkspace 原生启动新实例并传入代理环境和参数；已有实例请先自行退出。GUI 使用系统原生工作目录，旧自定义目录保留，需明确选择默认目录后保存；未签名或 ad-hoc 应用移动后需重新关联。Linux 普通入口按 Exec 独立参数和 Path 启动，支持手选可执行文件或 AppImage；D-Bus、Terminal、Flatpak/Snap 及包装启动器显示「启动方式待适配」。Windows 普通 .exe 及现有代理参数保持兼容。</p><p>清单升级 v3 前保留旧 v1/v2 原始备份。未安装、读取失败、需要重新关联、已有实例及启动结果待确认分别说明下一步。保存不启动应用，不切换系统代理／TUN或改全局环境。启动成功不等于所有流量已走代理，真实应用登录和长会话另行验证。实际发行版本以<a href="/zh/#download">下载区</a>为准；<a href="https://github.com/CMMUU/serylane/blob/main/docs/%E5%BA%94%E7%94%A8%E7%BB%91%E5%AE%9A%E4%B8%8E%E8%87%AA%E5%8A%A8%E8%B7%9F%E9%9A%8F%E6%9B%B4%E6%96%B0.md" target="_blank" rel="noopener noreferrer">详细说明与迁移</a>。</p>
+</section>
+<section id="fast-proxy-start">
+<h3>v0.7.11：更快开启，更清楚地了解状态</h3><p>系统代理在本地接管完成后即可使用，网络检查随后在后台执行。界面分别显示代理已开启、正在检查和部分检测未通过；OpenAI 接口可达不等于模型会话已验证。</p><p>已运行的本地端口模式与系统代理模式之间切换时，不主动重启核心。配置、端口、系统设置读回及失败恢复仍保留；TUN 继续走完整权限流程。错误提示提供下一步操作与技术详情，不再只有一长串错误码。</p><p>以上功能随 v0.7.11 安装包交付，下载区查询实际公开版本。真实网络、登录和重启另行验收。</p>
+</section>
+<section id="quiet-startup">
+<h3>v0.7.10：静默启动与自主选点</h3><p>修正旧设置没有静默字段时仍弹出主页的问题。新设置和缺失该字段的旧设置默认登录后仅在托盘运行，不需要先保存一次设置；明确选择“打开窗口”的偏好保持不变。重复自启动不唤起主页，主动点击托盘或打开应用才显示窗口。需开启登录启动；代理仍按已保存的启停状态与原模式恢复。</p><p>v0.7.10 首次支持普通节点和 OpenAI 灾备候选手动选择；v0.7.19 起分别位于「自选节点」和「AI 代理」，两种方式互斥。概览显示实际选用节点与脱敏详情。手动固定 OpenAI 节点后自动切换暂停，可明确恢复自动；选点不主动关闭既有连接。</p><p>“成本与性价比”支持按服务商信息填写流量倍率、设置上限，并在质量接近时优选低倍率节点。未知倍率默认不参与；无符合预算的健康节点时拒绝后续新请求。手动固定仍优先，未知或超预算选择需要确认。省流筛选跳过大流量带宽测试，但基础探测仍耗流量；实际计费以服务商为准。</p><p>以上能力随 v0.7.10 安装包交付，请先在下载区核对实际发布版本。真实登录/重启及模型流稳定性不以合成界面或单元测试代替验收。</p>
+</section>
+<section id="history-v0-7-9">
+<h3>v0.7.9：更清晰的 macOS 双行网速</h3><p>保留应用同源 S 图标，右侧上下行数字改用原生双行文字。等宽数字、独立的数值与单位列、固定宽度，让速率变化时更容易扫读，旁边的菜单栏图标不再随位数伸缩。</p><p>数字使用 9.5pt Medium 字号，箭头与单位较小；根据实际按钮高度完整排布两行，跟随系统亮暗外观。菜单栏紧凑显示 K/M/G 等单位，悬停查看 KiB/s、MiB/s 等完整速率。关闭流量显示后恢复纯 S 图标，重新开启恢复双行。</p><p>此改进仅调整 macOS 显示，不修改启动模式、代理或路由设置。对应功能随 v0.7.9 安装包交付，当前可用版本仍以下载区实时核对结果为准。</p>
+</section>
+<section id="history-v0-7-8">
+<h3>v0.7.8：启动模式与状态保持</h3><p>设置提供三种明确的启动模式：不随系统启动、登录后后台恢复上次状态、登录后打开窗口并恢复。上次开启则恢复原模式和配置，上次停止则保持停止；关闭主窗口只是隐藏，托盘退出保留原启停记录。</p><p>系统登录项核对区分登记、禁用和未知状态。临时网络故障采用退避等待，用户停止可取消等待或清除已暂停恢复的开启记录；权限和代理所有权冲突不自动接管。</p><p>macOS 双行速率托盘的正常字体和备用路径均从应用同一份 S 图标生成，不再显示旧 M；菜单栏图形采用系统模板着色。对应功能随 v0.7.8 安装包交付，当前可用版本以下载区实时核对结果为准。</p>
+</section>
+<section id="history-startup-0-7-7">
+<h3>0.7.7 起：启动恢复与应用日志</h3><p>主「启动」按钮使用当前保存的网络模式，不再强制切换为系统代理。「登录时启动」「开机静默启动」和「恢复上次运行状态」分别设置；静默仅影响登录自动启动，手动打开仍显示主窗口。恢复沿用保存的配置和代理方式，遇到权限不足或其他代理占用时暂停，不会自动提权或强行接管。</p><p>旧版没有保存运行意图时，首次升级保持停止。在新版成功启动一次后，后续登录才有明确的恢复依据。在任务管理器中禁用的自启动项不会仅因迁移或调整静默选项而重新启用。</p><p>「日志」中的应用日志默认保留 3 天，可在设置改为 1–90 天。采用有容量上限的紧凑存储并合并重复事件，查看时格式化展示；达到容量上限时可能提前移除最旧记录。日志不记录对话正文、订阅凭据或请求头。</p>
+</section></section>
+<div class="document-links"><div><h2><a href="/zh/docs/routing">配置可选域名路由</a></h2><p>勾选工具、补充域名、明确出口；保存草稿与确认应用分开。</p></div><div><h2><a href="/zh/docs/verification">核对下载与更新</a></h2><p>检查文件身份，区分项目更新签名和系统代码签名。</p></div></div>
+</main>
+<footer class="document-footer"><div class="page-width"><a href="/zh/">Serylane</a> · <a href="/zh/docs/">文档</a> · <a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a> · <a href="https://github.com/CMMUU/serylane/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only</a></div></footer>
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0d14">
+<title>下载校验与更新签名 — Serylane</title>
+<meta name="description" content="仅从下载中心获取 Serylane，核对同版本同架构文件的 SHA-256，区分项目更新签名与系统代码签名，并了解更新失败的处理边界。">
+<link rel="canonical" href="https://serylane.cmmuu.com/zh/docs/verification">
+<link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/verification">
+<link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/verification">
+<link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/verification">
+<meta property="og:type" content="website">
+<meta property="og:title" content="下载校验与更新签名 — Serylane">
+<meta property="og:description" content="仅从下载中心获取 Serylane，核对同版本同架构文件的 SHA-256，区分项目更新签名与系统代码签名，并了解更新失败的处理边界。">
+<meta property="og:url" content="https://serylane.cmmuu.com/zh/docs/verification">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:site_name" content="Serylane">
+<meta property="og:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="下载校验与更新签名 — Serylane">
+<meta name="twitter:description" content="仅从下载中心获取 Serylane，核对同版本同架构文件的 SHA-256，区分项目更新签名与系统代码签名，并了解更新失败的处理边界。">
+<meta name="twitter:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<link rel="icon" href="/assets/serylane-mark.png" type="image/png">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/styles.css">
+<script src="/site.js" defer></script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://serylane.cmmuu.com/zh/docs/verification#webpage","name":"下载校验与更新签名 — Serylane","url":"https://serylane.cmmuu.com/zh/docs/verification","inLanguage":"zh-CN","isPartOf":{"@type":"WebSite","@id":"https://serylane.cmmuu.com/#website","name":"Serylane"}}</script>
+</head>
+<body class="document-page">
+<a class="skip-link" href="#main">跳到主要内容</a>
+<header class="site-header page-width">
+<a class="brand" href="/zh/"><img src="/assets/serylane-mark.png" alt="" width="32" height="32"><span>Serylane</span></a>
+<button class="menu-toggle" type="button" aria-label="打开导航" aria-controls="main-nav" aria-expanded="false" data-menu-open-label="打开导航" data-menu-close-label="关闭导航"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="sr-only">主要导航</span></button>
+<nav id="main-nav" class="main-nav" aria-label="主要导航">
+<a href="/zh/#capabilities">能力</a>
+<a href="/zh/docs/">文档</a>
+<a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
+<a href="/zh/#download" class="button button-secondary nav-download">下载</a>
+</nav>
+<div class="header-controls">
+<div class="locale-switch" role="group" aria-label="语言"><a href="/docs/verification" lang="en" hreflang="en">EN</a><span lang="zh-CN" aria-current="page">中文</span></div>
+<div class="theme-buttons" role="group" aria-label="外观主题"><button class="theme-button" type="button" data-theme-value="dark" aria-label="深色模式" title="深色模式" aria-pressed="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13.2A9 9 0 0 1 10.8 3.1a9 9 0 1 0 10.1 10.1Z"/></svg></button><button class="theme-button" type="button" data-theme-value="light" aria-label="浅色模式" title="浅色模式" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="theme-button" type="button" data-theme-value="system" aria-label="跟随系统" title="跟随系统" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button></div>
+</div>
+</header>
+<main id="main" class="document-main page-width">
+<p class="breadcrumb"><a href="/zh/">Serylane</a> / <a href="/zh/docs/">文档</a> / <span aria-current="page">校验与签名</span></p>
+<h1>先核对文件，再区分签名。</h1>
+<p class="lead">安装前核对下载中心、版本、操作系统和处理器架构。SHA-256 检查文件一致性，项目更新签名检查更新包是否由对应密钥签发；两者都不能代替系统代码签名。</p>
+<nav class="document-nav" aria-label="本页目录">
+<a href="#download-origin">下载来源</a>
+<a href="#checksums">SHA-256</a>
+<a href="#update-signatures">更新签名</a>
+<a href="#system-signing">系统签名</a>
+<a href="#macos-tun">macOS TUN</a>
+<a href="#update-downloads">下载中断</a>
+<a href="#update-installation">安装失败</a>
+<a href="#verification-history">历史修复记录</a>
+</nav>
+<section id="download-origin">
+<h2>从下载中心开始</h2>
+<p>从<a href="/zh/#download">官网下载区域</a>选择对应系统与架构，安装包仅由下载中心提供。原始文件名、签名与哈希保持不变。下载中心暂时不可用、缺少对应包或核验失败时，请稍后重试；不要用其他架构的包代替。以下载中心实际正式发行记录为准，不把源码标签当成已经发布的安装包。</p><p>不要仅凭文件名相似判断来源可信，也不要把其他站点重新打包的文件视为项目发布。</p>
+<p>Mac 请选择 <a href="/download/macos-x64">Intel 芯片（x64）</a> 或 <a href="/download/macos-arm64">Apple 芯片（M 系列，ARM64）</a>。<a href="/zh/docs/#download-center">查看全部六个系统／架构入口</a>。浏览器接手链接不等于文件已经下载完成，GitHub/Gitee 不是安装包备用渠道。</p>
+</section>
+<section id="checksums">
+<h2>核对 SHA-256</h2>
+<ol><li>从下载中心同一版本的正式发行记录获取安装包和项目提供的 <code>SHA256SUMS.txt</code>。</li><li>计算安装包的 SHA-256，在校验文件中找到<strong>完全相同的文件名</strong>，逐字核对摘要。</li><li>摘要不一致时不要安装，重新从可信的下载中心正式发行记录获取并检查。SHA-256 本身不能证明发布来源可信，校验文件也必须来自可信渠道。</li></ol><h3>Windows PowerShell</h3><pre><code>Get-FileHash -LiteralPath 'C:\下载目录\实际安装包文件名.exe' -Algorithm SHA256</code></pre><h3>macOS / Linux</h3><pre><code># macOS
+shasum -a 256 '/下载目录/实际安装包文件名.dmg'
+
+# Linux
+sha256sum '/下载目录/实际安装包文件名.AppImage'</code></pre><p>上面的路径和文件名是示例，请替换为你实际下载的文件。命令只读取文件，不安装或运行安装包。</p>
+</section>
+<section id="update-signatures">
+<h2>应用内更新签名</h2>
+<p>客户端的更新流程会校验更新包的项目签名；签名或校验失败时，应停止安装并保留错误信息。手动查看更新附件时，以下载中心同一版本实际提供的签名文件和更新清单为准。</p><p>需要独立复核时，可查看仓库内的<a href="https://github.com/CMMUU/serylane/blob/main/scripts/verify-update-signature.mjs" target="_blank" rel="noopener noreferrer">更新签名验证脚本</a>及对应标签的配置公钥。务必使用与发行版一致的脚本和公钥，不接受陌生来源替换的密钥。</p><p>GitHub 验证脚本链接仅用于源码复核，不是安装包下载源。</p>
+</section>
+<section id="system-signing">
+<h2>项目签名不等于系统信任</h2>
+<div class="notice"><p><strong>项目更新签名不是 Windows Authenticode、Apple Developer ID 或 Apple 公证。</strong>没有发布说明中的明确证据时，不应假定系统代码签名或公证已经完成，也不应自动绕过操作系统安全提示。</p></div>
+<p>文件完整性、项目更新签名身份、系统代码签名与 TUN 授权分别核对。通过项目更新校验不等于 macOS TUN 辅助服务已满足系统要求。</p>
+</section>
+<section id="macos-tun">
+<h2>macOS 兼容包的 TUN 仍未就绪</h2>
+<p>当前兼容包保留项目更新签名与完整性校验，但没有 TUN 所需 Developer ID 身份与 Apple 公证。重复授权辅助服务，或重复下载同一临时签名包，都不会补齐缺失身份。</p>
+<p>服务登记与安装包签名是不同问题。「需要重新关联」针对服务登记或启动状态，不会修复不满足要求的包；「需要更新安装包」要求实际发布并符合条件的完整包，不应靠重复授权解决。适用的辅助服务修复前先停止代理，并按对应发行版说明操作。</p>
+<p>正式签名、公证与实机 TUN 验收仍需分别推进。<a href="/zh/docs/#tun-compatibility">查看三平台支持边界</a>；v0.7.18、v0.7.19 原说明保留在<a href="#verification-history">历史记录</a>中。</p>
+</section>
+<section id="update-downloads">
+<h2>下载更新暂时中断时如何处理</h2>
+<p>当前源码的更新下载保留有限重试、无进度超时和同一下载中心文件的有限恢复。界面分别显示下载中心、实际网络路径及当前尝试；等待重试时仍可取消，当前代理保持运行。只有签名、大小与 SHA-256 全部通过后才显示安装按钮。</p><p>当前源码仅使用下载中心，失败后可重试，不切换到其他下载源。重试保留选定版本、系统架构与内容身份，不能因 latest 更新而悄悄换版。网络、证书、文件校验与安装失败分别说明；历史记录不代表本次结果。旧版首次升级仍使用自身更新逻辑；遇到失败可从官网下载区域获取同架构完整包并保留配置目录。以实际发行版本为准。</p>
+</section>
+<section id="update-installation">
+<h2>安装失败时先确认阶段</h2>
+<p>保留失败阶段与脱敏错误，核对磁盘空间、目标目录权限、回退与代理状态，不要反复点击安装。预检在停止代理之前进行；进入替换阶段后的失败，应先核对回退结果再决定下一步。</p>
+<p>下方历史源码修复记录中，同一次运行可保留已验证包，处理空间或权限后重试；旧应用备份保留到新进程确认目标版本。不要通过跳过签名、大小或摘要校验来处理安装问题。</p>
+<p>旧版内置更新器无法安装时，可到<a href="https://downloads.cmmuu.com/projects/serylane" target="_blank" rel="noopener noreferrer">下载中心</a>获取实际已正式发布、同架构的完整修复版，退出旧应用后覆盖原位置并保留配置目录。先确认真实附件，不把源码修复当成安装包已发布。</p>
+</section>
+<section id="verification-history">
+<h2>历史签名与安装修复记录</h2>
+<div class="notice"><p>以下按原版本保留，用于解释旧行为和修复；不代表源码版本就是最新可下载安装包，也不代表 macOS 兼容包已经支持 TUN。</p></div><section id="history-v0-7-28">
+<h3>v0.7.28：更新预检身份核对</h3>
+<p>v0.7.28 修正了系统名称与系统＋架构混用导致的更新预检误判：正常已验签包不再被误报为版本、架构或摘要变化。检查、安装与原生测试共用产品更新流程；新进程确认正确版本后才算完成安装。Windows 的 NSIS/MSI 分开检查，Linux deb/rpm 继续通过原包管理方式升级。</p>
+</section>
+<section id="history-v0-7-26">
+<h3>v0.7.26：macOS 应用包安装</h3>
+<p>v0.7.26 源码修正了 macOS 应用包被误判为普通文件的安装问题，备份和替换后都核对应用包完整性、身份与版本。预检失败不会停止代理；同一次运行中，已验证安装包保留，可处理磁盘空间或目录权限后重新安装。进入替换阶段后的失败请先核对回退与代理状态，不反复点击安装。</p><p>旧应用备份保留到新版启动确认；失败的阶段和脱敏原因记录在更新日志。备份恢复、项目更新签名、Apple Developer ID 与 TUN 授权分别检查，不以跳过校验解决问题。</p>
+</section>
+<section id="history-v0-7-24-v0-7-27">
+<h3>v0.7.24–v0.7.27：旧更新器的完整包升级说明</h3>
+<p><strong>正在使用 v0.7.24–v0.7.27 且内置安装失败：</strong>请从<a href="https://downloads.cmmuu.com/projects/serylane" target="_blank" rel="noopener noreferrer">下载中心</a>核对实际发布版本，获取已正式发布的 v0.7.28 或更高修复版的完整安装包，退出旧版后覆盖原位置，保留配置目录。旧版更新器不会在替换之前获得新代码；仅重新下载同一更新包不解决该问题，重新安装 v0.7.27 仍包含旧更新器。源码说明不代表安装包已发布，以下载中心实际附件为准。</p>
+</section>
+<section id="history-v0-7-18">
+<h3>v0.7.18：辅助服务状态区分</h3>
+<p>“需要重新关联”表示系统服务登记与辅助程序启动状态需要核对：先停止代理，再在应用设置中重新关联辅助服务。“需要更新安装包”表示安装包签名或内容需要修复，请下载完整正式版本；重复授权不会修复签名。v0.7.18 已细分这些状态，实际可用版本仍以下载入口和正式发行记录为准。现有构建流程生成的临时签名兼容包没有 Developer ID 身份，TUN 仍未就绪；重复下载同一临时签名包不会补齐身份。项目更新签名与 Apple 签名、公证分开核验。</p>
+</section>
+<section id="history-v0-7-19">
+<h3>v0.7.19：兼容包与 TUN 边界</h3>
+<p>v0.7.19 先交付订阅卡片、导入处理、配置同步与自选节点功能；macOS 兼容包保留项目更新签名和完整性校验，未包含 Developer ID 或 Apple 公证，macOS TUN 本轮仍未就绪。安装检查失败显示“此安装包暂未满足 TUN 要求”，TUN 故障与原模式联网结果分开显示。后续正式签名、公证及实机 TUN 验收单独推进；最新可下载版本以下载入口和发行记录为准。</p>
+</section></section>
+<nav class="document-nav" aria-label="相关文档">
+<a href="/zh/docs/">使用文档</a>
+<a href="/zh/docs/routing">域名路由</a>
+<a href="/zh/docs/verification">校验与签名</a>
+<a href="/zh/docs/privacy">隐私与数据边界</a>
+<a href="/zh/#download">下载客户端</a>
+</nav><p><a href="https://github.com/CMMUU/serylane/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">源码版本说明</a>用于核对版本变化；安装包是否可用仍以下载中心为准。</p>
+</main>
+<footer class="document-footer"><div class="page-width"><a href="/zh/">Serylane</a> · <a href="/zh/docs/">文档</a> · <a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a> · <a href="https://github.com/CMMUU/serylane/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only</a></div></footer>
+</body>
+</html>

@@ -1,4 +1,102 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#f7f9fd"><title>隐私与数据边界 — Serylane</title><meta name="description" content="了解 Serylane 静态官网、下载中心和桌面客户端的不同数据边界。官网不要求上传订阅或代理配置，不会接入 Codex。"><link rel="canonical" href="https://serylane.cmmuu.com/docs/privacy"><link rel="icon" href="/assets/serylane-mark.png" type="image/png"><link rel="stylesheet" href="/styles.css"><script src="/site.js" defer></script></head>
-<body class="document-page"><a class="skip-link" href="#main">跳到主要内容</a><header class="site-header page-width"><a class="brand" href="/"><img src="/assets/serylane-mark.png" alt="" width="42" height="50"><span>Serylane</span></a><button class="menu-toggle" type="button" aria-label="打开导航" aria-controls="main-nav" aria-expanded="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><nav id="main-nav" class="main-nav" aria-label="主要导航"><a href="/#features">功能</a><a href="/docs/">文档</a><a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a><a href="/#download" class="button button-primary nav-download">下载</a></nav></header>
-<main id="main" class="document-main"><p class="breadcrumb"><a href="/">Serylane</a> / <a href="/docs/">文档</a> / 隐私</p><h1>清楚区分数据的去向。</h1><p class="lead">官网、下载中心和你电脑上的代理客户端是不同的系统。浏览官网并不等于启动代理，也不会自动接入 Codex。</p><h2>这个官网</h2><p>本站提供静态产品信息与文档，没有账号系统，不要求提交订阅地址、认证令牌或本地配置。系统和架构选择、菜单以及常见问题的展开改变当前网页显示。首页还会向本站接口查询公开发布信息；下载入口由服务器核对最新正式版、安装包元数据与文件可用性，再跳转下载，不要求提供个人配置。</p><p>本站不会连接你电脑上的代理端口、启动本地服务或修改系统设置。产品界面标有「界面示意 · 非实时状态」，不是实时连接检测。</p><p>网站托管与内容分发服务可能为交付页面和安全防护处理 IP 地址、请求时间、浏览器信息等基础访问数据；这不等于桌面客户端上传订阅或模型请求。</p><h2>外部链接与下载</h2><p>本站下载服务只向下载中心查询公开发布元数据，并检查下载中心文件域的对应安装包；不会转发浏览器的 Cookie、授权头或完整访问请求。仅选择核验通过的同版本、同架构包，无法确认时提示失败和重试，不切换其他下载源或使用旧版本。点击下载后由下载中心文件域提供安装包，其访问数据按服务自身规则处理。GitHub 链接仅用于查看源码、变更记录和反馈问题。不要向陌生站点提交订阅和令牌。</p><h2>桌面客户端与本地路由</h2><p>订阅和代理配置由你自行提供。订阅地址可能包含访问凭据；分享截图、日志或问题报告前，请核对并删除令牌、完整订阅链接和个人信息。</p><p>AI 工具和自定义地址保存在本机，后台统一编译域名规则，只有明确确认应用后才生效。不解密 TLS、不改写模型请求、不新增 Codex 接入。旧接入仅按所有权检查恢复，保留外部程序修改和原备份。订阅编辑保留原记录，地址仅在主动打开编辑框时展示。具体实现与当前版本边界见<a href="/docs/routing">路由文档</a>。</p><h2>反馈问题</h2><p>可通过<a href="https://github.com/CMMUU/serylane/issues" target="_blank" rel="noopener noreferrer">项目问题追踪</a>反馈。公开问题页可被其他人阅读，请不要粘贴密码、私钥、订阅凭据或未脱敏的配置。需要报告安全问题时，先查看仓库是否提供合适的私密报告渠道，不要在公开页面披露敏感细节。</p></main><footer class="document-footer"><a href="/">Serylane</a> · <a href="/docs/">使用文档</a></footer></body></html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0d14">
+<title>Website privacy and data boundaries — Serylane</title>
+<meta name="description" content="Understand Serylane website requests, the locally stored theme preference, download-center processing, and the separate privacy boundaries of the desktop client.">
+<link rel="canonical" href="https://serylane.cmmuu.com/docs/privacy">
+<link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/privacy">
+<link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/privacy">
+<link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/privacy">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Website privacy and data boundaries — Serylane">
+<meta property="og:description" content="Understand Serylane website requests, the locally stored theme preference, download-center processing, and the separate privacy boundaries of the desktop client.">
+<meta property="og:url" content="https://serylane.cmmuu.com/docs/privacy">
+<meta property="og:locale" content="en_US">
+<meta property="og:site_name" content="Serylane">
+<meta property="og:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Website privacy and data boundaries — Serylane">
+<meta name="twitter:description" content="Understand Serylane website requests, the locally stored theme preference, download-center processing, and the separate privacy boundaries of the desktop client.">
+<meta name="twitter:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<link rel="icon" href="/assets/serylane-mark.png" type="image/png">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/styles.css">
+<script src="/site.js" defer></script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://serylane.cmmuu.com/docs/privacy#webpage","name":"Website privacy and data boundaries — Serylane","url":"https://serylane.cmmuu.com/docs/privacy","inLanguage":"en","isPartOf":{"@type":"WebSite","@id":"https://serylane.cmmuu.com/#website","name":"Serylane"}}</script>
+</head>
+<body class="document-page">
+<a class="skip-link" href="#main">Skip to main content</a>
+<header class="site-header page-width">
+<a class="brand" href="/"><img src="/assets/serylane-mark.png" alt="" width="32" height="32"><span>Serylane</span></a>
+<button class="menu-toggle" type="button" aria-label="Open navigation" aria-controls="main-nav" aria-expanded="false" data-menu-open-label="Open navigation" data-menu-close-label="Close navigation"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="sr-only">Main navigation</span></button>
+<nav id="main-nav" class="main-nav" aria-label="Main navigation">
+<a href="/#capabilities">Capabilities</a>
+<a href="/docs/">Docs</a>
+<a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub source</a>
+<a href="/#download" class="button button-secondary nav-download">Download</a>
+</nav>
+<div class="header-controls">
+<div class="locale-switch" role="group" aria-label="Language"><span lang="en" aria-current="page">EN</span><a href="/zh/docs/privacy" lang="zh-CN" hreflang="zh-CN">中文</a></div>
+<div class="theme-buttons" role="group" aria-label="Appearance"><button class="theme-button" type="button" data-theme-value="dark" aria-label="Dark mode" title="Dark mode" aria-pressed="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13.2A9 9 0 0 1 10.8 3.1a9 9 0 1 0 10.1 10.1Z"/></svg></button><button class="theme-button" type="button" data-theme-value="light" aria-label="Light mode" title="Light mode" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="theme-button" type="button" data-theme-value="system" aria-label="Follow system" title="Follow system" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button></div>
+</div>
+</header>
+<main id="main" class="document-main page-width">
+<p class="breadcrumb"><a href="/">Serylane</a> / <a href="/docs/">Docs</a> / <span aria-current="page">Privacy</span></p>
+<h1>Know which system handles which data.</h1>
+<p class="lead">This website, the download center and the desktop proxy client are separate systems. Reading this website does not start a proxy or attach Codex.</p>
+<nav class="document-nav" aria-label="On this page">
+<a href="#website-data">Website behavior</a>
+<a href="#theme-preference">Local theme preference</a>
+<a href="#hosting">Hosting requests</a>
+<a href="#downloads">Downloads and links</a>
+<a href="#desktop-client">Desktop client</a>
+<a href="#reporting">Reporting safely</a>
+</nav>
+<section id="website-data">
+<h2>What the website does—and does not do</h2>
+<p>The website serves static product information and documentation. It has no account system, analytics or advertising trackers, and does not ask you to upload subscription URLs, authentication tokens or local configuration. Platform selection, navigation menus and expandable answers change the current page state.</p>
+<p>The homepage also queries this site’s public release-information API. Download routes ask the server to verify the latest formal release, package metadata and matching file availability before redirecting. Those requests do not require your proxy configuration.</p>
+<p>Our scripts do not access your local proxy ports, start local services, launch the desktop client or change system settings. Product visuals are illustrative, not live connection monitoring. No third-party fonts, scripts or images are loaded by these documentation pages.</p>
+</section>
+<section id="theme-preference">
+<h2>Only the theme preference is stored locally</h2>
+<p>The website stores only an appearance preference in your browser’s local storage under <code>serylane-theme</code>. The allowed values are <code>dark</code>, <code>light</code> and <code>system</code>. Dark is the default; system follows the browser’s operating-system color preference. If browser storage is unavailable or blocked, the website falls back without requiring storage access.</p>
+<p><strong>Our scripts never send this stored theme preference to the server, the download center or another service.</strong> It is used locally to render the website. It is not analytics or a desktop proxy setting.</p>
+<p>Website scripts do not store a language preference, subscription, configuration, credentials or user profile, and do not set tracking cookies. Language is selected through the English and <code>/zh/</code> page paths and equivalent-page links, not a saved language value. The desktop client’s own local files are a separate boundary described below.</p>
+</section>
+<section id="hosting">
+<h2>Basic requests are still processed</h2>
+<p>Serving a page necessarily involves a request. Hosting and content-delivery services process basic access information such as IP address, request time, requested path and browser information for delivery and security. Choosing a language-specific URL also makes that requested path visible to the hosting service.</p>
+<p>This is not a claim of “no data processing”. It is different from this website collecting proxy configuration, sending a stored theme choice, or the desktop client uploading subscriptions or model requests. Download services separately process requests for the files they deliver.</p>
+</section>
+<section id="downloads">
+<h2>Download-center requests and external links</h2>
+<p>The website’s download service queries only public release metadata at the download center and checks the matching package on the center’s file domain. It does not forward the browser’s cookies, authorization headers or complete incoming request. Only a verified package of the same version and architecture is selected.</p>
+<p>If verification is unavailable, the page reports failure and offers retry; it does not use an alternate source, an older version or another architecture. After a download redirect, the download center’s file domain delivers the installer and handles access data under its own service rules.</p>
+<p>GitHub links are for source, change history, licenses and issue reporting only—not fallback product downloads. External destinations process requests under their own policies. Do not submit subscription URLs or tokens to unfamiliar sites. <a href="/docs/verification">See download verification guidance</a>.</p>
+</section>
+<section id="desktop-client">
+<h2>Your desktop client and local routing are separate</h2>
+<p>You supply the desktop client’s subscriptions and proxy configuration. Subscription URLs can contain access credentials: review screenshots, logs and issue reports and remove tokens, full subscription links and personal information before sharing.</p>
+<p>In the desktop client, AI-tool choices and custom domains are stored on your computer and compiled into domain rules. Domain routing is off by default; saving a draft is separate from confirming application. It does not decrypt TLS, rewrite model requests or create new Codex attachments.</p>
+<p>Legacy attachment restoration checks ownership, preserves changes made by external programs and retains original backups. Subscription edits keep the original record, and the address is shown only when the edit form is deliberately opened. Program proxy and the old enhanced-stability strategy remain disabled. <a href="/docs/routing">Read current routing behavior and limits</a>.</p>
+</section>
+<section id="reporting">
+<h2>Share a report, not a secret</h2>
+<p>Use the <a href="https://github.com/CMMUU/serylane/issues" target="_blank" rel="noopener noreferrer">project issue tracker</a> for ordinary reports. Public issues can be read by others: never paste passwords, private keys, subscription credentials or unredacted configuration.</p>
+<p>For a security issue, first check whether the repository provides an appropriate private reporting channel. Do not disclose sensitive details on a public issue page.</p>
+</section>
+<nav class="document-nav" aria-label="Related documentation">
+<a href="/docs/">Getting started</a>
+<a href="/docs/routing">Domain routing</a>
+<a href="/docs/verification">Verification and signatures</a>
+<a href="/docs/privacy">Privacy and data boundaries</a>
+<a href="/#download">Download the app</a>
+</nav>
+</main>
+<footer class="document-footer"><div class="page-width"><a href="/">Serylane</a> · <a href="/docs/">Docs</a> · <a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub source</a> · <a href="https://github.com/CMMUU/serylane/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only</a></div></footer>
+</body>
+</html>

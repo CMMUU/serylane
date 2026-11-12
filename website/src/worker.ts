@@ -13,7 +13,7 @@ function response(body: string, status: number, type = 'application/json; charse
 function unavailable(isAPI: boolean, code: string) {
   const extra = { 'Retry-After': '30', 'X-Serylane-Error': code };
   if (isAPI) return response(JSON.stringify({ error: 'LATEST_UNAVAILABLE', message: '下载中心暂时无法确认最新正式版，请稍后重试。' }), 503, undefined, extra);
-  return response('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>下载暂不可用 — Serylane</title><link rel="stylesheet" href="/styles.css"></head><body class="document-page"><main class="document-main"><h1>下载中心暂时不可用。</h1><p>尚未确认最新正式版安装包，请稍后刷新此页重试。本次没有开始下载。</p><p><a href="/#download">返回下载区重试</a></p></main></body></html>', 503, 'text/html; charset=utf-8', {
+  return response('<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Download unavailable — Serylane</title><link rel="stylesheet" href="/styles.css"></head><body class="document-page"><main class="document-main"><h1>The download center is temporarily unavailable.</h1><p>The latest stable installer could not be verified. Refresh this page to retry. No download was started.</p><p><a href="/#download">Return to downloads and retry</a></p><section lang="zh-CN" aria-labelledby="download-unavailable-zh"><h2 id="download-unavailable-zh">下载中心暂时不可用。</h2><p>尚未确认最新正式版安装包，请稍后刷新此页重试。本次没有开始下载。</p><p><a href="/zh/#download">返回中文下载区重试</a></p></section></main></body></html>', 503, 'text/html; charset=utf-8', {
     ...extra, 'Content-Security-Policy': "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   });
 }

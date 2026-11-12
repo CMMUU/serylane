@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0d14">
+<title>AI 域名路由：配置、生效与边界 — Serylane</title>
+<meta name="description" content="配置 Serylane 的可选 AI 域名路由：选择工具与出口、保存草稿并确认应用，核对代理入口、规则状态和节点推荐的验证边界。">
+<link rel="canonical" href="https://serylane.cmmuu.com/zh/docs/routing">
+<link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/routing">
+<link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/routing">
+<link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/routing">
+<meta property="og:type" content="website">
+<meta property="og:title" content="AI 域名路由：配置、生效与边界 — Serylane">
+<meta property="og:description" content="配置 Serylane 的可选 AI 域名路由：选择工具与出口、保存草稿并确认应用，核对代理入口、规则状态和节点推荐的验证边界。">
+<meta property="og:url" content="https://serylane.cmmuu.com/zh/docs/routing">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:site_name" content="Serylane">
+<meta property="og:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="AI 域名路由：配置、生效与边界 — Serylane">
+<meta name="twitter:description" content="配置 Serylane 的可选 AI 域名路由：选择工具与出口、保存草稿并确认应用，核对代理入口、规则状态和节点推荐的验证边界。">
+<meta name="twitter:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<link rel="icon" href="/assets/serylane-mark.png" type="image/png">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/styles.css">
+<script src="/site.js" defer></script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://serylane.cmmuu.com/zh/docs/routing#webpage","name":"AI 域名路由：配置、生效与边界 — Serylane","url":"https://serylane.cmmuu.com/zh/docs/routing","inLanguage":"zh-CN","isPartOf":{"@type":"WebSite","@id":"https://serylane.cmmuu.com/#website","name":"Serylane"}}</script>
+</head>
+<body class="document-page">
+<a class="skip-link" href="#main">跳到主要内容</a>
+<header class="site-header page-width">
+<a class="brand" href="/zh/"><img src="/assets/serylane-mark.png" alt="" width="32" height="32"><span>Serylane</span></a>
+<button class="menu-toggle" type="button" aria-label="打开导航" aria-controls="main-nav" aria-expanded="false" data-menu-open-label="打开导航" data-menu-close-label="关闭导航"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="sr-only">主要导航</span></button>
+<nav id="main-nav" class="main-nav" aria-label="主要导航">
+<a href="/zh/#capabilities">能力</a>
+<a href="/zh/docs/">文档</a>
+<a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
+<a href="/zh/#download" class="button button-secondary nav-download">下载</a>
+</nav>
+<div class="header-controls">
+<div class="locale-switch" role="group" aria-label="语言"><a href="/docs/routing" lang="en" hreflang="en">EN</a><span lang="zh-CN" aria-current="page">中文</span></div>
+<div class="theme-buttons" role="group" aria-label="外观主题"><button class="theme-button" type="button" data-theme-value="dark" aria-label="深色模式" title="深色模式" aria-pressed="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13.2A9 9 0 0 1 10.8 3.1a9 9 0 1 0 10.1 10.1Z"/></svg></button><button class="theme-button" type="button" data-theme-value="light" aria-label="浅色模式" title="浅色模式" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="theme-button" type="button" data-theme-value="system" aria-label="跟随系统" title="跟随系统" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button></div>
+</div>
+</header>
+<main id="main" class="document-main page-width">
+<p class="breadcrumb"><a href="/zh/">Serylane</a> / <a href="/zh/docs/">文档</a> / <span aria-current="page">域名路由</span></p>
+<h1>按域名分流，不替你切换网络接管。</h1>
+<p class="lead">路由使用代理核心内的域名规则，默认关闭。常见 AI 工具与自定义地址统一处理；保存草稿和确认应用分开，不新增 Codex 接入。安装包以下载中心核验结果为准。</p>
+<div class="notice"><p>官网界面是只读示意，不代表实时连接，不操作本机应用、代理或配置。程序代理与旧增强稳定策略当前也关闭；旧版说明不代表这些能力已启用。</p></div>
+<nav class="document-nav" aria-label="本页目录">
+<a href="#node-metadata">工具与域名</a>
+<a href="#save-apply">保存与应用</a>
+<a href="#global-controls">共享开关</a>
+<a href="#enablement">生效核验</a>
+<a href="#proxy-routing-state">停止后的状态</a>
+<a href="#stability">节点推荐</a>
+<a href="#legacy-recovery">旧接入恢复</a>
+<a href="#validation-boundaries">验证边界</a>
+<a href="#range-sources">范围来源</a>
+</nav>
+<section id="node-metadata">
+<h2>常见工具与自定义地址</h2>
+<p>可勾选 OpenAI（ChatGPT / API）、Claude、Gemini（含 AI Studio / API）。默认草稿只选择 OpenAI。后台展开工具域名，和自定义条目统一校验、去重，界面可查看每个工具的具体范围。取消工具不会删除自定义条目。工具清单随版本更新，已应用名单保留原快照；重新保存并确认应用后才更新规则。</p><p>自定义支持 <code>openai.com</code>、<code>*.openai.com</code>，也可输入 <code>https://*.openai.com/*</code>。通配符只匹配子域，根域须另列。按域名处理全部 HTTPS/WSS 路径，不按加密 URL 路径拆分，不解密 TLS。共享登录、支付、客服、Google 公共资源以及语音 IP 不自动整域纳入；可按需补充明确域名。</p>
+</section>
+<section id="save-apply">
+<h2>保存与应用分开</h2>
+<ol><li>勾选工具、补充自定义地址，并明确选择当前订阅的出口策略组。</li><li>点击「保存草稿」，当前流量规则保持不变。</li><li>关闭状态点击任一「路由／开启路由」按钮并确认；已开启时点击「应用更改」确认新草稿。路由规则优先于本地规则、AI 规则和订阅规则；未匹配流量保留原规则。</li></ol><p>只处理已经进入代理核心的连接，规则模式下生效。核心停止、全局或直连模式会显示未生效原因。切换订阅后目标组缺失时，匹配流量拒绝连接而不是静默直连；请重选出口或关闭域名路由。关闭只撤下此模块的覆盖规则，不删除其他规则。</p>
+</section>
+<section id="global-controls">
+<h2>全局开关与简洁配置页</h2>
+<p>v0.7.27 起，顶部「系统代理／TUN 模式」旁增加独立「路由」按钮，路由页也保留「开启／关闭路由」与「刷新状态」。两处共用路由配置开关和当前状态；系统代理与 TUN 互斥，域名路由可与其中任一种配合，不切换网络接管方式。工具选择紧凑展示，域名范围和使用说明按需展开。</p>
+</section>
+<section id="enablement">
+<h2>开启引导与真实生效状态</h2>
+<p>v0.7.29 增加配置引导与核心规则核对：尚未选择出口或编辑未保存时，顶部和页内入口引导到对应操作，不直接禁用；编辑改回原值可继续开启。不会自动替你选择出口。实际可下载版本以下载中心已公开安装包为准。</p><p>应用后核对核心的运行模式、规则总数及前置域名规则。v0.7.36 起进一步区分规则已加载与流量入口：只有当前系统代理／TUN 入口确认，才显示对应路由就绪；Manual 明确标注仅本地代理入口。等待核心、出口失效、规则不一致和状态读取失败分别说明；核对异常时可刷新或重新应用。失败保留编辑，回退也会核验结果，不把提交成功等同于生效。</p>
+</section>
+<section id="proxy-routing-state">
+<h2>代理停止，路由配置仍保留</h2>
+<p>路由开关表示是否启用这套策略，状态文字说明当前是否可用。普通关闭系统代理或 TUN 使用统一停止操作，保留上次网络模式；已经启用的路由进入暂停，下次启动后重新核验。关闭后重启仍保持主代理停止，不会因路由已配置而自动开启代理。</p><ul><li>两种接管都关闭、路由未启用：主代理和路由都显示已关闭。</li><li>两种接管都关闭、路由已启用：主代理显示已关闭，路由显示「已启用 · 暂停，等待代理启动」。</li><li>系统代理或 TUN 开启、路由未启用：主代理显示对应运行模式，路由显示已关闭。</li><li>代理开启、规则及入口核验通过：路由显示已就绪，并说明系统代理或 TUN 入口。</li><li>启停、切换或核验失败：显示正在核验或未生效原因，不沿用旧的成功标记。</li></ul><p>单独保存、开启或关闭路由不启动核心，不切换主代理方式，也不改变其恢复意图。显式 Manual 仍可供应用手动连接本地代理端口；这不等于系统代理或 TUN 接管。全局网速是网卡流量统计，不是路由启用的证据。</p>
+</section>
+<section id="stability">
+<h2>OpenAI 节点推荐与自动选点</h2>
+<p>从「AI 代理 → OpenAI 自动灾备」重新筛选后，候选显示推荐顺位，实际出口单独标示。两轮轻量探测分别核对 ChatGPT 网页和 OpenAI API 的可达性。评分参考连接表现、倍率与延迟，真实流结果须有可归因的样本才能计分。普通系统代理下显示「待验证」。</p><p>当前节点健康时继续使用，确认故障后按排名改选后续新连接的出口。失败节点进入冷却，可继续手动选点。性价比模式按设置过滤倍率上限及未知倍率。单个合格节点即可使用，两个及以上才有备用。订阅列表的推荐顺位供手动选择，当前订阅的规则继续适用。</p><p>v0.7.39 在明确探测失败后，并行确认当前出口和备用线路。故障确认后为后续连接选用已核验的出口。30 秒是现场验收目标，实际成绩需通过隔离故障试验取得。</p><p>旧结果在重新筛选前沿用基础 Fallback。程序代理、旧增强稳定策略和新增 Codex 接入继续暂停。</p>
+</section>
+<section id="legacy-recovery">
+<h2>旧接入恢复</h2>
+<p>旧的模型中转不再新增接入或自动重启。已有 Serylane 接入记录只按所有权恢复原配置；外部程序修改同一字段时保留备份并显示冲突，页面仅保留旧接入恢复入口。旧设置文件保留，不把旧启用状态或具体路径静默转成新域名路由。</p>
+</section>
+<section id="validation-boundaries">
+<h2>验证边界</h2>
+<p>节点切换只影响后续连接，不重放模型请求，不承诺中断数据流无缝续接。HTTP 401 只能证明接口可达，不代表模型会话或账户可用。TUN 平台支持范围不因本轮调整改变。</p>
+<p>Windows TUN 仍为管理员会话下的实验性功能；macOS 当前兼容包未满足 TUN 签名与公证要求；Linux 尚未实现 TUN 接管。<a href="/zh/docs/#tun-compatibility">查看平台支持边界</a>。</p>
+</section>
+<section id="range-sources">
+<h2>工具范围来源</h2>
+<p>自有域名归组参考 <a href="https://help.openai.com/en/articles/9247338-network-recommendations-for-chatgpt-errors-on-web-and-apps" target="_blank" rel="noopener noreferrer">OpenAI 网络说明</a>、<a href="https://support.claude.com/en/articles/13198485-enforce-network-level-access-control-with-tenant-restrictions" target="_blank" rel="noopener noreferrer">Claude 服务域名说明</a>和 <a href="https://ai.google.dev/api" target="_blank" rel="noopener noreferrer">Gemini API 文档</a>。预置范围是 Serylane 的域名分流选择，不是上述厂商对完整可用性的承诺。</p>
+</section>
+<nav class="document-nav" aria-label="相关文档">
+<a href="/zh/docs/">使用文档</a>
+<a href="/zh/docs/routing">域名路由</a>
+<a href="/zh/docs/verification">校验与签名</a>
+<a href="/zh/docs/privacy">隐私与数据边界</a>
+<a href="/zh/#download">下载客户端</a>
+</nav>
+</main>
+<footer class="document-footer"><div class="page-width"><a href="/zh/">Serylane</a> · <a href="/zh/docs/">文档</a> · <a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a> · <a href="https://github.com/CMMUU/serylane/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only</a></div></footer>
+</body>
+</html>
