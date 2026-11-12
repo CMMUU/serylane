@@ -2479,7 +2479,15 @@ async function changeNode(group: string, node: string | null, returnFocus?: HTML
     if (observed) {
       const latest = store.proxies ?? snapshot;
       const proxies = (latest.proxies ?? {}) as ProxyMap;
-      const groupView = { ...proxies[group], now: receipt.now ?? undefined, fixed: receipt.fixed ?? undefined, manualNode: receipt.manualNode };
+      const groupView = {
+        ...proxies[group],
+        type: receipt.groupType ?? proxies[group]?.type,
+        now: receipt.now ?? undefined,
+        fixed: receipt.fixed ?? undefined,
+        // Match the full-list projection: only managed Selector exposes a
+        // persisted manual choice as "auto switching paused".
+        manualNode: receipt.groupType === "Selector" ? receipt.manualNode : undefined,
+      };
       store.proxies = { ...latest, proxies: { ...proxies, [group]: groupView } };
       delete overviewNodeDetails[group];
     }

@@ -227,7 +227,7 @@ test("real errors, unknown or missing read-back, fallback, and missing intent do
     { error: "synthetic failure", toast: ["synthetic failure", "error"] },
     { result: receipt({ writeState: "unknown", now: "A", manualNode: "A" }), toast: ["节点操作结果未确认，核心当前出口：A。请刷新核对。", "info"] },
     { result: receipt({ groupType: null, now: null, manualNode: null }), toast: ["节点操作已提交，但暂未核实实际出口，请刷新后查看。", "info"] },
-    { result: receipt({ groupType: "Fallback", fixed: "B", now: "A", manualNode: null }), toast: ["已设为优先节点，当前出口：A", "info"] },
+    { result: receipt({ groupType: "Fallback", fixed: "B", now: "A", manualNode: "B" }), toast: ["已设为优先节点，当前出口：A", "info"] },
     { result: receipt({ manualNode: null }), toast: ["节点操作已提交，但暂未核实实际出口，请刷新后查看。", "info"] },
     { result: receipt({ groupType: "Fallback", fixed: null, manualNode: null }), toast: ["节点操作已提交，但暂未核实实际出口，请刷新后查看。", "info"] },
     { result: receipt({ group: "PROXY" }), toast: ["节点操作结果未确认，请刷新核对。", "info"] },
@@ -243,6 +243,14 @@ test("real errors, unknown or missing read-back, fallback, and missing intent do
     assert.equal(c.aiNodeDraft, draft, "keep the user's selected node for checking or retry");
     assert.deepEqual(calls.filter(call => call[0] === "toast"), [["toast", ...toast]]);
     assert.equal(c.store.proxies.proxies.PROXY, previous.proxies.PROXY);
+    if (result?.groupType === "Fallback" && result.fixed === "B") {
+      const group = c.store.proxies.proxies[OPENAI_GROUP];
+      assert.equal(group.manualNode, undefined, "Fallback retains preference, not Selector's fixed intent");
+      assert.equal(group.type, "Fallback");
+      assert.equal(group.fixed, "B");
+      assert.equal(group.now, "A");
+      assert.match(nodeSelectionMarkup(OPENAI_GROUP, group, false), /失效时由核心回退/);
+    }
     if (error || !result.groupType || result.group !== OPENAI_GROUP) assert.equal(c.store.proxies, previous);
     assert.equal(calls.filter(call => call[0] === "refresh").length, error ? 0 : 1);
   }
