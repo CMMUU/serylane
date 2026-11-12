@@ -2,6 +2,7 @@ import aiRoutePresets from "../../src-tauri/ai-route-presets.json";
 import { parseDomains, type DomainRouteState } from "../../src/domain-routing";
 import type {NodeTestSnapshot, NodeTestScope} from "../../src/node-test";
 import type { SubscriptionTask } from "../../src/subscription-task";
+import type { NodeSelectionReceipt } from "../../src/api";
 /**
  * Vite-only visual fixture. Uses the real frontend with Tauri's installed IPC
  * mocks, not a running desktop app. All profile/runtime data below is synthetic.
@@ -19,7 +20,7 @@ import type {
 } from "../../src/types";
 import type { ThemePreference } from "../../src/theme";
 import type { DiagnosticStage } from "../../src/diagnostics";
-import type { ProxyMap, NodeMetadata } from "../../src/node-selection";
+import { resolvedNode, type ProxyMap, type NodeMetadata } from "../../src/node-selection";
 import type { CostSnapshot, CostInput } from "../../src/openai-costs";
 
 const STORAGE_KEY = "routedeck:test-fixture:theme-preview:v1";
@@ -704,6 +705,45 @@ let profiles: ProfileRecord[] = [];
 let activeProfileId: string | null = null;
 const subscriptionCalls = { reads: 0, refresh: 0, activate: 0, delete: 0, create: 0 };
 const subscriptionImportScenarios = new Set(["import", "import-empty", "import-403", "import-duplicate", "import-openai-failed", "import-slow"]);
+// Deterministic QA gates keep sensitive command payloads out of the DOM.
+const fixtureSubscriptionImportQa = previewQuery.get("subscriptionImportQa") === "1";
+const fixtureSubscriptionGateStages = ["before_commit", "cancel_request", "after_commit"] as const;
+type FixtureSubscriptionGateStage = typeof fixtureSubscriptionGateStages[number];
+const fixtureSubscriptionRawCalls = { create: 0, cancel: 0 };
+const fixtureSubscriptionArmed = new Set<FixtureSubscriptionGateStage>();
+const fixtureSubscriptionHolds = new Map<FixtureSubscriptionGateStage, (fail: boolean) => void>();
+
+function reportFixtureSubscriptionImportQa() {
+  document.documentElement.dataset.fixtureSubscriptionImportQa = JSON.stringify({
+    ...fixtureSubscriptionRawCalls, holds: [...fixtureSubscriptionHolds.keys()],
+  });
+}
+if (fixtureSubscriptionImportQa) {
+  reportFixtureSubscriptionImportQa();
+  window.addEventListener("serylane-fixture-subscription-import", ((event: CustomEvent) => {
+    const { action, stage, outcome } = event.detail ?? {};
+    if (!fixtureSubscriptionGateStages.includes(stage)) return;
+    if (action === "arm") fixtureSubscriptionArmed.add(stage);
+    else if (action === "release" && (outcome === undefined || outcome === "success" || outcome === "fail")) {
+      // A committed synthetic write cannot be converted into a failed download.
+      fixtureSubscriptionHolds.get(stage)?.(outcome === "fail" && stage !== "after_commit");
+    }
+  }) as EventListener);
+}
+function holdFixtureSubscriptionImport(stage: FixtureSubscriptionGateStage): Promise<void> | null {
+  if (!fixtureSubscriptionImportQa || fixtureSubscriptionHolds.has(stage) || !fixtureSubscriptionArmed.delete(stage)) return null;
+  return new Promise<boolean>(release => {
+    fixtureSubscriptionHolds.set(stage, release);
+    reportFixtureSubscriptionImportQa();
+  }).then(fail => {
+    fixtureSubscriptionHolds.delete(stage);
+    reportFixtureSubscriptionImportQa();
+    if (fail) throw ruleError("SUBSCRIPTION_ERROR", stage === "cancel_request"
+      ? "合成取消请求失败，导入仍在进行。"
+      : "合成订阅下载失败，未保存订阅。");
+  });
+}
+
 const syntheticSubscriptionTasks = new Map<string, SubscriptionTask>();
 function beginSyntheticTask(args: Record<string, unknown>, operation: string): SubscriptionTask | null {
   if (typeof args.taskId !== "string") return null;
@@ -980,7 +1020,108 @@ window.addEventListener("serylane-fixture-lifecycle", ((event: CustomEvent<impor
   void emit("app-lifecycle", event.detail);
 }) as EventListener);
 
+// Opt-in gates for the renderer's button-feedback QA. Record the raw IPC,
+// before the synthetic backend's own deduplication. A reply gate captures the
+// old result before holding it, so tests can deterministically release a stale
+// snapshot after changing subscription or mode.
+const buttonFeedbackQa = previewQuery.get('buttonFeedback') === '1';
+const buttonFeedbackCommands = new Set([
+  'start_ai_health_check', 'start_node_test', 'cancel_node_test', 'test_proxy_delay',
+  'select_proxy', 'clear_proxy_selection', 'get_proxies', 'get_current_node_details', 'list_subscriptions',
+]);
+const fixtureNodeMutationCommands = new Set(['select_proxy', 'clear_proxy_selection']);
+type FixtureNodeReceiptCase = 'unverified' | 'fallback' | 'unavailable' | 'unknown' | 'rejected';
+const fixtureNodeReceiptCases: readonly FixtureNodeReceiptCase[] = ['unverified', 'fallback', 'unavailable', 'unknown', 'rejected'];
+const fixtureNodeReceipts = new Map<string, { outcome: FixtureNodeReceiptCase; message?: string }[]>();
+function fixtureNodeReceipt(group: string, node: ProxyMap[string] | null, writeState: NodeSelectionReceipt['writeState'] = 'accepted'): NodeSelectionReceipt {
+  return {
+    writeState, group, groupType: node?.type ?? null, now: node?.now ?? null,
+    fixed: typeof node?.fixed === 'string' && node.fixed ? node.fixed : null,
+    manualNode: node?.manualNode ?? null,
+  };
+}
+type FixtureButtonGate = { outcome: 'hold' | 'fail'; stage: 'request' | 'reply'; message?: string };
+type FixtureButtonRelease = { outcome: 'success' | 'fail'; message?: string };
+type FixtureButtonCall = {
+  id: number; command: string; args: Record<string, unknown>;
+  phase: 'started' | 'held' | 'succeeded' | 'failed';
+  receipt?: NodeSelectionReceipt;
+};
+const fixtureButtonCalls: FixtureButtonCall[] = [];
+const fixtureButtonArmed = new Map<string, FixtureButtonGate[]>();
+const fixtureButtonHolds = new Map<number, { call: FixtureButtonCall; release(result: FixtureButtonRelease): void }>();
+function reportFixtureButtonFeedback() {
+  document.documentElement.dataset.fixtureButtonFeedback = JSON.stringify({
+    calls: fixtureButtonCalls, holds: [...fixtureButtonHolds.keys()],
+  });
+}
+if (buttonFeedbackQa) {
+  reportFixtureButtonFeedback();
+  window.addEventListener('serylane-fixture-button-feedback', ((event: CustomEvent) => {
+    const { command, action, outcome, stage, id, message, proxy, multiplier, withinBudget } = event.detail ?? {};
+    if (action === 'set-node-cost') {
+      const node = typeof proxy === 'string' ? fixtureNodes[proxy] : undefined;
+      if (!node || (multiplier !== null && (typeof multiplier !== 'number' || !Number.isFinite(multiplier)))) return;
+      node.trafficMultiplier = multiplier;
+      if (typeof withinBudget === 'boolean') node.withinCostBudget = withinBudget;
+      return;
+    }
+    if (!buttonFeedbackCommands.has(command)) return;
+    if (action === 'arm' && (outcome === 'hold' || outcome === 'fail')) {
+      const queue = fixtureButtonArmed.get(command) ?? [];
+      queue.push({ outcome, stage: stage === 'reply' ? 'reply' : 'request', message });
+      fixtureButtonArmed.set(command, queue);
+    } else if (action === 'arm-receipt' && fixtureNodeMutationCommands.has(command) && fixtureNodeReceiptCases.includes(outcome)) {
+      const queue = fixtureNodeReceipts.get(command) ?? [];
+      queue.push({ outcome, message });
+      fixtureNodeReceipts.set(command, queue);
+    } else if (action === 'release' && (outcome === 'success' || outcome === 'fail')) {
+      const held = typeof id === 'number'
+        ? fixtureButtonHolds.get(id)
+        : [...fixtureButtonHolds.values()].find(entry => entry.call.command === command);
+      if (held?.call.command === command) held.release({ outcome, message });
+    }
+  }) as EventListener);
+}
+async function waitForFixtureButtonGate(gate: FixtureButtonGate, call: FixtureButtonCall) {
+  const fail = (message?: string) => ruleError('CORE_ERROR', message ?? '合成按钮操作失败，请重试。');
+  if (gate.outcome === 'fail') throw fail(gate.message);
+  const result = await new Promise<FixtureButtonRelease>(release => {
+    call.phase = 'held';
+    fixtureButtonHolds.set(call.id, { call, release });
+    reportFixtureButtonFeedback();
+  });
+  fixtureButtonHolds.delete(call.id);
+  if (result.outcome === 'fail') throw fail(result.message ?? gate.message);
+}
 mockIPC(async (command, payload) => {
+  if (fixtureSubscriptionImportQa && (command === "create_subscription_profile" || command === "cancel_subscription_task")) {
+    fixtureSubscriptionRawCalls[command === "create_subscription_profile" ? "create" : "cancel"]++;
+    reportFixtureSubscriptionImportQa();
+  }
+  if (!buttonFeedbackQa || !buttonFeedbackCommands.has(command)) return fixtureInvoke(command, payload);
+  const call: FixtureButtonCall = {
+    id: fixtureButtonCalls.length + 1, command, args: command === 'list_subscriptions' ? {} : structuredClone(payloadRecord(payload)), phase: 'started',
+  };
+  fixtureButtonCalls.push(call);
+  reportFixtureButtonFeedback();
+  const gate = fixtureButtonArmed.get(command)?.shift();
+  try {
+    if (gate?.stage === 'request') await waitForFixtureButtonGate(gate, call);
+    const result = await fixtureInvoke(command, payload);
+    if (fixtureNodeMutationCommands.has(command)) call.receipt = result as NodeSelectionReceipt;
+    if (gate?.stage === 'reply') await waitForFixtureButtonGate(gate, call);
+    call.phase = 'succeeded';
+    return result;
+  } catch (error) {
+    call.phase = 'failed';
+    throw error;
+  } finally {
+    reportFixtureButtonFeedback();
+  }
+}, { shouldMockEvents: true });
+
+async function fixtureInvoke(command: string, payload: InvokeArgs | undefined) {
   if (command === "app_lifecycle_status") return { generation: 0, phase: "open" };
   const args = payloadRecord(payload);
   if (command === 'run_connectivity_diagnostic_step') {
@@ -1030,7 +1171,7 @@ mockIPC(async (command, payload) => {
     }
     return structuredClone(fixtureCosts);
   }
-  if (nodeScenario && ["select_proxy", "clear_proxy_selection"].includes(command)) {
+  if (nodeScenario && fixtureNodeMutationCommands.has(command)) {
     if (args.modeRevision !== fixtureModeRevision) throw ruleError("STATE_CONFLICT", "选点方式已变化");
     const group = String(args.group), node = fixtureNodes[group];
     if ((group === "🤖 OpenAI 自动灾备") !== (fixtureProxyMode === "ai")) throw ruleError("STATE_CONFLICT", "请先确认切换选点方式");
@@ -1038,20 +1179,32 @@ mockIPC(async (command, payload) => {
     nodeCalls.push({ command, group, ...(command === "select_proxy" ? { proxy: String(args.proxy) } : {}) });
     document.documentElement.dataset.fixtureNodeCalls = JSON.stringify(nodeCalls);
     if (failNodeChoice) { failNodeChoice = false; throw new Error("合成节点切换失败"); }
+    const case_ = fixtureNodeReceipts.get(command)?.shift();
+    if (case_?.outcome === 'rejected') throw ruleError('CORE_ERROR', case_.message ?? '合成控制器拒绝选点');
+    if (case_?.outcome === 'unknown') return fixtureNodeReceipt(group, null, 'unknown');
     if (command === "select_proxy") {
-      if (!node.all?.includes(String(args.proxy))) throw new Error("合成节点不在组内");
-      node.now = String(args.proxy);
-      if (group === "🤖 OpenAI 自动灾备" && node.type === "Selector") node.manualNode = node.now;
-      else if (node.type !== "Selector") node.fixed = node.now;
+      const proxy = String(args.proxy);
+      if (!node.all?.includes(proxy)) throw new Error("合成节点不在组内");
+      if (case_?.outcome === 'fallback' || case_?.outcome === 'unavailable') {
+        if (node.type !== 'Fallback' && node.type !== 'URLTest') throw new Error('合成回退场景需要自动策略组');
+        node.fixed = case_.outcome === 'fallback' ? proxy : '';
+      } else {
+        node.now = proxy;
+        if (group === "🤖 OpenAI 自动灾备" && node.type === "Selector") node.manualNode = proxy;
+        else if (node.type !== "Selector") node.fixed = proxy;
+      }
     } else if (group === "🤖 OpenAI 自动灾备" && node.type === "Selector") node.manualNode = null;
     else if (node.type === "Selector") throw new Error("Selector 不支持 DELETE");
     else node.fixed = "";
-    return;
+    return fixtureNodeReceipt(group, case_?.outcome === 'unverified' ? null : node);
   }
   if (command === "subscription_task_status") return structuredClone(syntheticSubscriptionTasks.get(String(args.taskId)) ?? null);
   if (command === "cancel_subscription_task") {
     const task=syntheticSubscriptionTasks.get(String(args.taskId));
     if (!task?.canCancel) return false;
+    const held = task.operation === "import" && holdFixtureSubscriptionImport("cancel_request");
+    if (held) await held;
+    if (!task.canCancel) return false;
     task.canCancel=false; task.errorCode="CANCELLED"; task.phase="cancelled"; task.sequence++;
     task.message="已取消订阅任务，原有配置未改变";
     return true;
@@ -1081,6 +1234,9 @@ mockIPC(async (command, payload) => {
         await syntheticTaskStep(pipelineTask,"downloading","正在下载订阅",1000);
         await syntheticTaskStep(pipelineTask,"validating","订阅已下载，正在检查配置",1000);
       }
+      const beforeCommit = holdFixtureSubscriptionImport("before_commit");
+      if (beforeCommit) await beforeCommit;
+      if (pipelineTask?.errorCode === "CANCELLED") throw ruleError("SUBSCRIPTION_ERROR","已取消订阅任务，原有配置未改变。");
       if (pipelineTask) { pipelineTask.phase="committing"; pipelineTask.canCancel=false; pipelineTask.sequence++; }
       if (requestedRevision !== subscriptionScenarioRevision) throw ruleError("STATE_CONFLICT", "合成场景已切换，旧导入没有写入新场景。");
       if (scenario === "import-403") throw { code: "SUBSCRIPTION_ERROR", stage: "fixture_subscription", message: fixtureSubscriptionError, retryable: false, userMessage: {title: "订阅服务拒绝了请求", description: "HTTP 403；请核对服务商指定的客户端标识或重新复制订阅链接。", action: "subscriptions", details: "HTTP 403"} };
@@ -1107,6 +1263,12 @@ mockIPC(async (command, payload) => {
       }
       const details = profileDetails(profile.id);
       subscriptionImportResult = { profile: structuredClone(profile), revision: structuredClone(details.revisions[0]), summary: structuredClone(summary), updated: created, created, activated, openAiGeneration, openAiError, observationError: null };
+      const afterCommit = holdFixtureSubscriptionImport("after_commit");
+      if (afterCommit) {
+        reportSubscriptions();
+        await afterCommit;
+        if (requestedRevision !== subscriptionScenarioRevision) throw ruleError("STATE_CONFLICT", "合成场景已切换，旧导入回执已忽略。");
+      }
       if (pipelineTask) { pipelineTask.phase="completed"; pipelineTask.message="订阅任务已完成"; pipelineTask.sequence++; }
       return structuredClone(subscriptionImportResult);
     } finally {
@@ -1490,6 +1652,7 @@ mockIPC(async (command, payload) => {
     return settings();
   }
   if (command === "get_profile_details") return profileDetails(String(args.profileId));
+  if (command === "test_proxy_delay" && buttonFeedbackQa) return { delay: 42 };
   if (command === "test_proxy_delay" && previewQuery.get("interactionScenario") === "delayed") {
     await new Promise(resolve => window.setTimeout(resolve, 2500)); return {delay:42};
   }
@@ -1498,11 +1661,11 @@ mockIPC(async (command, payload) => {
       document.documentElement.dataset.fixtureNodeDetailReads = String(Number(document.documentElement.dataset.fixtureNodeDetailReads ?? 0) + 1);
       await new Promise(resolve => window.setTimeout(resolve, 800));
     }
-    const chain = [String(args.group)];
-    for (let count = 0; count < 16 && fixtureNodes[chain[chain.length - 1]]?.now; count++) chain.push(fixtureNodes[chain[chain.length - 1]].now!);
-    const name = chain[chain.length - 1];
+    const group = String(args.group);
+    const { name, chain } = resolvedNode(fixtureNodes, group);
+    if (!name) throw ruleError('NOT_FOUND', '合成策略组暂未解析到有效节点');
     return {
-      group: String(args.group), nodeName: name,
+      group, nodeName: name,
       routeChain: chain, nodeType: fixtureNodes[name]?.type ?? "Unknown", alive: fixtureNodes[name]?.alive ?? null,
       udp: true, uot: false, xudp: false, tfo: false, mptcp: false, smux: false,
       providerName: "合成 Provider", maskedServer: "*.example.invalid", port: 443,
@@ -1517,7 +1680,7 @@ mockIPC(async (command, payload) => {
   networkMutationCount += 1;
   report(`已拦截真实状态修改调用：${command}`);
   throw new Error(`FIXTURE_ONLY: 已拦截 ${command}；此预览仅允许合成数据与隔离交互状态`);
-}, { shouldMockEvents: true });
+}
 
 // Supply a stable, mutable color-scheme MediaQueryList before main.ts imports.
 const originalMatchMedia = window.matchMedia.bind(window);

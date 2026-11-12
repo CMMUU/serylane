@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.40 - 2026-11-12
+
+- Add subscriptions in a dialog. Click outside or press Escape to hide it; reopening restores the in-session draft or ongoing import.
+- Show loading on the clicked health-check, node-selection and speed-test controls. Keep focus and selections during background refreshes and prevent duplicate submissions.
+- Apply an eligible AI node without an extra confirmation when its cost is known. Confirm the active node by reading its policy group back from Mihomo, without waiting for a full list refresh or closing existing connections.
+
 ## 0.7.39 - 2026-11-11
 
 - Align subscription summaries across quota, expiry and update states, with full details available on demand.

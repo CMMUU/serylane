@@ -135,11 +135,11 @@ test("one remote subscription form and one add entry; overview only navigates an
   assert.equal((main.match(/id="subscriptions-add"/g) ?? []).length, 1);
   assert.match(main, /#overview-go-subscriptions.*navigate\("subscriptions"\)/);
   assert.match(main, /id="yaml-file"/); assert.match(main, /id="create-inline"/);
-  assert.match(subscriptionImportMarkup, /id="managed-subscription-panel" hidden/);
+  assert.match(subscriptionImportMarkup, /<dialog[^>]*id="managed-subscription-panel"[^>]*aria-labelledby="managed-subscription-title"/);
   assert.match(subscriptionImportMarkup, /<details class="subscription-import-advanced"><summary>高级选项/);
   assert.match(subscriptionImportMarkup, /id="managed-subscription-activate" type="checkbox" \/>/);
   assert.match(read("api.ts"), /activateAfterImport = false/);
-  assert.match(read("subscription-cards.css"), /\.subscription-import-card\[hidden\][^{]+\{ display: none; \}/);
+  assert.match(read("subscription-cards.css"), /#managed-subscription-panel:not\(\[open\]\)[^{]+\{ display: none; \}/);
 });
 
 const importResult = (changes = {}) => ({ profile: { id: "new-fixture" }, updated: true, created: true, activated: false, openAiGeneration: "not_requested", openAiError: null, observationError: null, ...changes });
@@ -180,16 +180,21 @@ function importControllerFixture(options = {}) {
   const card = { dataset: { subscriptionId: "new-fixture" }, focus() { calls.push("focus"); }, scrollIntoView() { calls.push("scroll"); } };
   class FixtureElement {}
   const listeners = new Map();
-  element("#managed-subscription-form").contains = () => false;
+  element("#managed-subscription-form").querySelector = () => null;
+  element("#managed-subscription-panel").open = options.view !== "overview";
   const context = vm.createContext({
     $, console, Array, Error, HTMLElement: FixtureElement, viewNavigationRevision: 0,
-    subscriptionImporting: false, subscriptionDraftDirty: true, subscriptionActivationTouched: true,
+    subscriptionImporting: false, subscriptionDraftInitialized: true, subscriptionImportRevision: 0, subscriptionDialogRevision: 1,
+    renderSubscriptionImportVisibility() {},
     highlightedSubscriptionId: null, store: { view: options.view ?? "subscriptions" },
     describeSubscriptionImport, errorMessage: realErrorMessage,
     runSubscriptionTask: (_operation, invoke) => invoke("fixture-task", { path: "follow_core" }),
     api: { createSubscriptionProfile: async (...args) => { calls.push(args); if (options.wait) await options.wait; if (options.failure) throw typeof options.failure === "string" ? new Error(options.failure) : options.failure; return options.result ?? importResult(); } },
-    refreshBase: async () => { calls.push("refresh"); if (options.refreshFailure) throw new Error("refresh failed"); return options.refreshApplied !== false; },
-    closeSubscriptionForm: () => { calls.push("close"); },
+    refreshBase: async () => { calls.push("refresh"); if (options.refreshWait) await options.refreshWait; if (options.refreshFailure) throw new Error("refresh failed"); return options.refreshApplied !== false; },
+    closeSubscriptionForm: () => {
+      if (!element("#managed-subscription-panel").open) return;
+      element("#managed-subscription-panel").open = false; context.subscriptionDialogRevision++; calls.push("close");
+    },
     toast: (text, tone) => notices.push({ text, tone }),
     document: { querySelectorAll: () => options.missingCard ? [] : [card], addEventListener: (key, listener) => listeners.set(key, listener), removeEventListener: key => listeners.delete(key) },
   });
@@ -212,7 +217,7 @@ test("HTTP 403 keeps the draft, displays the actual error and permits retry", as
   const f = importControllerFixture({ failure: "SUBSCRIPTION_ERROR: HTTP 403" });
   await f.submit();
   assert.equal(f.element("#managed-subscription-url").value, "draft");
-  assert.equal(f.context.subscriptionDraftDirty, true);
+  assert.equal(f.context.subscriptionDraftInitialized, true);
   assert.match(f.element("#managed-subscription-import-status").textContent, /HTTP 403/);
   assert.equal(f.calls.includes("close"), false); assert.equal(f.context.subscriptionImporting, false);
   assert.equal(f.element("#managed-subscription-fields").disabled, false);
@@ -222,6 +227,9 @@ test("double submission is ignored while fields are locked; selection input cann
   const f = importControllerFixture({ wait });
   const pending = f.submit(false);
   assert.equal(f.element("#managed-subscription-fields").disabled, true);
+  assert.equal(f.element("#subscriptions-add").disabled, false);
+  f.context.closeSubscriptionForm();
+  assert.equal(f.element("#managed-subscription-url").value, "draft");
   await f.submit(true);
   assert.equal(f.calls.filter(Array.isArray).length, 1);
   complete(); await pending;
@@ -235,26 +243,103 @@ test("post-save refresh failures never call the completed import a failure or re
     assert.equal(f.notices.some(notice => notice.tone === "error"), false);
   }
 });
-test("leaving then returning or focusing another control during import cancels automatic card focus", async () => {
-  for (const changeFocus of [f => { f.context.viewNavigationRevision += 2; }, f => f.moveFocus()]) {
+test("closing or navigating during import never steals focus when it completes", async () => {
+  for (const dismiss of [f => { f.context.viewNavigationRevision += 2; }, f => f.context.closeSubscriptionForm()]) {
     let complete; const wait = new Promise(resolve => { complete = resolve; });
     const f = importControllerFixture({ wait }); const pending = f.submit();
-    changeFocus(f); complete(); await pending;
+    dismiss(f); complete(); await pending;
     assert.equal(f.calls.includes("focus"), false);
+    assert.equal(f.element("#managed-subscription-url").value, "");
   }
 });
-test("default selection requires an authoritative empty active profile; unknown or failed first reads are save-only", () => {
+
+test("a new dialog opened while the old saved import refreshes is not closed or focused over", async () => {
+  let finish; const refreshWait = new Promise(resolve => { finish = resolve; });
+  const f = importControllerFixture({ refreshWait }); const pending = f.submit();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.context.subscriptionImporting, false);
+  assert.equal(f.element("#managed-subscription-url").value, "");
+  f.context.subscriptionDialogRevision++;
+  f.element("#managed-subscription-panel").open = true;
+  f.element("#managed-subscription-url").value = "new draft";
+  f.moveFocus(); finish(); await pending;
+  assert.equal(f.element("#managed-subscription-panel").open, true);
+  assert.equal(f.element("#managed-subscription-url").value, "new draft");
+  assert.equal(f.calls.includes("focus"), false);
+});
+
+test("default selection requires an authoritative empty active profile; reopening never overwrites a draft", () => {
   const source = ts.createSourceFile("main.ts", read("main.ts"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "openSubscriptionForm");
+  const declarations = source.statements.filter(node => ts.isFunctionDeclaration(node) && ["openSubscriptionForm", "closeSubscriptionForm"].includes(node.name?.text));
   for (const [appInfo, activeProfile, expected] of [[null, null, false], [{}, null, true], [{}, { profile: {} }, false]]) {
-    const checkbox = { checked: false }, panel = { hidden: true };
-    const context = vm.createContext({ Boolean, subscriptionImporting: false, subscriptionDraftDirty: false, subscriptionActivationTouched: false,
-      store: { appInfo, activeProfile, view: "overview" }, renderSubscriptionActivationHint() {},
-      $: id => id === "#managed-subscription-activate" ? checkbox : id === "#managed-subscription-panel" ? panel : { setAttribute() {} } });
-    vm.runInContext(ts.transpileModule(declaration.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
-    context.openSubscriptionForm(false); assert.equal(checkbox.checked, expected); assert.equal(panel.hidden, false);
+    const checkbox = { checked: false };
+    const panel = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+    const inputs = { "#managed-subscription-activate": checkbox, "#managed-subscription-panel": panel, "#subscription-download-path": { selectedOptions: [] } };
+    const focused = [];
+    const context = vm.createContext({ Boolean, subscriptionImporting: false, subscriptionDraftInitialized: false, subscriptionDialogRevision: 0,
+      subscriptionActivationExplicit: false, subscriptionActivationReconciled: false,
+      store: { appInfo, activeProfile, view: "subscriptions" }, renderSubscriptionActivationHint() {},
+      syncModalScrollLock() {}, renderSubscriptionImportVisibility() {},
+      $: id => inputs[id] ?? { focus() { focused.push(id); } } });
+    vm.runInContext(ts.transpileModule(declarations.map(d => d.getText(source)).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
+    context.openSubscriptionForm();
+    assert.equal(checkbox.checked, expected); assert.equal(panel.open, true);
+    assert.equal(focused.at(-1), "#managed-subscription-url");
+    checkbox.checked = !expected;
+    context.closeSubscriptionForm();
+    assert.equal(panel.open, false); assert.equal(focused.at(-1), "#subscriptions-add");
+    context.subscriptionImporting = true;
+    context.openSubscriptionForm();
+    assert.equal(panel.open, true); assert.equal(checkbox.checked, !expected);
+    assert.equal(focused.at(-1), "#managed-subscription-cancel");
   }
 });
+test("a stale auto-activation default does not replace a newly active profile; explicit choice survives", () => {
+  const source = ts.createSourceFile("main.ts", read("main.ts"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "renderSubscriptionActivationHint");
+  const checkbox = { checked: true }, hint = { textContent: "" };
+  const context = vm.createContext({
+    subscriptionImporting: false, subscriptionActivationExplicit: false, subscriptionActivationReconciled: false,
+    store: { activeProfile: { profile: { id: "new-current" } }, runtime: { phase: "running" } },
+    $: selector => selector === "#managed-subscription-activate" ? checkbox : hint,
+  });
+  vm.runInContext(ts.transpileModule(declaration.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
+  context.renderSubscriptionActivationHint();
+  assert.equal(checkbox.checked, false);
+  assert.match(hint.textContent, /未自动选用/);
+  checkbox.checked = true;
+  context.subscriptionActivationExplicit = true;
+  context.renderSubscriptionActivationHint();
+  assert.equal(checkbox.checked, true);
+  assert.match(hint.textContent, /切换运行中的配置/);
+});
+
+test("a late cancel outcome cannot change a newer task's shared modal button", async () => {
+  const source = ts.createSourceFile("main.ts", read("main.ts"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "cancelSubscriptionTask");
+  for (const rejection of [false, true]) {
+    let deliver;
+    const notices = [], calls = [];
+    const context = vm.createContext({
+      subscriptionCancellationPending: new Set(), subscriptionImportTaskId: "old",
+      subscriptionTasks: new Map([["old", { canCancel: true }], ["new", { canCancel: false }]]),
+      toast: (...args) => notices.push(args),
+      api: { cancelSubscriptionTask: id => { calls.push(id); return new Promise((ok, bad) => { deliver = () => rejection ? bad(new Error("fixture")) : ok(true); }); } },
+    });
+    vm.runInContext(ts.transpileModule(declaration.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
+    const button = { id: "managed-subscription-abort", disabled: false, textContent: "取消添加" };
+    const pending = context.cancelSubscriptionTask("old", button);
+    await context.cancelSubscriptionTask("old", button);
+    assert.deepEqual(calls, ["old"]);
+    context.subscriptionImportTaskId = "new";
+    button.textContent = "正在完成…";
+    deliver(); await pending;
+    assert.equal(button.disabled, true);
+    assert.equal(button.textContent, "正在完成…");
+    assert.deepEqual(notices, []);
+  }
+});
+
 test("generation failure stays a saved-subscription warning and does not steal focus after navigation", async () => {
   const f = importControllerFixture({ view: "overview", result: importResult({ openAiGeneration: "failed", openAiError: "task busy" }) });
   await f.submit();

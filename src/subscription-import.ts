@@ -1,8 +1,10 @@
 import type { SubscriptionImportResult } from "./types";
 
 export const subscriptionImportMarkup = `
-  <div class="subscription-import-card" id="managed-subscription-panel" hidden>
-    <div class="subscription-import-heading"><h3 id="managed-subscription-title">添加订阅</h3><p>粘贴地址，验证后保存。选用与启动是独立操作。</p></div>
+  <dialog class="subscription-import-card subscription-import-dialog" id="managed-subscription-panel" aria-labelledby="managed-subscription-title">
+    <header class="subscription-import-heading"><h3 id="managed-subscription-title">添加订阅</h3><button class="button button-quiet" id="managed-subscription-cancel" type="button">关闭</button></header>
+    <p class="subscription-import-intro">粘贴地址，验证后保存。收起窗口会保留本次填写。</p>
+    <p class="subscription-import-path" id="managed-subscription-download-summary"></p>
     <form id="managed-subscription-form" aria-labelledby="managed-subscription-title">
       <div class="subscription-import-progress">
         <p class="import-status" id="managed-subscription-import-status" role="status" aria-live="polite"></p>
@@ -16,10 +18,10 @@ export const subscriptionImportMarkup = `
         <label class="subscription-import-option"><input id="managed-subscription-activate" type="checkbox" /><span><strong>添加后选用</strong><small id="managed-subscription-activate-hint">未勾选时仅保存，不替换当前配置。</small></span></label>
         <label class="subscription-import-option"><input id="managed-subscription-openai" type="checkbox" /><span><strong>OpenAI 灾备</strong><small>仅 AI 代理模式可用；生成结果单独提示，不自动切换模式。</small></span></label>
         <details class="subscription-import-advanced"><summary>高级选项</summary><label><span>User-Agent</span><input id="managed-subscription-ua" value="clash.meta" autocomplete="off" spellcheck="false" /></label><p>通常保持默认即可。下载路径可在上方「订阅下载路径」中选择，不会为下载自动启动核心或切换系统代理。订阅凭据仅在本机存储。</p></details>
-        <div class="subscription-import-actions"><button class="button button-primary" id="managed-subscription-import-button" type="submit">验证并添加</button><button class="button button-quiet" id="managed-subscription-cancel" type="button">收起</button></div>
+        <div class="subscription-import-actions"><button class="button button-primary" id="managed-subscription-import-button" type="submit" data-node-action-loading aria-busy="false">验证并添加</button></div>
       </fieldset>
     </form>
-  </div>`;
+  </dialog>`;
 
 export function describeSubscriptionImport(result: SubscriptionImportResult): { text: string; warning: boolean } {
   let text = result.created

@@ -76,6 +76,15 @@ pub enum DelayProbe {
     Unknown,
 }
 
+/// An HTTP acknowledgement is not a verified outbound. A broken or unclear
+/// response can occur after the core has applied the requested mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyWriteState {
+    Accepted,
+    Unknown,
+}
+
 impl MihomoApiClient {
     pub fn new(settings: &AppSettings) -> AppResult<Self> {
         Self::from_endpoint(settings.controller_port, settings.controller_secret.clone())
@@ -98,11 +107,24 @@ impl MihomoApiClient {
         secret: String,
         timeout: Duration,
     ) -> AppResult<Self> {
+        Self::build_client(controller_port, secret, timeout, false)
+    }
+
+    fn build_client(
+        controller_port: u16,
+        secret: String,
+        timeout: Duration,
+        no_replay: bool,
+    ) -> AppResult<Self> {
         let base_url = Url::parse(&format!("http://127.0.0.1:{controller_port}/"))
             .map_err(|error| AppError::Runtime(error.to_string()))?;
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(timeout)
+        let mut builder = reqwest::Client::builder().no_proxy().timeout(timeout);
+        if no_replay {
+            builder = builder
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never());
+        }
+        let client = builder
             .build()
             .map_err(|error| AppError::Runtime(error.to_string()))?;
         Ok(Self {
@@ -110,6 +132,17 @@ impl MihomoApiClient {
             base_url,
             secret,
         })
+    }
+
+    /// Only this client performs user-initiated node mutations. Never follow a
+    /// redirect or retry the request, even if the controller connection fails.
+    pub(crate) fn for_node_selection(settings: &AppSettings) -> AppResult<Self> {
+        Self::build_client(
+            settings.controller_port,
+            settings.controller_secret.clone(),
+            Duration::from_secs(10),
+            true,
+        )
     }
 
     pub async fn wait_ready(&self, timeout: Duration) -> AppResult<Value> {
@@ -229,16 +262,43 @@ impl MihomoApiClient {
         }
     }
 
-    pub async fn clear_proxy_selection(&self, group: &str) -> AppResult<()> {
+    pub(crate) async fn proxy_group(&self, group: &str, budget: Duration) -> AppResult<Value> {
         let url = self.path_url(&["proxies", group])?;
-        let response = self
-            .client
-            .delete(url)
-            .bearer_auth(&self.secret)
-            .send()
+        tokio::time::timeout(budget, self.get_url(url))
             .await
-            .map_err(|error| AppError::Runtime(error.to_string()))?;
-        ensure_success(response.status())
+            .map_err(|_| AppError::Runtime("策略组读取超时，请刷新核对".into()))?
+    }
+
+    pub(crate) async fn write_proxy_choice(
+        &self,
+        group: &str,
+        node: Option<&str>,
+    ) -> AppResult<ProxyWriteState> {
+        let url = self.path_url(&["proxies", group])?;
+        let request = match node {
+            Some(node) => self.client.put(url).json(&json!({ "name": node })),
+            None => self.client.delete(url),
+        };
+        let response = match request.bearer_auth(&self.secret).send().await {
+            Ok(response) => response,
+            Err(error) if error.is_builder() => {
+                return Err(AppError::Runtime("节点请求无效，未发送".into()));
+            }
+            Err(_) => return Ok(ProxyWriteState::Unknown),
+        };
+        let status = response.status();
+        if status.is_success() {
+            return Ok(ProxyWriteState::Accepted);
+        }
+        // The bundled controller rejects invalid selection, unknown groups and
+        // unauthorized requests before writing. Other outcomes are ambiguous.
+        if matches!(status.as_u16(), 400 | 401 | 403 | 404 | 405) {
+            return Err(AppError::Runtime(format!(
+                "核心拒绝节点操作（HTTP {}）",
+                status.as_u16()
+            )));
+        }
+        Ok(ProxyWriteState::Unknown)
     }
 
     pub async fn delay(&self, proxy: &str, test_url: &str, timeout_ms: u32) -> AppResult<Value> {
@@ -484,6 +544,137 @@ fn ensure_success(status: reqwest::StatusCode) -> AppResult<()> {
             "Mihomo API HTTP {}",
             status.as_u16()
         )))
+    }
+}
+
+#[cfg(test)]
+mod proxy_choice_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    async fn serve(listener: TcpListener, replies: Vec<(&str, Option<&str>)>) {
+        for (method, reply) in replies {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            let (first, rest) = request.split_once("\r\n").unwrap();
+            assert_eq!(first, format!("{method} /proxies/Group%20%2F%20A HTTP/1.1"));
+            assert!(rest
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture"));
+            if method == "PUT" {
+                let body = rest.split_once("\r\n\r\n").unwrap().1;
+                assert_eq!(
+                    serde_json::from_str::<Value>(body).unwrap(),
+                    json!({"name":"合成节点"})
+                );
+            }
+            if let Some(reply) = reply {
+                stream.write_all(reply.as_bytes()).await.unwrap();
+            }
+        }
+        // Leave the socket bound long enough to catch hidden retries/redirects.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    async fn read_request(stream: &mut TcpStream) -> String {
+        let mut bytes = Vec::new();
+        loop {
+            let mut chunk = [0; 1024];
+            let n = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut chunk))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(n > 0, "fixture request truncated");
+            bytes.extend_from_slice(&chunk[..n]);
+            assert!(bytes.len() < 8192);
+            if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let header = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                let content_len: usize = header
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .map_or(0, |value| value.parse().unwrap());
+                if bytes.len() >= end + 4 + content_len {
+                    return String::from_utf8(bytes).unwrap();
+                }
+            }
+        }
+    }
+
+    async fn fixture() -> (TcpListener, MihomoApiClient) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api = MihomoApiClient::for_node_selection(&AppSettings {
+            controller_port: listener.local_addr().unwrap().port(),
+            controller_secret: "fixture".into(),
+            ..AppSettings::default()
+        })
+        .unwrap();
+        (listener, api)
+    }
+
+    #[tokio::test]
+    async fn target_group_get_put_get_has_one_write_and_no_full_list() {
+        let (listener, api) = fixture().await;
+        let before = "{\"type\":\"Selector\",\"now\":\"old\"}";
+        let after = "{\"type\":\"Selector\",\"now\":\"合成节点\"}";
+        let reply = |body: &str| {
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+        };
+        let initial_reply = reply(before);
+        let final_reply = reply(after);
+        let server = serve(
+            listener,
+            vec![
+                ("GET", Some(&initial_reply)),
+                (
+                    "PUT",
+                    Some("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"),
+                ),
+                ("GET", Some(&final_reply)),
+            ],
+        );
+        let request = async {
+            let group = "Group / A";
+            let budget = Duration::from_secs(1);
+            assert_eq!(api.proxy_group(group, budget).await.unwrap()["now"], "old");
+            assert_eq!(
+                api.write_proxy_choice(group, Some("合成节点"))
+                    .await
+                    .unwrap(),
+                ProxyWriteState::Accepted
+            );
+            assert_eq!(
+                api.proxy_group(group, budget).await.unwrap()["now"],
+                "合成节点"
+            );
+        };
+        tokio::join!(server, request);
+    }
+
+    #[tokio::test]
+    async fn refusal_and_ambiguous_write_responses_are_distinct_and_not_replayed() {
+        for (reply, outcome) in [
+            (None, Some(ProxyWriteState::Unknown)),
+            (Some("HTTP/1.1 307 Temporary Redirect\r\nLocation: /proxies/another\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), Some(ProxyWriteState::Unknown)),
+            (Some("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), Some(ProxyWriteState::Unknown)),
+            (Some("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), None),
+            (Some("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"), Some(ProxyWriteState::Accepted)),
+        ] {
+            let (listener, api) = fixture().await;
+            let server = serve(listener, vec![("DELETE", reply)]);
+            let request = async {
+                let result = api.write_proxy_choice("Group / A", None).await;
+                match outcome {
+                    Some(expected) => assert_eq!(result.unwrap(), expected),
+                    None => assert!(result.unwrap_err().to_string().contains("HTTP 400")),
+                }
+            };
+            tokio::join!(server, request);
+        }
     }
 }
 

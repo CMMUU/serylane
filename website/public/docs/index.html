@@ -82,8 +82,10 @@
 </section>
 <section id="subscription-workflow">
 <h2>Subscriptions, node tests and diagnostics</h2>
+<p>In v0.7.40, adding a subscription opens a dialog. Click outside or press Escape to hide it; reopening restores your draft for this session. An import that has already started continues; reopen the dialog to view progress or cancel.</p>
 <p>Subscription cards separate the active selection, configuration refresh and allowance sampling. An added but unselected subscription is not highlighted as active; a local YAML configuration does not highlight a remote subscription. Editing a subscription does not select it, and a changed URL requires a manual refresh.</p>
 <p>Manual subscription downloads can follow Serylane, use direct access, or use an already-running local HTTP proxy. They do not start the core or change system proxy settings. Failure on the selected proxy path does not silently switch to direct. Fetching and validation have bounded retries and timeouts; failures retain the existing configuration. Cancellation is available before saving begins, while a started save transaction is allowed to finish.</p>
+<p>In v0.7.40, health checks, node selection and speed tests show loading on the clicked button. When the selected AI node is eligible and its cost is known, <span lang="zh-CN">「应用节点」</span> (apply node) submits without a second confirmation. The app verifies the current exit with Mihomo before reporting success. Only new connections matching that policy group use the new exit; existing connections stay open.</p>
 <p>Node tests report basic reachability, timeouts and failures, not bandwidth, AI login or successful model requests. They do not automatically start the core or proactively choose an exit; automatic groups retain their own policy. Diagnostics reveal checks progressively, skip network checks when the core is stopped, and do not change proxy modes, routes or configuration.</p>
 </section>
 <section id="subscription-usage">

@@ -5,7 +5,7 @@ import { createDiagnostics, diagnosticRowsMarkup } from "./diagnostics";
 import { createAiHealth, aiHealthMarkup } from "./ai-health";
 import { mountSubscriptionEditor } from "./subscription-editor";
 import { InteractionSession } from "./interaction-session";
-import { mountNodeTest, sameNodeTestScope, type NodeTestScope } from "./node-test";
+import { mountNodeTest, type NodeTestScope } from "./node-test";
 import { observeSubscriptionTask, taskDescription, downloadOptions, type SubscriptionTask, type DownloadOptions } from "./subscription-task";
 import "./styles.css";
 import "./connection-feedback.css";
@@ -16,7 +16,7 @@ import "./subscription-cards.css";
 import "./node-selection.css";
 import "./manual-outbound.css";
 import { manualOutboundMarkup, mountManualOutbound, nodeGridMarkup, type ManualOutboundState } from "./manual-outbound";
-import { generalGroups, currentNodeMarkup, nodeSelectionMarkup, openAiRecommendations, openAiRecommendationMarkup, type ProxyMap } from "./node-selection";
+import { aiNodeBlockReason, generalGroups, currentNodeMarkup, nodeSelectionMarkup, openAiRecommendations, openAiRecommendationMarkup, type ProxyMap } from "./node-selection";
 import { mountOpenAiCosts, openAiCostsMarkup } from "./openai-costs";
 import { subscriptionCardMarkup, subscriptionRecommendationRanks, newestSubscriptionStatus, synchronizedProfiles } from "./subscription-cards";
 import { subscriptionImportMarkup, subscriptionNetworkMarkup, describeSubscriptionImport } from "./subscription-import";
@@ -147,6 +147,15 @@ function dataContext(): string {
   return [runtimeMutationRevision, store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, store.manualOutbound?.revision, store.runtime?.phase, store.runtime?.pid].join('/');
 }
 function pageContext(): string { return `${viewNavigationRevision}/${dataContext()}`; }
+function nodeSelectionContext(): string {
+  return JSON.stringify([dataContext(), store.runtime?.startedAt, store.activeProfile?.profile.routingMode, store.manualOutbound?.mode]);
+}
+function currentNodeSelection() {
+  return nodeSelectionPending?.context === nodeSelectionContext() ? nodeSelectionPending : null;
+}
+function nodeSelectionButtonAttributes(loading: boolean, blocked: boolean): string {
+  return `data-node-action-loading aria-busy="${loading}" ${loading || blocked ? 'disabled' : ''}`;
+}
 function pageRead(key: string, selector: string, operation: (current: () => boolean) => Promise<void>) {
   const context = pageContext();
   return pageReads.run(key, context, async () => {
@@ -168,9 +177,11 @@ let subscriptionImporting = false;
 let subscriptionImportTaskId: string | null = null;
 const subscriptionTasks = new Map<string, SubscriptionTask>();
 const subscriptionCancellationPending = new Set<string>();
-let subscriptionFormInitialized = false;
-let subscriptionDraftDirty = false;
-let subscriptionActivationTouched = false;
+let subscriptionDraftInitialized = false;
+let subscriptionActivationExplicit = false;
+let subscriptionActivationReconciled = false;
+let subscriptionDialogRevision = 0;
+let subscriptionImportRevision = 0;
 let viewNavigationRevision = 0;
 const subscriptionRefreshing = new Set<string>();
 let openAiTaskFinishedAt: string | null = null;
@@ -193,6 +204,10 @@ function invalidateNodeDetailsContext() {
   if (nodeDetailsGroup && !nodeDetailsSession.isCurrent(nodeDetailsContext(nodeDetailsGroup))) closeNodeDetails();
 }
 let nodeSelectionBusy = false;
+type NodeSelectionPending = { context: string; group: string; node: string | null; phase: "write" | "verify" };
+let nodeSelectionPending: NodeSelectionPending | null = null;
+let aiNodeDraft: { context: string; node: string } | null = null;
+let proxySelectionReadRevision = 0;
 let proxyReadSequence = 0;
 let proxyPolling = false;
 let overviewGroup = "";
@@ -359,12 +374,12 @@ app.innerHTML = `
             <div class="toolbar">
               <button class="button button-quiet" id="subscriptions-run-safety">安全检查</button>
               <button class="button button-quiet" id="subscriptions-refresh-all">刷新全部</button>
-              <button class="button button-primary" id="subscriptions-add" type="button" aria-controls="managed-subscription-panel" aria-expanded="false">＋ 添加订阅</button>
+              <button class="button button-primary" id="subscriptions-add" type="button" aria-haspopup="dialog" aria-controls="managed-subscription-panel" aria-expanded="false">＋ 添加订阅</button>
             </div>
           </div>
           <div class="subscription-workspace">
             ${subscriptionNetworkMarkup}
-            ${subscriptionImportMarkup}
+            <p id="subscription-import-background" class="subscription-feedback" role="status" aria-live="polite" hidden></p>
             <p id="subscriptions-feedback" class="subscription-feedback" role="status" aria-live="polite" hidden></p>
             <div class="subscription-summary-grid">
               <div><span>活动订阅</span><strong id="subscription-summary-active">—</strong></div>
@@ -411,7 +426,7 @@ app.innerHTML = `
 
       <section class="view-stack is-hidden" id="proxies-view">
         <article class="panel proxy-groups-panel">
-          <div class="panel-heading"><div><div class="section-label">AI PROXY</div><h2>AI 代理</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
+          <div class="panel-heading"><div><div class="section-label">AI PROXY</div><h2>AI 代理</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前 AI 节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
           <div id="proxy-mode-notice" class="warning-box" hidden><p>自选节点正在生效，AI 策略已暂停。二者只能启用一个；Codex 路由接入保持独立。</p><button class="button button-quiet" id="proxy-mode-restore">使用 AI 代理</button></div>
           <fieldset id="proxy-mode-controls"><legend class="sr-only">代理策略控制</legend>
           <div id="openai-policy-card" class="openai-policy-card"></div>
@@ -486,6 +501,7 @@ app.innerHTML = `
       </div>
 
     </main>
+      ${subscriptionImportMarkup}
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
       <div class="confirmation-modal-backdrop is-hidden" id="confirmation-modal" role="presentation" aria-hidden="true">
         <section class="confirmation-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-message">
@@ -519,9 +535,10 @@ function syncModalScrollLock() {
     $("#confirmation-modal")?.classList.contains("is-hidden") === false;
   const nodeDetailsOpen =
     $("#node-details-modal")?.classList.contains("is-hidden") === false;
+  const subscriptionOpen = $("#managed-subscription-panel")?.hasAttribute("open") === true;
   document.documentElement.classList.toggle(
     "is-modal-open",
-    confirmationOpen || nodeDetailsOpen,
+    confirmationOpen || nodeDetailsOpen || subscriptionOpen,
   );
 }
 
@@ -987,14 +1004,7 @@ function renderSubscriptions() {
   const list = $("#subscription-manager-list");
   if (!list) return;
   const subscriptions = store.subscriptions;
-  if (store.appInfo && !subscriptionFormInitialized) {
-    subscriptionFormInitialized = true;
-    if (!subscriptions.length) openSubscriptionForm(false);
-  }
-  if (!subscriptionActivationTouched && !subscriptionImporting) {
-    ($("#managed-subscription-activate") as HTMLInputElement).checked = Boolean(store.appInfo) && !store.activeProfile;
-  }
-  renderSubscriptionActivationHint();
+  if ($("#managed-subscription-panel")?.hasAttribute("open")) renderSubscriptionActivationHint();
   const active = subscriptions.find((subscription) => subscription.active);
   const totalNodes = subscriptions.reduce(
     (total, subscription) =>
@@ -1040,30 +1050,64 @@ function renderSubscriptions() {
 }
 
 function renderSubscriptionActivationHint() {
-  const selected = ($("#managed-subscription-activate") as HTMLInputElement).checked;
-  $("#managed-subscription-activate-hint")!.textContent = !selected
-    ? "仅保存，不替换当前配置；需要时再点击卡片上的「选用」。"
+  const checkbox = $<HTMLInputElement>("#managed-subscription-activate")!;
+  // The empty-profile default is not authorization to replace a configuration
+  // that became active while this draft was hidden or a refresh was in flight.
+  if (!subscriptionImporting && !subscriptionActivationExplicit && checkbox.checked && store.activeProfile) {
+    checkbox.checked = false;
+    subscriptionActivationReconciled = true;
+  }
+  $("#managed-subscription-activate-hint")!.textContent = !checkbox.checked
+    ? subscriptionActivationReconciled
+      ? "已有当前配置，未自动选用新订阅；如需替换，请勾选「添加后选用」。"
+      : "仅保存，不替换当前配置；需要时再点击卡片上的「选用」。"
     : store.runtime?.phase === "running"
       ? "校验成功后切换运行中的配置，可能影响现有连接；不会改变系统代理或 TUN 模式。"
       : "校验成功后设为当前配置，不会自动启动核心或开启系统代理。";
 }
 
-function openSubscriptionForm(focus = true) {
-  if (subscriptionImporting) return;
-  if (!subscriptionDraftDirty) {
-    subscriptionActivationTouched = false;
-    ($("#managed-subscription-activate") as HTMLInputElement).checked = Boolean(store.appInfo) && !store.activeProfile;
+function renderSubscriptionImportVisibility() {
+  const open = $<HTMLDialogElement>("#managed-subscription-panel")!.open;
+  const add = $("#subscriptions-add")!;
+  const background = $("#subscription-import-background")!;
+  const showProgress = subscriptionImporting && !open;
+  add.setAttribute("aria-expanded", String(open));
+  const label = showProgress ? "正在添加 · 查看进度" : "＋ 添加订阅";
+  if (add.textContent !== label) add.textContent = label;
+  background.hidden = !showProgress;
+  const status = showProgress ? $("#managed-subscription-import-status")!.textContent || "正在添加订阅…" : "";
+  if (background.textContent !== status) background.textContent = status;
+}
+
+function openSubscriptionForm() {
+  const dialog = $<HTMLDialogElement>("#managed-subscription-panel")!;
+  if (store.view !== "subscriptions" || dialog.open) return;
+  if (!subscriptionDraftInitialized) {
+    subscriptionDraftInitialized = true;
+    subscriptionActivationExplicit = false;
+    subscriptionActivationReconciled = false;
+    $<HTMLInputElement>("#managed-subscription-activate")!.checked = Boolean(store.appInfo) && !store.activeProfile;
   }
-  $("#managed-subscription-panel")!.hidden = false;
-  $("#subscriptions-add")!.setAttribute("aria-expanded", "true");
+  if (!subscriptionImporting) {
+    const path = $<HTMLSelectElement>("#subscription-download-path")!;
+    $("#managed-subscription-download-summary")!.textContent = `下载路径：${path.selectedOptions[0]?.textContent ?? "跟随 Serylane"}。如需更改，请先收起窗口。`;
+  }
   renderSubscriptionActivationHint();
-  if (focus && store.view === "subscriptions") $("#managed-subscription-url")!.focus();
+  subscriptionDialogRevision++;
+  dialog.showModal();
+  syncModalScrollLock();
+  renderSubscriptionImportVisibility();
+  $(subscriptionImporting ? "#managed-subscription-cancel" : "#managed-subscription-url")!.focus({ preventScroll: true });
 }
 
 function closeSubscriptionForm(returnFocus = true) {
-  $("#managed-subscription-panel")!.hidden = true;
-  $("#subscriptions-add")!.setAttribute("aria-expanded", "false");
-  if (returnFocus && store.view === "subscriptions") $("#subscriptions-add")!.focus();
+  const dialog = $<HTMLDialogElement>("#managed-subscription-panel")!;
+  if (!dialog.open) return;
+  subscriptionDialogRevision++;
+  dialog.close();
+  syncModalScrollLock();
+  renderSubscriptionImportVisibility();
+  if (returnFocus && store.view === "subscriptions") $("#subscriptions-add")!.focus({ preventScroll: true });
 }
 
 function renderProfiles() {
@@ -1798,15 +1842,21 @@ function renderSubscriptionTasks() {
 }
 
 async function cancelSubscriptionTask(id: string, button: HTMLButtonElement) {
+  if (subscriptionCancellationPending.has(id)) return;
   subscriptionCancellationPending.add(id);
   button.disabled = true;
+  const current = () => button.id === "managed-subscription-abort"
+    ? subscriptionImportTaskId === id
+    : button.isConnected && button.closest<HTMLElement>("[data-task-id]")?.dataset.taskId === id;
   try {
     const accepted = await api.cancelSubscriptionTask(id);
-    button.textContent = accepted ? "正在取消…" : "正在完成保存…";
+    if (current()) button.textContent = accepted ? "正在取消…" : "正在完成保存…";
   } catch {
     subscriptionCancellationPending.delete(id);
-    button.disabled = false;
-    toast("取消请求未送达，请重试；任务仍在后台处理", "info");
+    if (!current()) return;
+    const task = subscriptionTasks.get(id);
+    button.disabled = !task?.canCancel;
+    if (task?.canCancel) toast("取消请求未送达，请重试；任务仍在后台处理", "info");
   }
 }
 
@@ -1825,14 +1875,17 @@ async function runSubscriptionTask<T>(
       abort.hidden = false;
       abort.disabled = !task.canCancel || subscriptionCancellationPending.has(id);
       if (!abort.textContent?.includes("正在取消")) abort.textContent = task.canCancel ? "取消添加" : "正在完成…";
+      renderSubscriptionImportVisibility();
     }
     renderSubscriptionTasks();
   });
   try { return await invoke(id, download); }
   finally {
     stop();
-    const finalTask = await api.subscriptionTask(id).catch(() => null);
-    if (finalTask && operation === "refresh") {
+    // The import receipt is authoritative; an optional progress read must
+    // not hold its success, draft reset, or controls after the write settles.
+    const finalTask = operation === "refresh" ? await api.subscriptionTask(id).catch(() => null) : null;
+    if (finalTask) {
       for (const [oldId, old] of subscriptionTasks) if (oldId !== id && old.profileId === finalTask.profileId && ["completed", "failed", "cancelled"].includes(old.phase)) subscriptionTasks.delete(oldId);
       subscriptionTasks.set(id, finalTask);
       for (const [oldId, old] of subscriptionTasks) {
@@ -1866,65 +1919,85 @@ async function createSubscription(
     return;
   }
   subscriptionImporting = true;
-  const form = $("#managed-subscription-form") as HTMLFormElement;
-  const fields = $("#managed-subscription-fields") as HTMLFieldSetElement;
-  const button = $("#managed-subscription-import-button") as HTMLButtonElement;
-  const add = $("#subscriptions-add") as HTMLButtonElement;
+  const request = ++subscriptionImportRevision;
+  const form = $<HTMLFormElement>("#managed-subscription-form")!;
+  const fields = $<HTMLFieldSetElement>("#managed-subscription-fields")!;
+  const button = $<HTMLButtonElement>("#managed-subscription-import-button")!;
+  const add = $<HTMLButtonElement>("#subscriptions-add")!;
+  const dialog = $<HTMLDialogElement>("#managed-subscription-panel")!;
   const status = $("#managed-subscription-import-status")!;
   const feedback = $("#subscriptions-feedback")!;
   const requestedViewRevision = viewNavigationRevision;
-  let focusInterrupted = false;
-  const trackFocus = (event: FocusEvent) => {
-    if (event.target instanceof HTMLElement && event.target !== document.body && !form.contains(event.target)) focusInterrupted = true;
-  };
-  document.addEventListener("focusin", trackFocus);
+  const requestedDialogRevision = subscriptionDialogRevision;
   fields.disabled = true;
-  add.disabled = true;
   form.setAttribute("aria-busy", "true");
+  button.setAttribute("aria-busy", "true");
   button.textContent = "正在处理…";
   feedback.hidden = true;
   status.className = "import-status is-loading";
   status.textContent = "正在准备订阅下载；连接、校验和保存进度会在这里显示。";
+  renderSubscriptionImportVisibility();
+  let result: Awaited<ReturnType<typeof api.createSubscriptionProfile>>;
   try {
-    const result = await runSubscriptionTask("import", (id, download) => api.createSubscriptionProfile(
+    result = await runSubscriptionTask("import", (id, download) => api.createSubscriptionProfile(
       name, url, userAgent, generateOpenAi, activateAfterImport, id, download,
     ));
-    // The write has succeeded. A later list/status read must never report it as
-    // an import failure or encourage another submission of the same URL.
-    const description = describeSubscriptionImport(result);
-    form.reset();
-    subscriptionDraftDirty = false;
-    subscriptionActivationTouched = false;
-    status.textContent = "";
-    closeSubscriptionForm(false);
-    feedback.hidden = false;
-    feedback.className = `subscription-feedback${description.warning ? " is-warning" : ""}`;
-    feedback.textContent = description.text;
-    toast(description.text, description.warning ? "info" : "success");
-    try {
-      if (!await refreshBase()) throw new Error("订阅列表尚未更新");
-      const card = Array.from(document.querySelectorAll<HTMLElement>("[data-subscription-id]"))
-        .find((item) => item.dataset.subscriptionId === result.profile.id);
-      if (!card) throw new Error("订阅列表尚未更新");
-      if (store.view === "subscriptions" && viewNavigationRevision === requestedViewRevision && !focusInterrupted) {
-        card.focus({ preventScroll: true });
-        card.scrollIntoView({ block: "nearest" });
-      }
-    } catch {
-      feedback.textContent += " 列表状态未能刷新，请点击「刷新列表」；无需重复添加。";
-    }
   } catch (error) {
     const message = errorMessage(error);
     status.className = "import-status is-error";
     status.textContent = message;
+    if (!dialog.open) {
+      feedback.hidden = false;
+      feedback.className = "subscription-feedback is-warning";
+      feedback.textContent = `${message} 已保留草稿，打开「添加订阅」可重试。`;
+    }
     toast(message, "error");
+    return;
   } finally {
-    document.removeEventListener("focusin", trackFocus);
     subscriptionImporting = false;
     fields.disabled = false;
-    add.disabled = false;
     form.setAttribute("aria-busy", "false");
+    button.setAttribute("aria-busy", "false");
     button.textContent = "验证并添加";
+    renderSubscriptionImportVisibility();
+  }
+
+  // A confirmed save (or duplicate receipt) ends the draft. The subsequent
+  // list read is independent and may not close/rewrite a newer dialog.
+  const mayFocusCard = dialog.open && requestedDialogRevision === subscriptionDialogRevision && requestedViewRevision === viewNavigationRevision;
+  const description = describeSubscriptionImport(result);
+  form.reset();
+  const advanced = form.querySelector("details");
+  if (advanced) advanced.open = false;
+  subscriptionDraftInitialized = false;
+  status.textContent = "";
+  closeSubscriptionForm();
+  const settledDialogRevision = subscriptionDialogRevision;
+  feedback.hidden = false;
+  feedback.className = `subscription-feedback${description.warning ? " is-warning" : ""}`;
+  feedback.textContent = description.text;
+  toast(description.text, description.warning ? "info" : "success");
+
+  let focusMoved = false;
+  const trackFocus = (event: FocusEvent) => {
+    if (event.target !== add && event.target !== document.body) focusMoved = true;
+  };
+  if (mayFocusCard) document.addEventListener("focusin", trackFocus);
+  try {
+    if (!await refreshBase()) throw new Error("订阅列表尚未更新");
+    if (request !== subscriptionImportRevision) return;
+    const card = Array.from(document.querySelectorAll<HTMLElement>("[data-subscription-id]"))
+      .find((item) => item.dataset.subscriptionId === result.profile.id);
+    if (store.view === "subscriptions" && !card) throw new Error("订阅列表尚未更新");
+    if (card && mayFocusCard && !focusMoved && store.view === "subscriptions" &&
+        viewNavigationRevision === requestedViewRevision && subscriptionDialogRevision === settledDialogRevision) {
+      card.focus({ preventScroll: true });
+      card.scrollIntoView({ block: "nearest" });
+    }
+  } catch {
+    if (request === subscriptionImportRevision) feedback.textContent += " 列表状态未能刷新，请点击「刷新列表」；无需重复添加。";
+  } finally {
+    if (mayFocusCard) document.removeEventListener("focusin", trackFocus);
   }
 }
 
@@ -2090,19 +2163,24 @@ function openAiTaskPhaseLabel(task: OpenAiPolicyTask): string {
 function renderOpenAiPolicy() {
   if (!['proxies'].includes(store.view)) return;
   const container = $("#openai-policy-card");
-  if (!container) return;
-  if (store.proxies && (nodeSelectionBusy || container.contains(document.activeElement) && document.activeElement?.tagName === "SELECT")) return;
+  if (!container || healthInteraction) return;
   const health = aiHealth.view();
   const active = store.activeProfile;
+  const context = nodeSelectionContext();
+  if (aiNodeDraft && aiNodeDraft.context !== context) aiNodeDraft = null;
   if (!active) {
-    openAiPolicyMarkup = "";
-    container.innerHTML = `
-      <div class="openai-policy-empty">
+    const empty = `
+      <div class="openai-policy-empty" data-render-key="policy-empty">
         <span class="openai-mark">AI</span>
         <div><h3>OpenAI 自动灾备</h3><p>激活一个包含显式节点的订阅后即可生成。</p></div>
       </div>`;
+    if (openAiPolicyMarkup !== empty) stableMarkup(container, empty);
+    openAiPolicyMarkup = empty;
     return;
   }
+  const pending = currentNodeSelection();
+  const healthLoading = health.starting || health.running && !health.cancelling;
+  const resultsOpen = container.querySelector('.ai-health-results details')?.hasAttribute('open') ?? false;
 
   const policy = active.profile.openaiPolicy;
   const task = store.openAiTask;
@@ -2136,7 +2214,7 @@ function renderOpenAiPolicy() {
       ? `${policy.selectedNodes.length} 个候选节点${policy.selectedNodes.length === 1 ? " · 暂无备用" : ""} · ${policy.healthyCount}/${policy.candidateCount} 个候选通过`
       : "尚未创建托管策略";
   const markup = `
-    <div class="openai-policy-head">
+    <div class="openai-policy-head" data-render-key="policy-head">
       <div class="openai-policy-title">
         <span class="openai-mark">AI</span>
         <div>
@@ -2146,11 +2224,11 @@ function renderOpenAiPolicy() {
       </div>
       <div class="openai-policy-actions">
         ${running
-          ? '<button class="button button-danger" data-openai-action="cancel">停止检测</button>'
-          : `<button class="button button-primary" data-openai-action="generate" ${anotherTaskRunning ? "disabled" : ""}>${anotherTaskRunning ? "其他订阅生成中" : policy.enabled ? "重新筛选节点" : "生成 AI 策略"}</button>`}
-        <button class="button button-quiet" data-openai-action="health" ${!health.enabled || health.pending || health.running ? "disabled" : ""}>${health.pending || health.running ? "健康检查中…" : "立即健康检查"}</button>
-        <button class="button button-quiet" data-openai-action="details" ${!policy.enabled || store.runtime?.phase !== "running" ? "disabled" : ""}>节点详情</button>
-        ${policy.enabled && !task?.running ? '<button class="button button-danger" data-openai-action="disable">停用</button>' : ""}
+          ? '<button class="button button-danger" data-render-key="policy-generation" data-openai-action="cancel">停止检测</button>'
+          : `<button class="button button-primary" data-render-key="policy-generation" data-openai-action="generate" ${anotherTaskRunning ? "disabled" : ""}>${anotherTaskRunning ? "其他订阅生成中" : policy.enabled ? "重新筛选节点" : "生成 AI 策略"}</button>`}
+        <button type="button" class="button button-quiet" data-render-key="policy-health" data-openai-action="health" ${nodeSelectionButtonAttributes(healthLoading, !health.enabled || health.pending || health.running)}>${health.cancelling ? "正在取消检查…" : health.starting ? "正在启动检查…" : health.running ? "健康检查中…" : "立即健康检查"}</button>
+        <button class="button button-quiet" data-render-key="policy-details" data-openai-action="details" ${!policy.enabled || store.runtime?.phase !== "running" ? "disabled" : ""}>节点详情</button>
+        ${policy.enabled && !task?.running ? '<button class="button button-danger" data-render-key="policy-disable" data-openai-action="disable">停用</button>' : ""}
       </div>
     </div>
     ${running ? `
@@ -2160,29 +2238,30 @@ function renderOpenAiPolicy() {
       <p class="openai-progress-copy">${escapeHtml(task!.message)}</p>
     ` : ""}
     <p class="hint">至少 1 个合格节点即可使用，最多保留 10 个优选节点。单节点时无备用出口，2 个及以上支持自动故障切换。</p>
-    ${aiHealthMarkup(health)}
+    ${aiHealthMarkup(health, resultsOpen)}
     ${taskForActive && task?.diagnostics ? `<p class="hint openai-selection-report">可提取 ${task.diagnostics.extracted} · 地区排除 ${task.diagnostics.excludedRegion} · 成本排除 ${task.diagnostics.excludedCost} · 符合条件 ${task.diagnostics.eligible} · 本轮检测 ${task.diagnostics.tested} · 初检通过 ${task.diagnostics.reachable ?? '待检测'} · 质量通过 ${task.diagnostics.qualityPassed ?? '待检测'} · 入选 ${task.diagnostics.selected ?? '待确定'}</p>` : ''}
     ${active.profile.routingMode !== "rule" ? '<p class="warning-box">当前为全局或直连模式，AI 专用分流规则暂不参与。需要 AI 分流时，请先在「自选节点」选择规则模式，再切回 AI 代理。</p>' : ""}
     ${taskForActive && task?.phase === "failed" && task.error ? `<div class="openai-error">${escapeHtml(task.error)}</div>` : ""}
     ${rankingSnapshot?.profileId === active.profile.id && rankingSnapshot.revisionId === active.profile.activeRevisionId && rankingSnapshot.running && rankingSnapshot.commonFailure ? '<p class="hint">多个出口同时探测失败，等待复查。</p>' : ""}
     ${ranking ? openAiRecommendationMarkup(recommendations, runtimeGroup?.now, runtimeGroup ? proxyMap : undefined) : policy.enabled ? '<p class="hint">重新筛选节点后可查看推荐顺序。</p>' : ""}
-    ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, nodeSelectionBusy || Boolean(task?.running), candidates, proxyMap, recommendations) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，请在「自选节点」页切换为普通策略组选点。</p>'}
+    ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, Boolean(pending) || Boolean(task?.running), candidates, proxyMap, recommendations, {
+      draft: aiNodeDraft?.node, pending: pending?.group === OPENAI_GROUP_NAME ? pending : undefined,
+    }) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，请在「自选节点」页切换为普通策略组选点。</p>'}
     <div class="openai-policy-stats">
       <div><span>${runtimeGroup?.now ? "当前节点" : "候选首选"}</span><strong>${escapeHtml(currentNode)}</strong></div>
       <div><span>自动维护</span><strong>${policy.autoMaintain ? "订阅更新后执行" : "仅手动执行"}</strong></div>
       <div><span>上次筛选</span><strong>${formatPolicyDate(policy.lastBenchmarkedAt)}</strong></div>
       <div><span>故障策略</span><strong>${runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : policy.selectedNodes.length === 1 ? "单节点 · 暂无备用" : ranking ? "按推荐顺序接替 · 健康节点保持" : "基础 Fallback · 可能自动回切"}</strong></div>
     </div>
-    <p class="hint">${ranking ? "评分权重为模型流完成率 45%、连通性 25%、流量倍率 20%、延迟与波动 10%。缺少可归因的模型流样本时，按现有证据暂定推荐。" : "基础探测仅验证接口可达。"} AI 自动选点通过当前订阅的规则模式生效，只作用于后续新连接。</p>
+    <p class="hint">${ranking ? "评分权重为模型流完成率 45%、连通性 25%、流量倍率 20%、延迟与波动 10%。缺少可归因的模型流样本时，按现有证据暂定推荐。" : "基础探测仅验证接口可达。"} AI 自动选点通过当前订阅的规则模式生效。切换只影响后续命中此组的新连接，不会断开已有会话。域名路由或本地规则可能优先。</p>
   `;
-  // Preserve focused controls and disclosure state during polling. Do not replace
-  // the card between pointer-down/up or every time an unchanged status is read.
-  if (!healthInteraction && openAiPolicyMarkup !== markup) {
-    const resultsOpen = container.querySelector('.ai-health-results details')?.hasAttribute('open');
-    container.innerHTML = markup;
-    openAiPolicyMarkup = markup;
-    if (resultsOpen) container.querySelector('.ai-health-results details')?.setAttribute('open', '');
-  }
+  // Patch stable controls without disturbing focus or a deliberately chosen draft.
+  if (openAiPolicyMarkup === markup) return;
+  stableMarkup(container, markup);
+  openAiPolicyMarkup = markup;
+  const select = container.querySelector<HTMLSelectElement>('form[data-node-group] select');
+  const intended = select ? Array.from(select.options).find(option => option.defaultSelected)?.value : undefined;
+  if (select && intended !== undefined && select.value !== intended) select.value = intended;
 }
 
 async function startOpenAiGeneration(profileId?: string) {
@@ -2256,18 +2335,19 @@ async function performOpenAiTaskRead() {
 }
 
 function refreshProxies(quiet = false) {
-  const context = pageContext();
+  const contextKey = () => `${proxySelectionReadRevision}/${pageContext()}`;
+  const context = contextKey();
   return pageReads.run('proxies', context, async () => {
-    if (context !== pageContext()) return;
-    await performProxyRead(quiet, context);
+    if (context !== contextKey()) return;
+    await performProxyRead(quiet, context, contextKey);
   });
 }
-async function performProxyRead(quiet: boolean, context: string) {
+async function performProxyRead(quiet: boolean, context: string, contextKey = pageContext) {
   const profile = store.activeProfile?.profile;
   const sequence = ++proxyReadSequence;
   const runtimeRevision = runtimeMutationRevision;
   const runtimePid = store.runtime?.pid;
-  const contextCurrent = () => context === pageContext() && sequence === proxyReadSequence && runtimeRevision === runtimeMutationRevision && store.runtime?.pid === runtimePid
+  const contextCurrent = () => context === contextKey() && sequence === proxyReadSequence && runtimeRevision === runtimeMutationRevision && store.runtime?.pid === runtimePid
     && profile?.id === store.activeProfile?.profile.id && profile?.activeRevisionId === store.activeProfile?.profile.activeRevisionId;
   if (store.runtime?.phase !== "running" || !profile) {
     store.proxies = null;
@@ -2276,8 +2356,10 @@ async function performProxyRead(quiet: boolean, context: string) {
     renderOverviewNodes();
     return;
   }
+  let received = false;
   try {
     const result = await api.proxies();
+    received = true;
     if (!contextCurrent() || store.runtime?.phase !== "running") return;
     if (result.modeRevision !== store.manualOutbound?.revision) throw new Error("选点方式已变化，请刷新页面状态后重试");
     if (result.profileId !== profile.id || result.revisionId !== profile.activeRevisionId) throw new Error("节点信息与当前配置不一致，请刷新重试");
@@ -2299,9 +2381,13 @@ async function performProxyRead(quiet: boolean, context: string) {
     renderOverviewNodes();
   } catch (error) {
     if (!contextCurrent()) return;
+    proxyReadError = errorMessage(error);
+    // A transient background list error must not erase a freshly verified
+    // exit. A received reply with a mismatched identity is never retained.
+    if (!received && quiet && store.proxies?.profileId === profile.id &&
+        store.proxies?.revisionId === profile.activeRevisionId && store.proxies?.modeRevision === store.manualOutbound?.revision) return;
     store.proxies = null;
     overviewNodeDetails = {};
-    proxyReadError = errorMessage(error);
     renderProxies();
     renderOverviewNodes();
     if (!quiet) toast(proxyReadError, "error");
@@ -2331,28 +2417,93 @@ function renderOverviewNodes() {
 
 async function changeNode(group: string, node: string | null, returnFocus?: HTMLElement) {
   const profile = store.activeProfile?.profile;
-  if (nodeSelectionBusy || !profile?.activeRevisionId || store.runtime?.phase !== "running" || !store.proxies || manualModeSwitching || (store.manualOutbound?.mode === "ai" && store.openAiTask?.running)) return;
-  const modeRevision = store.proxies.modeRevision as string;
+  const snapshot = store.proxies;
+  const mode = store.manualOutbound;
+  const ai = group === OPENAI_GROUP_NAME;
+  if (nodeSelectionBusy) {
+    if (nodeSelectionPending && nodeSelectionPending.context !== nodeSelectionContext())
+      toast("上一项节点操作尚未结束，请稍后重试", "info");
+    return;
+  }
+  const eligible = () => !runtimeActionInFlight && !networkModeSwitching && !manualModeSwitching &&
+    !settingsSaving && !(ai && store.openAiTask?.running);
+  if (!profile?.activeRevisionId || store.runtime?.phase !== "running" || !snapshot || !mode || !eligible() ||
+      (ai ? mode.mode !== "ai" || profile.routingMode !== "rule" : mode.mode !== "manual") ||
+      snapshot.profileId !== profile.id || snapshot.revisionId !== profile.activeRevisionId || snapshot.modeRevision !== mode.revision) {
+    toast("节点状态尚未就绪，请刷新后重试", "info");
+    return;
+  }
+  const map = (snapshot.proxies ?? {}) as ProxyMap;
+  if (node !== null && !map[group]?.all?.includes(node)) {
+    toast("节点已不在当前策略组，请刷新后重新选择", "info");
+    return;
+  }
+  const blocked = ai && node !== null ? aiNodeBlockReason(map[node]) : null;
+  if (blocked) { toast(blocked, "info"); return; }
+
+  const context = nodeSelectionContext();
+  const current = () => context === nodeSelectionContext();
+  let reconcile = false;
   nodeSelectionBusy = true;
-  proxyReadSequence++;
   try {
-    const costNode = node ? ((store.proxies?.proxies ?? {}) as ProxyMap)[node] : null;
-    if (node && group === OPENAI_GROUP_NAME && (costNode?.trafficMultiplier == null || store.proxies?.costMode === "value" && costNode?.withinCostBudget === false)) {
-      if (!await confirmAction({ title: "确认节点费用", message: costNode?.trafficMultiplier == null ? "此节点倍率未知，无法保证流量成本。手动选择会优先于自动成本策略，仍要继续吗？" : `此节点为 ${costNode.trafficMultiplier}×，不符合自动成本预算。手动选择会优先于预算，仍要继续吗？`, confirmLabel: "继续手动选择", returnFocus })) return;
+    if (node === null || !ai) {
+      const confirmed = await confirmAction({ title: node === null ? "恢复自动选择？" : "应用所选节点？", message: `${group}${node === null ? "：恢复该组的自动策略。" : ` → ${node}。`}只影响命中此组的后续新连接，不主动断开已有连接。Fallback / URLTest 的手动选择为优先使用，失效时核心仍可能回退。`, confirmLabel: node === null ? "恢复自动" : "应用节点", returnFocus });
+      if (!confirmed) return;
+    } else if (map[node]?.trafficMultiplier == null) {
+      const confirmed = await confirmAction({ title: "确认节点费用", message: "此节点的流量倍率未知，仍要应用吗？已有连接不会断开。", confirmLabel: "应用节点", returnFocus });
+      if (!confirmed) return;
     }
-    const confirmed = await confirmAction({ title: node === null ? "恢复自动选择？" : "应用所选节点？", message: `${group}${node === null ? "：恢复该组的自动策略。" : ` → ${node}。`}只影响命中此组的后续新连接，不主动断开已有连接。Fallback / URLTest 的手动选择为优先使用，失效时核心仍可能回退。`, confirmLabel: node === null ? "恢复自动" : "应用节点", returnFocus });
-    if (!confirmed) return;
-    if (profile.id !== store.activeProfile?.profile.id || profile.activeRevisionId !== store.activeProfile?.profile.activeRevisionId || modeRevision !== store.manualOutbound?.revision || store.runtime?.phase !== "running") {
-      toast("配置或运行状态已变化，请重新选择", "error"); return;
+    if (!current() || !eligible()) { toast("配置或运行状态已变化，请重新选择", "error"); return; }
+
+    nodeSelectionPending = { context, group, node, phase: "write" };
+    proxySelectionReadRevision++;
+    proxyReadSequence++;
+    renderProxies();
+    let receipt;
+    try {
+      receipt = node === null
+        ? await api.clearProxySelection(group, profile.id, profile.activeRevisionId, mode.revision)
+        : await api.selectProxy(group, node, profile.id, profile.activeRevisionId, mode.revision);
+    } catch (error) {
+      if (current()) toast(errorMessage(error), "error");
+      return;
     }
-    await action(node === null ? "已恢复自动选择" : "已提交节点选择，正在读取实际出口", async () => {
-      if (node === null) await api.clearProxySelection(group, profile.id, profile.activeRevisionId!, modeRevision);
-      else await api.selectProxy(group, node, profile.id, profile.activeRevisionId!, modeRevision);
-      return true;
-    });
+    if (!current()) return;
+
+    // Supersede list reads started while the write was pending. The receipt
+    // itself is the evidence; even a stalled full list cannot delay this UI.
+    proxySelectionReadRevision++;
+    proxyReadSequence++;
+    reconcile = true;
+    const observed = receipt?.group === group && Boolean(receipt.groupType);
+    if (observed) {
+      const latest = store.proxies ?? snapshot;
+      const proxies = (latest.proxies ?? {}) as ProxyMap;
+      const groupView = { ...proxies[group], now: receipt.now ?? undefined, fixed: receipt.fixed ?? undefined, manualNode: receipt.manualNode };
+      store.proxies = { ...latest, proxies: { ...proxies, [group]: groupView } };
+      delete overviewNodeDetails[group];
+    }
+    if (receipt?.group !== group || receipt.writeState !== "accepted") {
+      toast(observed && receipt.now ? `节点操作结果未确认，核心当前出口：${receipt.now}。请刷新核对。` : "节点操作结果未确认，请刷新核对。", "info");
+    } else if (observed && node !== null && receipt.now === node &&
+        (receipt.groupType === "Selector" ? !ai || receipt.manualNode === node : receipt.fixed === node)) {
+      if (ai) aiNodeDraft = null;
+      toast(`已应用节点：${node}`, "success");
+    } else if (observed && node === null &&
+        (receipt.groupType === "Selector" && ai ? receipt.manualNode === null : !receipt.fixed)) {
+      if (ai) aiNodeDraft = null;
+      toast("已恢复自动选择", "success");
+    } else if (observed && node !== null && receipt.now && receipt.now !== node) {
+      toast(receipt.fixed === node ? `已设为优先节点，当前出口：${receipt.now}` : `核心仍使用 ${receipt.now}，尚未切到所选节点。`, "info");
+    } else {
+      toast("节点操作已提交，但暂未核实实际出口，请刷新后查看。", "info");
+    }
   } finally {
+    nodeSelectionPending = null;
     nodeSelectionBusy = false;
-    await refreshProxies(true);
+    renderProxies();
+    renderOverviewNodes();
+    if (reconcile) void refreshProxies(true);
   }
 }
 
@@ -2360,7 +2511,7 @@ function renderProxies() {
   renderOpenAiPolicy();
   if (store.view !== "manual") return;
   const container = $("#proxy-groups")!;
-  if (nodeSelectionBusy) return;
+  const pending = currentNodeSelection();
   const map = (store.runtime?.phase === "running" ? store.proxies?.proxies ?? {} : {}) as ProxyMap;
   const mode = store.activeProfile?.profile.routingMode ?? "rule";
   const groups = generalGroups(map, mode);
@@ -2376,21 +2527,27 @@ function renderProxies() {
   const listKey = [store.activeProfile?.profile.id, store.activeProfile?.profile.activeRevisionId, query, sort].join('/');
   if (listKey !== nodeListKey) { nodeListKey = listKey; nodeLimits.clear(); }
   const busy = store.manualOutbound?.mode !== "manual" || manualModeSwitching;
+  const testResults = nodeTests.results();
+  const batchTesting = nodeTests.busy() || !nodeTestContext();
+  const singleTests = nodeTests.pendingSingles();
   container.className = "card-list manual-groups";
   stableMarkup(container, groups.map((name, index) => {
     const value = map[name];
+    const autoPending = pending?.group === name && pending.node === null;
     return `<details class="proxy-card manual-group" data-render-key="${escapeHtml(name)}" data-group="${escapeHtml(name)}" ${open.has(name) || firstRender && index === 0 || query ? 'open' : ''}>
       <summary><strong>${escapeHtml(name)}</strong><span>${escapeHtml(value.now ?? '按组策略')} · ${value.all?.length ?? 0} 节点</span><small>${escapeHtml(value.type ?? '')}</small></summary>
-      <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">当前出口详情</button>${value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-node-auto="${escapeHtml(name)}" ${busy ? 'disabled' : ''}>恢复自动</button>` : ''}</div>
-      ${open.has(name) || firstRender && index === 0 || query ? nodeGridMarkup(name, map, query, sort, busy, nodeTests.results(), nodeTests.busy(), nodeLimits.get(name) ?? 200) : ""}</details>`;
+      <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">当前出口详情</button>${autoPending || value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-render-key="manual-restore-auto" data-node-auto="${escapeHtml(name)}" ${nodeSelectionButtonAttributes(autoPending, busy || Boolean(pending))}>${autoPending ? pending.phase === 'verify' ? '正在核实出口…' : '正在恢复…' : '恢复自动'}</button>` : ''}</div>
+      ${open.has(name) || firstRender && index === 0 || query ? nodeGridMarkup(name, map, query, sort, busy, testResults, batchTesting, nodeLimits.get(name) ?? 200, singleTests, pending) : ""}</details>`;
   }).join(''));
 }
 
-function preferredCurrentGroup(): string | null {
-  const proxyMap = (store.proxies?.proxies ?? {}) as Record<string, any>;
-  const groups = generalGroups(proxyMap, store.activeProfile?.profile.routingMode ?? "rule");
-  if (groups.length) return groups.includes(overviewGroup) ? overviewGroup : groups[0];
-  return null;
+function showCurrentAiNode() {
+  const profile = store.activeProfile?.profile;
+  if (store.manualOutbound?.mode !== "ai" || profile?.routingMode !== "rule" || !profile.openaiPolicy.enabled) {
+    toast("当前未启用规则模式下的 AI 策略组", "info");
+    return;
+  }
+  void openNodeDetails(OPENAI_GROUP_NAME);
 }
 
 function renderNodeDetails() {
@@ -2629,7 +2786,9 @@ $("#openai-policy-card")!.addEventListener('pointerdown', () => { healthInteract
 $("#openai-policy-card")!.addEventListener('keydown', event => {
   if (['Enter', ' '].includes(event.key) && (event.target as HTMLElement).closest('button, summary')) healthInteraction = true;
 });
-window.addEventListener('blur', () => { healthInteraction = false; });
+window.addEventListener('blur', () => {
+  if (healthInteraction) { healthInteraction = false; renderOpenAiPolicy(); }
+});
 for (const event of ['pointerup', 'pointercancel', 'keyup']) document.addEventListener(event, () => {
   if (!healthInteraction) return;
   // Click is dispatched before the next task, so its original button remains mounted.
@@ -2672,7 +2831,7 @@ function renderManualMode() {
   ($("#proxy-mode-controls") as HTMLFieldSetElement).disabled = !ai;
   $("#proxy-mode-notice")!.hidden = ai;
   const importAi = $("#managed-subscription-openai") as HTMLInputElement;
-  importAi.disabled = !ai; if (!ai) importAi.checked = false;
+  importAi.disabled = !ai;
   if (store.manualOutbound) manualOutbound.accept(store.manualOutbound);
   const select = $("#manual-profile") as HTMLSelectElement;
   if (document.activeElement !== select) {
@@ -2691,7 +2850,7 @@ function navigate(view: ViewName) {
   const previousView = store.view;
   if (previousView === view) return;
   if (previousView === 'diagnostics') diagnosticsView.invalidate('已离开诊断页面，本次诊断已中断。');
-  if (previousView !== view) { closeNodeDetails(); subscriptionEditor.close(); }
+  if (previousView !== view) { closeNodeDetails(); subscriptionEditor.close(); closeSubscriptionForm(false); }
   if (previousView !== view) viewNavigationRevision++;
   const scroller = $("#page-scroll");
   if (previousView !== view && scroller) {
@@ -2785,9 +2944,7 @@ $("#subscriptions-refresh-list")!.addEventListener("click", () => void pageRead(
 $("#subscriptions-refresh-all")!.addEventListener("click", () => void refreshAllSubscriptions());
 $("#subscriptions-run-safety")!.addEventListener("click", () => void runNetworkSafetyCheck());
 $("#proxies-refresh")!.addEventListener("click", () => void pageRead("proxy-button", "#proxies-refresh", async () => { await refreshProxies(); }));
-$("#proxies-current-node")!.addEventListener("click", () =>
-  void openNodeDetails(preferredCurrentGroup()),
-);
+$("#proxies-current-node")!.addEventListener("click", showCurrentAiNode);
 $("#rules-refresh")!.addEventListener("click", () => void refreshRules());
 $("#connections-more")!.addEventListener('click', () => { connectionDisplayLimit += 200; renderConnections(); });
 $("#rules-more")!.addEventListener('click', () => { ruleDisplayLimit += 200; renderRules(); });
@@ -2797,24 +2954,51 @@ $("#run-diagnostics")!.addEventListener("click", () => void runDiagnostics());
 $("#overview-go-subscriptions")!.addEventListener("click", () => navigate("subscriptions"));
 $("#subscriptions-add")!.addEventListener("click", () => openSubscriptionForm());
 $("#managed-subscription-cancel")!.addEventListener("click", () => closeSubscriptionForm());
+const subscriptionDialog = $<HTMLDialogElement>("#managed-subscription-panel")!;
+let subscriptionBackdropPress = false;
+function subscriptionBackdropHit(event: MouseEvent): boolean {
+  if (event.target !== subscriptionDialog) return false;
+  const bounds = subscriptionDialog.getBoundingClientRect();
+  return event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom;
+}
+subscriptionDialog.addEventListener("pointerdown", event => {
+  subscriptionBackdropPress = event.isPrimary && event.button === 0 && subscriptionBackdropHit(event);
+});
+subscriptionDialog.addEventListener("pointerup", event => {
+  subscriptionBackdropPress = subscriptionBackdropPress && event.isPrimary && subscriptionBackdropHit(event);
+});
+subscriptionDialog.addEventListener("pointercancel", () => { subscriptionBackdropPress = false; });
+subscriptionDialog.addEventListener("click", event => {
+  const dismiss = subscriptionBackdropPress && subscriptionBackdropHit(event);
+  subscriptionBackdropPress = false;
+  if (dismiss) closeSubscriptionForm();
+});
+subscriptionDialog.addEventListener("cancel", event => {
+  event.preventDefault();
+  subscriptionBackdropPress = false;
+  closeSubscriptionForm();
+});
 $("#subscription-download-path")!.addEventListener("change", () => {
   $("#subscription-proxy-port-label")!.hidden = ($("#subscription-download-path") as HTMLSelectElement).value !== "local_proxy";
 });
 $("#managed-subscription-abort")!.addEventListener("click", event => {
   if (subscriptionImportTaskId) void cancelSubscriptionTask(subscriptionImportTaskId, event.currentTarget as HTMLButtonElement);
 });
-$("#managed-subscription-form")!.addEventListener("input", () => { subscriptionDraftDirty = true; });
 $("#managed-subscription-activate")!.addEventListener("change", () => {
-  subscriptionActivationTouched = true;
+  subscriptionActivationExplicit = true;
+  subscriptionActivationReconciled = false;
   renderSubscriptionActivationHint();
 });
 $("#managed-subscription-form")!.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (!subscriptionDialog.open) return;
+  renderSubscriptionActivationHint();
+  const aiChoice = $<HTMLInputElement>("#managed-subscription-openai")!;
   void createSubscription(
     ($("#managed-subscription-name") as HTMLInputElement).value.trim(),
     ($("#managed-subscription-url") as HTMLInputElement).value.trim(),
     ($("#managed-subscription-ua") as HTMLInputElement).value.trim() || "clash.meta",
-    ($("#managed-subscription-openai") as HTMLInputElement).checked,
+    !aiChoice.disabled && aiChoice.checked,
     ($("#managed-subscription-activate") as HTMLInputElement).checked,
   );
 });
@@ -2874,16 +3058,27 @@ $("#confirmation-modal")!.addEventListener("click", (event) => {
   if (button?.dataset.confirmationAction === "confirm") closeConfirmation(true);
 });
 
+$("#openai-policy-card")!.addEventListener("change", event => {
+  const select = (event.target as HTMLElement).closest<HTMLSelectElement>("form[data-node-group] select");
+  if (!select || select.disabled || currentNodeSelection()) return;
+  aiNodeDraft = { context: nodeSelectionContext(), node: select.value };
+  renderOpenAiPolicy();
+});
 document.addEventListener("submit", (event) => {
   const form = (event.target as HTMLElement).closest<HTMLFormElement>("form[data-node-group]");
   if (!form) return;
   event.preventDefault();
-  const selected = form.querySelector("select")?.value;
-  if (selected) void changeNode(form.dataset.nodeGroup!, selected, form.querySelector("button") ?? undefined);
+  const select = form.querySelector("select");
+  const selected = select?.selectedOptions[0];
+  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+  if (submit?.matches(":disabled") || !selected?.value || selected.disabled) return;
+  // The form click is already delivered; paint pending state before the IPC.
+  healthInteraction = false;
+  void changeNode(form.dataset.nodeGroup!, selected.value, submit ?? undefined);
 });
 document.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLElement>("[data-node-auto]");
-  if (button) void changeNode(button.dataset.nodeAuto!, null, button);
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-node-auto]");
+  if (button && !button.matches(":disabled")) void changeNode(button.dataset.nodeAuto!, null, button);
 });
 $("#overview-nodes-refresh")!.addEventListener("click", () => void pageRead("proxy-button", "#overview-nodes-refresh", async () => { await refreshProxies(); }));
 $("#overview-nodes-content")!.addEventListener("change", event => {
@@ -2900,7 +3095,10 @@ $("#overview-nodes-content")!.addEventListener("click", event => {
 });
 $("#proxy-groups")!.addEventListener("click", async (event) => {
   const choice = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-node-choice]");
-  if (choice) { await changeNode(choice.dataset.nodeGroup!, choice.dataset.nodeChoice!, choice); return; }
+  if (choice) {
+    if (!choice.matches(":disabled")) await changeNode(choice.dataset.nodeGroup!, choice.dataset.nodeChoice!, choice);
+    return;
+  }
   const detailsButton = (event.target as HTMLElement).closest<HTMLButtonElement>(
     ".proxy-details",
   );
@@ -2909,22 +3107,16 @@ $("#proxy-groups")!.addEventListener("click", async (event) => {
     return;
   }
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>(".proxy-delay");
-  if (!button?.dataset.proxy || nodeTests.busy()) return;
-  const scope = nodeTestContext(), revision = nodeTests.revision(), name = button.dataset.proxy;
-  if (!scope || button.disabled) return;
-  button.disabled = true;
-  try {
-    const result = await api.testProxyDelay(name);
-    if (!sameNodeTestScope(scope, nodeTestContext()) || revision !== nodeTests.revision()) return;
-    const delay = Number(result.delay);
-    const delayMs = Number.isFinite(delay) && delay > 0 ? delay : null;
-    nodeTests.recordSingle(scope, revision, {name, state: delayMs === null ? 'unavailable' : 'passed', delayMs});
-    toast(delayMs === null ? '本次暂未测得有效延迟' : `延迟：${delayMs} ms`, 'success');
-  } catch (error) {
-    if (sameNodeTestScope(scope, nodeTestContext()) && revision === nodeTests.revision()) {
-      nodeTests.recordSingle(scope, revision, {name, state: 'unavailable', delayMs: null}); toast(errorMessage(error), 'error');
-    }
-  } finally { button.disabled = false; }
+  if (!button?.dataset.proxy || !button.dataset.proxyGroup || button.matches(":disabled")) return;
+  if (!nodeTestContext()) {
+    toast("节点测试尚未就绪，请等待当前操作结束后重试", "info");
+    return;
+  }
+  const name = button.dataset.proxy;
+  const result = await nodeTests.runSingle(button.dataset.proxyGroup, name, () => api.testProxyDelay(name));
+  if (store.view !== "manual" || !result) return;
+  if (result.kind === "failed") toast(errorMessage(result.error), "error");
+  else toast(result.delayMs === null ? '本次暂未测得有效延迟' : `延迟：${result.delayMs} ms`, result.delayMs === null ? 'info' : 'success');
 });
 
 $("#openai-policy-card")!.addEventListener("click", async (event) => {
@@ -2932,15 +3124,18 @@ $("#openai-policy-card")!.addEventListener("click", async (event) => {
     "[data-openai-action]",
   );
   const actionName = button?.dataset.openaiAction;
-  if (!actionName || !store.activeProfile || button?.disabled) return;
+  if (!actionName || !store.activeProfile || button?.matches(":disabled")) return;
   if (actionName === "generate") {
     await startOpenAiGeneration();
   } else if (actionName === "cancel") {
     await cancelOpenAiGeneration();
   } else if (actionName === "health" || actionName === "health-cancel") {
+    // The click has been delivered; do not wait for the pointer guard or a
+    // focused select to release before showing that the request was accepted.
+    healthInteraction = false;
     await aiHealth.run(actionName === "health-cancel");
   } else if (actionName === "details") {
-    await openNodeDetails(OPENAI_GROUP_NAME);
+    showCurrentAiNode();
   } else if (actionName === "disable") {
     const policy = await action("OpenAI 自动灾备已停用", () =>
       api.disableOpenAiPolicy(store.activeProfile!.profile.id),
@@ -2988,6 +3183,26 @@ $("#node-details-modal")!.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (subscriptionDialog.open) {
+    // Some WebViews let Tab leave the document for host/browser chrome.
+    // Keep the modal's visible controls in a keyboard loop; native cancel owns Escape.
+    if (event.key === "Tab") {
+      const controls = [...subscriptionDialog.querySelectorAll<HTMLElement>(
+        "button, input, select, textarea, summary, a[href], [tabindex]",
+      )].filter(control => {
+        const collapsed = control.closest("details:not([open])");
+        return control.tabIndex >= 0 && !control.matches(":disabled") && control.getClientRects().length > 0 &&
+          (!collapsed || collapsed.querySelector(":scope > summary")?.contains(control));
+      });
+      const first = controls[0], last = controls[controls.length - 1];
+      if (first && last && (!subscriptionDialog.contains(document.activeElement) ||
+          document.activeElement === (event.shiftKey ? first : last))) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    }
+    return;
+  }
   if (event.key === "Tab" && !$("#node-details-modal")!.classList.contains("is-hidden")) {
     const controls = $$<HTMLButtonElement>("#node-details-modal button:not(:disabled)");
     const first = controls[0], last = controls[controls.length - 1];

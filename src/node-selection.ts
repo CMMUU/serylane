@@ -77,21 +77,55 @@ export function openAiRecommendationMarkup(rows: OpenAiRecommendation[], current
   </section>`;
 }
 
-export function nodeSelectionMarkup(group: string, node: ProxyNode, busy: boolean, candidates = node.all ?? [], prices?: ProxyMap, recommendations?: OpenAiRecommendation[]): string {
+export function aiNodeBlockReason(node?: ProxyNode): string | null {
+  if (node?.metadata?.eligible !== true) return node?.metadata?.regionReason ?? "节点资格尚未核实";
+  if (node.withinCostBudget === false) return "超出当前流量倍率预算";
+  return null;
+}
+
+type NodePickerState = {
+  draft?: string;
+  pending?: { node: string | null; phase: "write" | "verify" };
+};
+
+export function nodeSelectionMarkup(
+  group: string,
+  node: ProxyNode,
+  busy: boolean,
+  candidates = node.all ?? [],
+  prices?: ProxyMap,
+  recommendations?: OpenAiRecommendation[],
+  { draft, pending }: NodePickerState = {},
+): string {
   if (!canSelectNode(node)) return '<p class="node-choice-help">此组由配置决定出口，不支持单节点手动选择。</p>';
-  const selected = node.manualNode || (typeof node.fixed === "string" ? node.fixed : null) || node.now;
+  const observed = node.manualNode || (typeof node.fixed === "string" ? node.fixed : null) || node.now;
+  const liveNames = new Set(node.all);
+  const blockReason = (name: string) => !liveNames.has(name) ? "节点已不在当前策略组" : group === OPENAI_GROUP ? aiNodeBlockReason(prices?.[name]) : null;
+  const available = (name: string) => name !== "" && blockReason(name) === null;
+  const hasAvailable = candidates.some(available);
+  const intended = pending?.node ?? draft ?? observed;
+  const selected = intended && candidates.includes(intended) ? intended : "";
+  const selectedAvailable = selected !== "" && available(selected);
+  const applying = Boolean(pending && pending.node !== null);
+  const restoring = pending?.node === null;
+  const locked = busy || Boolean(pending);
+  const phaseLabel = pending?.phase === "verify" ? "正在核对出口…" : null;
   const mode = node.manualNode ? "手动固定 · 自动切换已暂停" : node.type === "Selector" ? (group === OPENAI_GROUP ? "自动 · 稳定优先" : "手动选择") : node.fixed ? "手动优先 · 失效时由核心回退" : "自动选择";
-  return `<form class="node-choice" data-node-group="${escapeNode(group)}">
-    <label><span>${escapeNode(mode)}</span><select aria-label="${escapeNode(group)} · 选择节点" ${busy || !candidates.length ? "disabled" : ""}>
-    ${!candidates.includes(selected ?? "") ? '<option value="" selected disabled>请选择节点</option>' : ""}
+  const selectedReason = selected ? blockReason(selected) : null;
+  const choiceHelp = !hasAvailable ? `暂无可手动选用的节点。${selectedReason ?? ""}`
+    : !selectedAvailable ? `请先选择一个可用节点。${selectedReason ?? ""}` : "";
+  return `<form class="node-choice" data-render-key="node-choice:${escapeNode(group)}" data-node-group="${escapeNode(group)}">
+    <label><span>${escapeNode(mode)}</span><select data-render-key="node-choice-select" aria-label="${escapeNode(group)} · 选择节点" ${locked || !hasAvailable ? "disabled" : ""}>
+    ${!selected ? '<option data-render-key="node-choice-placeholder" value="" selected disabled>请选择节点</option>' : ""}
     ${candidates.map(name => {
       const recommendation = recommendations?.find(row => row.name === name);
       const label = recommendation?.rank != null ? `${recommendation.rank}. ${name}` : name;
-      return `<option value="${escapeNode(name)}" ${name === selected ? "selected" : ""} ${group === OPENAI_GROUP && prices?.[name]?.metadata?.eligible !== true ? "disabled" : ""}>${escapeNode(label)}${prices ? ` · ${prices[name]?.trafficMultiplier == null ? "倍率未知" : `${prices[name].trafficMultiplier}×`}` : ""}${recommendation?.cooling ? " · 冷却中" : ""}${group === OPENAI_GROUP && prices?.[name]?.metadata?.eligible !== true ? ` · ${escapeNode(prices?.[name]?.metadata?.regionReason ?? "地区待确认")}` : ""}</option>`;
+      const eligible = available(name);
+      return `<option data-render-key="node-choice-option:${escapeNode(name)}" value="${escapeNode(name)}" ${name === selected ? "selected" : ""} ${eligible ? "" : "disabled"}>${escapeNode(label)}${prices ? ` · ${prices[name]?.trafficMultiplier == null ? "倍率未知" : `${prices[name]?.trafficMultiplier}×`}` : ""}${recommendation?.cooling ? " · 冷却中" : ""}${eligible ? "" : ` · ${escapeNode(blockReason(name))}`}</option>`;
     }).join("")}</select></label>
-    <button type="submit" class="button button-primary" ${busy || !candidates.length ? "disabled" : ""}>应用节点</button>
-    ${canRestoreAuto(group, node) ? `<button type="button" class="button button-quiet" data-node-auto="${escapeNode(group)}" ${busy ? "disabled" : ""}>恢复自动</button>` : ""}
-  </form>${node.manualNode && !candidates.includes(node.manualNode) ? '<p class="node-choice-help">原手动节点已不在候选中，请重新选择或恢复自动；不会静默恢复自动。</p>' : ""}`;
+    <button type="submit" class="button button-primary" data-render-key="node-choice-apply" data-node-action-loading aria-busy="${applying}" ${locked || !selectedAvailable ? "disabled" : ""}>${applying ? phaseLabel ?? "正在应用节点…" : "应用节点"}</button>
+    ${restoring || canRestoreAuto(group, node) ? `<button type="button" class="button button-quiet" data-render-key="node-choice-auto" data-node-auto="${escapeNode(group)}" data-node-action-loading aria-busy="${restoring}" ${locked ? "disabled" : ""}>${restoring ? phaseLabel ?? "正在恢复自动…" : "恢复自动"}</button>` : ""}
+  </form><p class="node-choice-help" data-render-key="node-choice-help:${escapeNode(group)}" role="status" ${choiceHelp ? "" : "hidden"}>${escapeNode(choiceHelp)}</p>${node.manualNode && !candidates.includes(node.manualNode) ? '<p class="node-choice-help">原手动节点已不在候选中，请重新选择或恢复自动；不会静默恢复自动。</p>' : ""}`;
 }
 
 export function currentNodeMarkup(label: string, group: string, proxies: ProxyMap, details: CurrentNodeDetails | undefined): string {

@@ -1255,7 +1255,7 @@ async fn select_proxy(
     profile_id: Uuid,
     revision_id: Uuid,
     mode_revision: Uuid,
-) -> Result<(), AppErrorDto> {
+) -> Result<node_selection::SelectionReceipt, AppErrorDto> {
     node_selection::select(
         &app,
         &group,
@@ -1275,7 +1275,7 @@ async fn clear_proxy_selection(
     profile_id: Uuid,
     revision_id: Uuid,
     mode_revision: Uuid,
-) -> Result<(), AppErrorDto> {
+) -> Result<node_selection::SelectionReceipt, AppErrorDto> {
     node_selection::select(&app, &group, None, profile_id, revision_id, mode_revision)
         .await
         .map_err(dto)
