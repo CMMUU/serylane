@@ -1,6 +1,8 @@
 # Serylane 官网
 
-基于已确认的三段磨砂玻璃设计实现，原生 HTML / CSS / JavaScript，无框架、第三方字体、分析脚本或客户端构建依赖。Cloudflare Workers Static Assets 托管；上传 `public/` 和公开发布查询 Worker，不上传桌面程序源码、用户配置或密钥。
+当前本地候选采用用户于 2026-11-12 选择的 **B / Precision Routes**：英文优先、完整中文静态对应页、深色／浅色／跟随系统外观，以及可暂停的 SVG 分流动效。原生 HTML / CSS / JavaScript，无框架、第三方字体、动画依赖或分析脚本。Cloudflare Workers Static Assets 托管；仅上传 `public/` 和公开发布查询 Worker，不上传桌面程序源码、用户配置或密钥。
+
+**本轮状态：用户已明确授权官网上线，当前进入发布候选验证。** 分流光段周期调整为3.5秒（此前5秒），保持错峰、暂停和减少动态效果。只有可信main发布及线上内容/六架构下载验收通过后才记为完成；实时源码标记见 <https://serylane.cmmuu.com/build-info.json>。下方2026-09及本地验收记录均为历史证据，不代表本次已上线。结果与限制见 [QA.md](QA.md)，授权范围见 [project-gate.md](project-gate.md)。
 
 官网：<https://serylane.cmmuu.com/>。已于 **2026-09-08** 部署至 Cloudflare Workers Static Assets，首页与四篇文档 HTTPS 200、未知路径 404、`.html` 归一化 307、robots 和 sitemap 均已通过线上请求验收。首次边缘访问曾短暂超时，复核后上述页面均正常；本记录不代表持续可用性监控或搜索引擎已收录。
 
@@ -35,7 +37,7 @@ pnpm deploy:check
 1. `pnpm exec wrangler whoami --json` 检查账号。尚未登录时，可执行 `pnpm exec wrangler login --device --browser=false`，由账号所有者在官方页面授权；不要在聊天、Git 或站点文件中放入 Token。
 2. 在 Cloudflare 中确认 `cmmuu.com` 为正确账号的有效 zone。核对 `serylane.cmmuu.com` 的**准确 DNS 记录、Workers 自定义域名绑定和现有用途**。公共 DNS 返回 Cloudflare 地址也可能来自泛解析，不代表该子域名空闲。
 3. 提交并推送已审阅的源码至 GitHub `main` 后，运行 `pnpm run deploy`（必须显式写 `run`，避免误用 pnpm 的同名工作区命令）。脚本仅上传版本并切换现有 Worker 的流量；不会修改根域名、其他网站或 DNS。
-4. 验收主页与四篇文档 HTTPS 200，未知路径 404、`.html` 别名归一化、robots、sitemap、canonical 和下载链接。成功后才更新仓库 About 的 Homepage、README 的部署状态。
+4. 验收英中两种语言的首页与四篇文档（共十个内容页）HTTPS 200，未知路径真实 404、`.html` 别名归一化、robots、sitemap、canonical、hreflang 和下载链接。成功后才更新仓库 About 的 Homepage、README 的部署状态。
 
 注意：Wrangler 的直接 `deploy` 命令可能处理并覆盖自定义域名绑定，因此 `pnpm run deploy` 已封装为严格的版本上传／部署脚本。不要绕开脚本直接执行 `wrangler deploy` 或 `triggers deploy`。首次域名绑定不属于普通页面发布流程；CLI 升级后须重新核查行为。
 
@@ -71,22 +73,29 @@ GitHub Actions 的 `Website checks and deployment` 对官网源码推送／PR �
 
 ### 测试
 
-`pnpm test` 覆盖六个架构、Mac 芯片标签、键盘选择、加载/失败/重试、无 JavaScript 链接，以及点击时重新核对和拒绝其他源。Worker 测试覆盖更新切换、过期/不完整/超大元数据、中心不可用、错误版本/架构/摘要/大小、外部地址、重定向、HEAD、错误隐私和无缓存。部署检查测试验证六个中心专用入口和旧参数拒绝。
+`pnpm test` 对两份真实首页分别覆盖六个原生架构链接、Mac 芯片标签、键盘／修改键点击、加载/失败/重试、无 JavaScript 入口、在途请求去重，以及点击时重新核对并拒绝其他源。独立展示测试覆盖首绘主题、系统外观变化、单键存储失败降级、文档/404 控件、动效暂停/减少动态效果/离屏/后台状态。Worker 测试保留更新切换、过期/不完整/超大元数据、中心不可用、错误版本/架构/摘要/大小、外部地址、重定向、HEAD、错误隐私和无缓存。发布核验测试覆盖全部十个语言实页、主题脚本等17项公共资源、真实 noindex 404、六个中心专用入口与旧参数拒绝。
 
 `pnpm typecheck` 生成 Cloudflare 运行时类型并检查 TypeScript。渲染变更还需本地桌面与手机浏览器检查，记录错误、交互和截图；模拟成功不等于线上中心可用性验证。本地静态预览不提供动态接口，会显示可重试错误，真实 Worker 可用 Wrangler 本地预览。无需启动、重启或切换桌面代理应用。
 
 ## SEO 与安全
 
-- 首页和四篇文档拥有独立标题、描述与精确 canonical；真实语义 HTML 可直接读取，不依赖 JavaScript 生成正文。
-- 包含 robots、sitemap、Open Graph、Twitter 摘要卡及 SoftwareApplication JSON-LD，无虚构评分、下载量或稳定性指标。
-- 404 返回真实错误状态并使用 noindex；`.html` 文档路径由 Cloudflare 归一化到无扩展 canonical。
-- 严格 CSP：浏览器仅允许同源发布查询，不连接外部 API 或本地代理，不执行内联脚本或第三方脚本；网站没有登录、上传、支付或接管程序功能。
+- `/` 为默认英文，`/zh/` 为中文；不根据浏览器语言强制跳转。两种语言分别提供完整首页、使用文档、路由、校验和隐私页面（共十页），无 JavaScript 仍可读取正文及使用六个下载入口。英文网站不表示桌面应用已支持英文界面。
+- 每个内容页具有唯一且本地化的 title/description、一个 H1、自引用 canonical、双向 `en`/`zh-CN`/`x-default` hreflang；中文 canonical 不指向英文。旧文档章节锚点两种语言均保留，历史功能明确标注历史及当前停用边界。
+- sitemap 列出十个 canonical 内容页并包含对应语言互链，不列 API、下载重定向或404。保留 robots 的搜索抓取入口，不伪造 lastmod、下载量、评分或排名。
+- Open Graph/Twitter 使用本地品牌图、正确的语种与页面地址；WebPage/WebSite/SoftwareApplication JSON-LD 对应真实页面和软件事实，不硬编码源码版本为最新可下载包，不虚构 offers 或评价。
+- 404 返回真实错误状态并使用 noindex；`.html`／`index.html` 别名由 Cloudflare 归一化到规范地址。无 JavaScript 下载失败页是英文优先并附中文说明，不改变 API JSON 或状态协议。
+- 严格 CSP 不变：浏览器仅允许同源发布查询，不连接外部 API 或本地代理，不执行内联可执行脚本或第三方脚本；网站没有登录、上传、支付、分析或接管程序功能。
+- 唯一允许的浏览器持久化为 `serylane-theme`，值仅 `dark`、`light`、`system`；不存储语言、订阅、配置或用户数据，也不主动发送主题偏好。存储被拒绝时默认深色，当前页仍可切换。静态安全检查扫描所有公共 JS，主题豁免仅限这一个键，下载脚本仍禁止存储。
 - 正文即时重新验证缓存，PNG 标志缓存一天；不对未带内容哈希的文件设置 immutable。
 - 可被抓取不等于已被 Google 收录。上线后仍需域名所有者在 Search Console 验证站点并提交 sitemap；不得声称已提交或保证排名。
 - 线上 robots 会叠加当前 Cloudflare 托管内容信号：普通搜索允许抓取，部分 AI 爬虫被阻止，项目 sitemap 仍保留。本次未修改这些区域级安全/爬虫设置。
 
 ## 设计与素材
 
-延续批准稿的冰白底色、蓝紫环境光、磨砂玻璃、深色中文和统一线性图标。下载版本/中心状态提示及准确安全文案是相对概念稿的有意调整。页面中的路由界面是原生代码构建的**只读示意**，不代表实时连接状态。
+Precision Routes 使用午夜黑／冷白两套语义色板、钴蓝连线、精密分隔线与开放排版，不通过整页滤镜反色。右上角使用三个原生图标按钮直接选择深色（月亮）、浅色（太阳）与跟随系统（屏幕），不使用下拉框；中英首页、文档与404统一，`aria-pressed`标示当前偏好，原生Tab/Enter/Space可用。系统模式被选中时随系统调整实际色板，仍只标记系统按钮选中；保留外观记忆、首绘设置、焦点与存储拒绝降级。
+
+首页以产品定位 → 能力边界 → 平台下载 → 关键问题组织内容，不再以版本修复历史作为营销主体。文档以当前操作先行，历史说明归档并保留锚点。
+
+分流图由实际 DOM 与 SVG/CSS 构建，不使用整张生成图充当网页。光段沿主干和启用示意分支流动，默认关闭的域名路由分支保留弱化虚线；旁注明**示意，非实时流量**。暂停按钮、`prefers-reduced-motion`、离屏与后台暂停均有效；没有逐帧 JavaScript 或真实代理/流量调用。装饰网格在图示容器内裁切，不通过隐藏整个页面横向溢出来掩盖布局问题。
 
 `public/assets/serylane-mark.png` 是仓库 `assets/brand/serylane-icon.png` 经 Tauri 官方图标转换生成的 256×256 PNG；`public/favicon.png` 为同源 32×32 PNG。新品牌源图来自内置 image_gen 对批准标志的提取，完整来源及提示词见 `assets/品牌素材来源.md`。没有使用整张设计图充当网页，也没有把生成资产留在外部临时路径供生产依赖。

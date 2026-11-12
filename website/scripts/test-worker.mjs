@@ -112,6 +112,21 @@ test('center failures produce retryable 503, no other source and no sensitive de
       noCache(reply);
       const body = await reply.text();
       assert.match(body, /重试/);
+      if (path.startsWith('/download/')) {
+        assert.match(reply.headers.get('content-type'), /^text\/html/);
+        assert.match(body, /<html lang="en" data-theme="dark">/);
+        assert.match(body, /The download center is temporarily unavailable\./);
+        assert.match(body, /No download was started\./);
+        assert.match(body, /<section lang="zh-CN"/);
+        assert.match(body, /本次没有开始下载。/);
+        assert.match(body, /href="\/#download"/);
+        assert.match(body, /href="\/zh\/#download"/);
+        assert.match(body, /<link rel="stylesheet" href="\/styles\.css">/);
+        assert.doesNotMatch(body, /<script|\sstyle=|\son\w+=/i);
+        assert.equal(reply.headers.get('content-security-policy'), "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+      } else {
+        assert.deepEqual(JSON.parse(body), { error: 'LATEST_UNAVAILABLE', message: '下载中心暂时无法确认最新正式版，请稍后重试。' });
+      }
       assert.doesNotMatch(body, /github|gitee|secret-token|evil\.example/i);
       assert.deepEqual(calls, [CENTER_API]);
     }

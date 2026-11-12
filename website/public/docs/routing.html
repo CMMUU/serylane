@@ -1,12 +1,133 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#f7f9fd"><title>AI 工具域名路由 — Serylane</title><meta name="description" content="Serylane 的 AI 工具域名路由：常见工具自动展开域名，自定义地址独立编辑，后台统一处理；保存与应用分开，不新增 Codex 接入。"><link rel="canonical" href="https://serylane.cmmuu.com/docs/routing"><link rel="icon" href="/assets/serylane-mark.png" type="image/png"><link rel="stylesheet" href="/styles.css"><script src="/site.js" defer></script></head>
-<body class="document-page"><a class="skip-link" href="#main">跳到主要内容</a><header class="site-header page-width"><a class="brand" href="/"><img src="/assets/serylane-mark.png" alt="" width="42" height="50"><span>Serylane</span></a><button class="menu-toggle" type="button" aria-label="打开导航" aria-controls="main-nav" aria-expanded="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><nav id="main-nav" class="main-nav" aria-label="主要导航"><a href="/#features">功能</a><a href="/docs/">文档</a><a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a><a href="/#download" class="button button-primary nav-download">下载</a></nav></header>
-<main id="main" class="document-main"><p class="breadcrumb"><a href="/">Serylane</a> / <a href="/docs/">文档</a> / 路由</p><h1>按 AI 工具分流，地址由你补充。</h1><p class="lead">路由使用代理核心内的域名规则。默认关闭，不再新增 Codex 接入；常见 AI 工具和自定义地址共用同一处理流程。安装包以下载区核验结果为准。</p>
-<div class="notice"><p>官网界面是只读示意，不代表实时连接，不操作本机应用、代理或配置。</p></div>
-<h2 id="node-metadata">常见工具与自定义地址</h2><p>可勾选 OpenAI（ChatGPT / API）、Claude、Gemini（含 AI Studio / API）。默认草稿只选择 OpenAI。后台展开工具域名，和自定义条目统一校验、去重，界面可查看每个工具的具体范围。取消工具不会删除自定义条目。工具清单随版本更新，已应用名单保留原快照；重新保存并确认应用后才更新规则。</p><p>自定义支持 <code>openai.com</code>、<code>*.openai.com</code>，也可输入 <code>https://*.openai.com/*</code>。通配符只匹配子域，根域须另列。按域名处理全部 HTTPS/WSS 路径，不按加密 URL 路径拆分，不解密 TLS。共享登录、支付、客服、Google 公共资源以及语音 IP 不自动整域纳入；可按需补充明确域名。</p>
-<h2>全局开关与简洁配置页</h2><p>v0.7.27 起，顶部「系统代理／TUN 模式」旁增加独立「路由」按钮，路由页也保留「开启／关闭路由」与「刷新状态」。两处共用路由配置开关和当前状态；系统代理与 TUN 互斥，域名路由可与其中任一种配合，不切换网络接管方式。工具选择紧凑展示，域名范围和使用说明按需展开。</p><h2>开启引导与真实生效状态</h2><p>v0.7.29 增加配置引导与核心规则核对：尚未选择出口或编辑未保存时，顶部和页内入口引导到对应操作，不直接禁用；编辑改回原值可继续开启。不会自动替你选择出口。实际可下载版本以下载中心已公开安装包为准。</p><p>应用后核对核心的运行模式、规则总数及前置域名规则。v0.7.36 起进一步区分规则已加载与流量入口：只有当前系统代理／TUN 入口确认，才显示对应路由就绪；Manual 明确标注仅本地代理入口。等待核心、出口失效、规则不一致和状态读取失败分别说明；核对异常时可刷新或重新应用。失败保留编辑，回退也会核验结果，不把提交成功等同于生效。</p><h2 id="proxy-routing-state">代理停止，路由配置仍保留</h2><p>路由开关表示是否启用这套策略，状态文字说明当前是否可用。普通关闭系统代理或 TUN 使用统一停止操作，保留上次网络模式；已经启用的路由进入暂停，下次启动后重新核验。关闭后重启仍保持主代理停止，不会因路由已配置而自动开启代理。</p><ul><li>两种接管都关闭、路由未启用：主代理和路由都显示已关闭。</li><li>两种接管都关闭、路由已启用：主代理显示已关闭，路由显示「已启用 · 暂停，等待代理启动」。</li><li>系统代理或 TUN 开启、路由未启用：主代理显示对应运行模式，路由显示已关闭。</li><li>代理开启、规则及入口核验通过：路由显示已就绪，并说明系统代理或 TUN 入口。</li><li>启停、切换或核验失败：显示正在核验或未生效原因，不沿用旧的成功标记。</li></ul><p>单独保存、开启或关闭路由不启动核心，不切换主代理方式，也不改变其恢复意图。显式 Manual 仍可供应用手动连接本地代理端口；这不等于系统代理或 TUN 接管。全局网速是网卡流量统计，不是路由启用的证据。</p><h2>保存与应用分开</h2><ol><li>勾选工具、补充自定义地址，并明确选择当前订阅的出口策略组。</li><li>点击「保存草稿」，当前流量规则保持不变。</li><li>关闭状态点击任一「路由／开启路由」按钮并确认；已开启时点击「应用更改」确认新草稿。路由规则优先于本地规则、AI 规则和订阅规则；未匹配流量保留原规则。</li></ol><p>只处理已经进入代理核心的连接，规则模式下生效。核心停止、全局或直连模式会显示未生效原因。切换订阅后目标组缺失时，匹配流量拒绝连接而不是静默直连；请重选出口或关闭域名路由。关闭只撤下此模块的覆盖规则，不删除其他规则。</p>
-<h2 id="stability">OpenAI 节点推荐与自动选点</h2><p>从「AI 代理 → OpenAI 自动灾备」重新筛选后，候选显示推荐顺位，实际出口单独标示。两轮轻量探测分别核对 ChatGPT 网页和 OpenAI API 的可达性。评分参考连接表现、倍率与延迟，真实流结果须有可归因的样本才能计分。普通系统代理下显示「待验证」。</p><p>当前节点健康时继续使用，确认故障后按排名改选后续新连接的出口。失败节点进入冷却，可继续手动选点。性价比模式按设置过滤倍率上限及未知倍率。单个合格节点即可使用，两个及以上才有备用。订阅列表的推荐顺位供手动选择，当前订阅的规则继续适用。</p><p>v0.7.39 在明确探测失败后，并行确认当前出口和备用线路。故障确认后为后续连接选用已核验的出口。30 秒是现场验收目标，实际成绩需通过隔离故障试验取得。</p><p>旧结果在重新筛选前沿用基础 Fallback。程序代理、旧增强稳定策略和新增 Codex 接入继续暂停。</p>
-<h2>旧接入恢复</h2><p>旧的模型中转不再新增接入或自动重启。已有 Serylane 接入记录只按所有权恢复原配置；外部程序修改同一字段时保留备份并显示冲突，页面仅保留旧接入恢复入口。旧设置文件保留，不把旧启用状态或具体路径静默转成新域名路由。</p>
-<h2>验证边界</h2><p>节点切换只影响后续连接，不重放模型请求，不承诺中断数据流无缝续接。HTTP 401 只能证明接口可达，不代表模型会话或账户可用。TUN 平台支持范围不因本轮调整改变。</p>
-<h2>工具范围来源</h2><p>自有域名归组参考 <a href="https://help.openai.com/en/articles/9247338-network-recommendations-for-chatgpt-errors-on-web-and-apps" target="_blank" rel="noopener noreferrer">OpenAI 网络说明</a>、<a href="https://support.claude.com/en/articles/13198485-enforce-network-level-access-control-with-tenant-restrictions" target="_blank" rel="noopener noreferrer">Claude 服务域名说明</a>和 <a href="https://ai.google.dev/api" target="_blank" rel="noopener noreferrer">Gemini API 文档</a>。预置范围是 Serylane 的域名分流选择，不是上述厂商对完整可用性的承诺。</p>
-<nav class="document-nav" aria-label="相关文档"><a href="/docs/">返回使用文档</a><a href="/docs/privacy">隐私与数据边界</a><a href="/#download">下载客户端</a></nav></main><footer class="document-footer"><a href="/">Serylane</a> · 独立项目，非 OpenAI 官方产品。</footer></body></html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0d14">
+<title>AI domain routing, setup and limits — Serylane</title>
+<meta name="description" content="Configure optional AI domain routing in Serylane: choose an exit group, save a draft, confirm application, inspect actual readiness, and understand failover limits.">
+<link rel="canonical" href="https://serylane.cmmuu.com/docs/routing">
+<link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/routing">
+<link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/routing">
+<link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/routing">
+<meta property="og:type" content="website">
+<meta property="og:title" content="AI domain routing, setup and limits — Serylane">
+<meta property="og:description" content="Configure optional AI domain routing in Serylane: choose an exit group, save a draft, confirm application, inspect actual readiness, and understand failover limits.">
+<meta property="og:url" content="https://serylane.cmmuu.com/docs/routing">
+<meta property="og:locale" content="en_US">
+<meta property="og:site_name" content="Serylane">
+<meta property="og:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="AI domain routing, setup and limits — Serylane">
+<meta name="twitter:description" content="Configure optional AI domain routing in Serylane: choose an exit group, save a draft, confirm application, inspect actual readiness, and understand failover limits.">
+<meta name="twitter:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<link rel="icon" href="/assets/serylane-mark.png" type="image/png">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/styles.css">
+<script src="/site.js" defer></script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://serylane.cmmuu.com/docs/routing#webpage","name":"AI domain routing, setup and limits — Serylane","url":"https://serylane.cmmuu.com/docs/routing","inLanguage":"en","isPartOf":{"@type":"WebSite","@id":"https://serylane.cmmuu.com/#website","name":"Serylane"}}</script>
+</head>
+<body class="document-page">
+<a class="skip-link" href="#main">Skip to main content</a>
+<header class="site-header page-width">
+<a class="brand" href="/"><img src="/assets/serylane-mark.png" alt="" width="32" height="32"><span>Serylane</span></a>
+<button class="menu-toggle" type="button" aria-label="Open navigation" aria-controls="main-nav" aria-expanded="false" data-menu-open-label="Open navigation" data-menu-close-label="Close navigation"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="sr-only">Main navigation</span></button>
+<nav id="main-nav" class="main-nav" aria-label="Main navigation">
+<a href="/#capabilities">Capabilities</a>
+<a href="/docs/">Docs</a>
+<a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub source</a>
+<a href="/#download" class="button button-secondary nav-download">Download</a>
+</nav>
+<div class="header-controls">
+<div class="locale-switch" role="group" aria-label="Language"><span lang="en" aria-current="page">EN</span><a href="/zh/docs/routing" lang="zh-CN" hreflang="zh-CN">中文</a></div>
+<div class="theme-buttons" role="group" aria-label="Appearance"><button class="theme-button" type="button" data-theme-value="dark" aria-label="Dark mode" title="Dark mode" aria-pressed="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13.2A9 9 0 0 1 10.8 3.1a9 9 0 1 0 10.1 10.1Z"/></svg></button><button class="theme-button" type="button" data-theme-value="light" aria-label="Light mode" title="Light mode" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="theme-button" type="button" data-theme-value="system" aria-label="Follow system" title="Follow system" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button></div>
+</div>
+</header>
+<main id="main" class="document-main page-width">
+<p class="breadcrumb"><a href="/">Serylane</a> / <a href="/docs/">Docs</a> / <span aria-current="page">Domain routing</span></p>
+<h1>Route by domain, without changing who controls your network.</h1>
+<p class="lead">Optional domain rules send matching AI-tool connections to an exit policy group in your current subscription. Routing is off by default, applies inside the proxy core, and does not add Codex attachment.</p>
+<div class="notice"><p>The website’s product illustration is read-only, not live traffic. Browsing this guide does not contact your local proxy, launch an app or change your configuration. Client labels may remain Chinese; this English guide does not imply an English app interface.</p></div>
+<nav class="document-nav" aria-label="On this page">
+<a href="#node-metadata">Tools and domains</a>
+<a href="#save-apply">Save, then apply</a>
+<a href="#global-controls">Shared controls</a>
+<a href="#enablement">Verify readiness</a>
+<a href="#proxy-routing-state">Stopped proxy state</a>
+<a href="#stability">Node recommendations</a>
+<a href="#legacy-recovery">Legacy restoration</a>
+<a href="#validation-boundaries">Limits</a>
+<a href="#range-sources">Domain sources</a>
+</nav>
+<section id="node-metadata">
+<h2>Tool presets and custom domains</h2>
+<p>Choose OpenAI (ChatGPT / API), Claude, and Gemini (including AI Studio / API). A new draft selects only OpenAI; this does <strong>not</strong> enable routing. The backend expands tool domains, validates and deduplicates them with custom entries, and exposes each tool’s scope for inspection. Removing a tool does not delete your custom entries.</p>
+<p>Tool lists may change by version. Already-applied rules keep their saved snapshot; a new list does not replace live rules until you save and explicitly apply it again.</p>
+<p>Custom entries accept <code>openai.com</code>, <code>*.openai.com</code> or a form such as <code>https://*.openai.com/*</code>. A wildcard matches subdomains only: list the root domain separately. Matching covers all HTTPS/WSS paths for a domain; it does not split encrypted URL paths or decrypt TLS.</p>
+<p>Shared login, payment and support services, Google-wide public resources and voice IP ranges are not automatically included wholesale. Add a specific required domain deliberately instead.</p>
+</section>
+<section id="save-apply">
+<h2>Saving is not applying</h2>
+<ol>
+<li>Select tools, add custom domains and explicitly choose an exit policy group from the current subscription. The app does not choose one for you.</li>
+<li>Save the draft with <span lang="zh-CN">「保存草稿」</span>. Existing traffic rules stay unchanged.</li>
+<li>While routing is off, use either routing control and confirm enabling. While it is on, confirm <span lang="zh-CN">「应用更改」</span> (apply changes) to replace the applied draft. Domain-routing rules take precedence over local rules, AI rules and subscription rules; unmatched traffic keeps its original rules.</li>
+</ol>
+<p>Only connections already entering the core are affected, and only in rule mode. A stopped core, global mode or direct mode has an explicit inactive reason. If a subscription change removes the target group, matching traffic is rejected rather than silently sent direct: choose a valid exit or turn off domain routing.</p>
+<p>Disabling this module removes its override rules, not other rules. Saving, enabling or disabling routing does not start the core, switch system proxy/TUN or change the main proxy’s restoration intent.</p>
+</section>
+<section id="global-controls">
+<h2>Two controls, one routing state</h2>
+<p>The top-level routing button next to system proxy/TUN and the routing page’s enable/disable control share the same switch and operation lock. The page also offers a status refresh. System proxy and TUN are mutually exclusive takeover modes; domain routing can accompany either without switching between them.</p>
+<p>Tool choices are compact, with domain scope and instructions expanded on demand. The original release record introduced the two controls in v0.7.27; it did not add Codex attachment.</p>
+</section>
+<section id="enablement">
+<h2>Check actual readiness, not just a successful save</h2>
+<p>Missing exit selection or unsaved edits guide you to the necessary action rather than silently choosing an exit. Returning edits to their saved values allows enabling again. The configuration guidance was introduced in v0.7.29; downloadable availability still depends on the center’s formal package record.</p>
+<p>After application, the app checks the core’s mode, total rule count and leading domain rules. From v0.7.36, loaded rules are distinguished from traffic ingress: routing is ready for system proxy or TUN only when that actual entry point is confirmed. Manual is labeled as a local proxy entry only.</p>
+<p>A waiting core, invalid exit, mismatched rules and failed state read have different explanations. Refresh or reapply after an abnormal check. Failed application retains your edits; rollback is checked too. A successful submission alone is not proof of an effective route.</p>
+</section>
+<section id="proxy-routing-state">
+<h2>Stopping the proxy retains routing configuration</h2>
+<p>The switch records whether this policy is enabled; status describes whether it can work now. Turning off system proxy or TUN uses the main stop operation and retains the last mode. An enabled route pauses, then is checked again on the next explicit proxy start. Restarting the application after stopping the main proxy does not start it merely because routes exist.</p>
+<ul>
+<li>Main proxy stopped, routing disabled: both are off.</li>
+<li>Main proxy stopped, routing enabled: the main proxy is off; routing is enabled but paused, waiting for proxy startup.</li>
+<li>System proxy or TUN running, routing disabled: the main proxy shows its mode; routing is off.</li>
+<li>Proxy running with rules and ingress verified: routing is ready and names the confirmed system-proxy or TUN entry.</li>
+<li>During start, stop, switching or a failed check: status shows verification or a specific inactive reason, never a stale success highlight.</li>
+</ul>
+<p>Manual mode may still provide a local port for explicitly configured apps; that is not system proxy or TUN takeover. Global network rates are network-interface statistics, not evidence that domain routing is enabled.</p>
+</section>
+<section id="stability">
+<h2>OpenAI recommendations and future-connection failover</h2>
+<p>Re-screen candidates under <span lang="zh-CN">「AI 代理 → OpenAI 自动灾备」</span> (AI proxy → OpenAI failover) to obtain a recommendation order. The actual selected exit is displayed separately. Two light probe rounds check the ChatGPT website and OpenAI API. Scoring considers connection behavior, multipliers and latency; real-stream outcomes require attributable samples. Ordinary system-proxy tasks remain marked as pending verification.</p>
+<p>A healthy current node stays in use. Once a failure is confirmed, rankings guide the exit for subsequent new connections; failed nodes enter cooldown, and manual selection remains available. Cost mode filters unknown multipliers and those above the configured limit. One qualified node is enough to use the feature, but at least two are needed for a backup. Subscription recommendations are for manual choice and do not replace the current subscription’s rules.</p>
+<p>The v0.7.39 record describes parallel confirmation of the current and backup paths after an explicit probe failure. A verified exit is selected for future connections once failure is confirmed. <strong>30 seconds is a field-acceptance target, not a measured performance promise</strong>; actual results require isolated fault experiments.</p>
+<p>Old screening results retain basic Fallback until re-screened. Program proxy, the old enhanced-stability strategy and new Codex attachment remain disabled. This recommendation flow does not promise seamless stream recovery.</p>
+</section>
+<section id="legacy-recovery">
+<h2>Restore old attachment records; do not create new ones</h2>
+<p>The old model relay does not accept new attachments or restart automatically. Existing Serylane attachment records may restore the original configuration only after ownership checks. If an external program changed the same field, backups are kept and the conflict is shown; only legacy restoration remains available.</p>
+<p>Old settings files are retained. Old enabled states and concrete paths are not silently converted into domain-routing settings. This recovery path is not a new Codex integration.</p>
+</section>
+<section id="validation-boundaries">
+<h2>What successful checks do not establish</h2>
+<p>Node changes affect future connections. They do not replay model requests or seamlessly resume a disconnected stream. HTTP 401 can establish API reachability, not a usable account or a verified model session.</p>
+<p>Routing does not expand TUN platform support: Windows TUN remains experimental and requires an administrator session; current macOS compatibility packages are not TUN-ready; Linux TUN takeover is not implemented. <a href="/docs/#tun-compatibility">Review platform boundaries</a>.</p>
+</section>
+<section id="range-sources">
+<h2>Where preset domain scope comes from</h2>
+<p>First-party domain grouping references <a href="https://help.openai.com/en/articles/9247338-network-recommendations-for-chatgpt-errors-on-web-and-apps" target="_blank" rel="noopener noreferrer">OpenAI’s network guidance</a>, <a href="https://support.claude.com/en/articles/13198485-enforce-network-level-access-control-with-tenant-restrictions" target="_blank" rel="noopener noreferrer">Claude’s service-domain guidance</a> and <a href="https://ai.google.dev/api" target="_blank" rel="noopener noreferrer">Gemini API documentation</a>. Presets are Serylane routing choices, not a vendor guarantee of complete service availability.</p>
+</section>
+<nav class="document-nav" aria-label="Related documentation">
+<a href="/docs/">Getting started</a>
+<a href="/docs/routing">Domain routing</a>
+<a href="/docs/verification">Verification and signatures</a>
+<a href="/docs/privacy">Privacy and data boundaries</a>
+<a href="/#download">Download the app</a>
+</nav>
+</main>
+<footer class="document-footer"><div class="page-width"><a href="/">Serylane</a> · <a href="/docs/">Docs</a> · <a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub source</a> · <a href="https://github.com/CMMUU/serylane/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only</a></div></footer>
+</body>
+</html>

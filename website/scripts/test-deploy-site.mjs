@@ -2,7 +2,42 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { retryRead, sourceAssetBytes, uploadedVersion, verifyStatic, verifyDownloads } from './deploy-site.mjs';
+import { retryRead, sourceAssetBytes, uploadedVersion, verifyStatic, verifyDownloads, STATIC_ASSETS, staticAssetManifest, verifyNotFound } from './deploy-site.mjs';
+
+test('static byte proof includes every canonical locale page and shared theme resource', async () => {
+  const pages = ['/', '/docs/', '/docs/routing', '/docs/privacy', '/docs/verification'];
+  for (const page of [...pages, ...pages.map(path => '/zh' + path)]) assert.ok(Object.hasOwn(STATIC_ASSETS, page));
+  assert.ok(Object.hasOwn(STATIC_ASSETS, '/theme.js'));
+  assert.ok(Object.hasOwn(STATIC_ASSETS, '/assets/serylane-mark.png'));
+  assert.ok(!Object.keys(STATIC_ASSETS).some(path => /index\.html|\/404/.test(path)));
+  const manifest = await staticAssetManifest();
+  assert.deepEqual(Object.keys(manifest).sort(), Object.keys(STATIC_ASSETS).sort());
+  for (const [route, file] of Object.entries(STATIC_ASSETS)) {
+    const expected = createHash('sha256').update(await readFile(new URL('../public/' + file, import.meta.url))).digest('hex');
+    assert.equal(manifest[route], expected);
+  }
+  const marker = { sourceCommit: 'a'.repeat(40), websiteTree: 'b'.repeat(40), files: manifest };
+  const fetcher = changed => async url => {
+    if (url.endsWith('/build-info.json')) return Response.json(marker, { headers: { 'cache-control': 'no-store' } });
+    const path = new URL(url).pathname;
+    return new Response(changed === path ? 'stale localized page or theme' : await readFile(new URL('../public/' + STATIC_ASSETS[path], import.meta.url)));
+  };
+  await verifyStatic(marker, fetcher(null));
+  await assert.rejects(verifyStatic(marker, fetcher('/zh/')));
+  await assert.rejects(verifyStatic(marker, fetcher('/zh/docs/routing')));
+  await assert.rejects(verifyStatic(marker, fetcher('/theme.js')));
+});
+
+test('unknown English and Chinese paths must remain real noindex 404s', async () => {
+  const seen = [];
+  await verifyNotFound(async url => {
+    seen.push(new URL(url).pathname);
+    return new Response('<meta name="robots" content="noindex, follow">', { status: 404 });
+  });
+  assert.deepEqual(seen, ['/__serylane_missing_page__', '/zh/__serylane_missing_page__']);
+  await assert.rejects(verifyNotFound(async () => new Response('<meta name="robots" content="noindex">')));
+  await assert.rejects(verifyNotFound(async () => new Response('Error', { status: 404 })));
+});
 
 test('robots verification preserves Cloudflare managed policy and checks the full source portion', async () => {
   const owned = 'User-agent: *\nAllow: /\n\nSitemap: https://serylane.cmmuu.com/sitemap.xml\n';

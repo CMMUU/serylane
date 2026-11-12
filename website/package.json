@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "node scripts/check-site.mjs",
-    "test": "node scripts/check-site.mjs && node scripts/test-downloads.mjs && node --test scripts/test-worker.mjs scripts/test-deploy-site.mjs",
+    "test": "node scripts/check-site.mjs && node scripts/test-downloads.mjs && node scripts/test-presentation.mjs && node --test scripts/test-worker.mjs scripts/test-deploy-site.mjs",
     "typecheck": "wrangler types && tsc --noEmit",
     "dev": "node scripts/serve.mjs",
     "deploy:check": "wrangler deploy --dry-run",

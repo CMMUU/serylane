@@ -1,11 +1,141 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#f7f9fd"><title>校验与签名说明 — Serylane</title><meta name="description" content="从 Serylane 下载中心下载对应架构安装包，核对 SHA-256 校验信息，了解应用内更新签名与系统代码签名的区别。"><link rel="canonical" href="https://serylane.cmmuu.com/docs/verification"><link rel="icon" href="/assets/serylane-mark.png" type="image/png"><link rel="stylesheet" href="/styles.css"><script src="/site.js" defer></script></head>
-<body class="document-page"><a class="skip-link" href="#main">跳到主要内容</a><header class="site-header page-width"><a class="brand" href="/"><img src="/assets/serylane-mark.png" alt="" width="42" height="50"><span>Serylane</span></a><button class="menu-toggle" type="button" aria-label="打开导航" aria-controls="main-nav" aria-expanded="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><nav id="main-nav" class="main-nav" aria-label="主要导航"><a href="/#features">功能</a><a href="/docs/">文档</a><a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a><a href="/#download" class="button button-primary nav-download">下载</a></nav></header>
-<main id="main" class="document-main"><p class="breadcrumb"><a href="/">Serylane</a> / <a href="/docs/">文档</a> / 校验与签名</p><h1>下载的文件，有据可查。</h1><p class="lead">安装前核对下载中心、版本、操作系统和处理器架构。SHA-256 检查文件一致性，更新签名检查更新包是否由项目持有的签名密钥签发；两者不是同一件事。</p>
-<h2>从下载中心开始</h2><p>从<a href="/#download">官网下载区域</a>选择对应系统与架构，安装包仅由下载中心提供。原始文件名、签名与哈希保持不变。下载中心暂时不可用、缺少对应包或核验失败时，请稍后重试；不要用其他架构的包代替。以下载中心实际正式发行记录为准，不把源码标签当成已经发布的安装包。</p><p>不要仅凭文件名相似判断来源可信，也不要把其他站点重新打包的文件视为项目发布。</p>
-<h2>核对 SHA-256</h2><ol><li>从同一版本的发布页下载安装包和项目提供的 <code>SHA256SUMS.txt</code>。</li><li>计算安装包的 SHA-256，在校验文件中找到<strong>完全相同的文件名</strong>，逐字核对摘要。</li><li>摘要不一致时不要安装，重新从可信发布页获取并检查。SHA-256 本身不能证明发布来源可信，校验文件也必须来自可信渠道。</li></ol><h3>Windows PowerShell</h3><pre><code>Get-FileHash -LiteralPath 'C:\下载目录\实际安装包文件名.exe' -Algorithm SHA256</code></pre><h3>macOS / Linux</h3><pre><code># macOS
-shasum -a 256 '/下载目录/实际安装包文件名.dmg'
-
-# Linux
-sha256sum '/下载目录/实际安装包文件名.AppImage'</code></pre><p>上面的路径和文件名是示例，请替换为你实际下载的文件。命令只读取文件，不安装或运行安装包。</p>
-<h2>macOS TUN 辅助服务</h2><p>“需要重新关联”表示系统服务登记与辅助程序启动状态需要核对：先停止代理，再在应用设置中重新关联辅助服务。“需要更新安装包”表示安装包签名或内容需要修复，请下载完整正式版本；重复授权不会修复签名。v0.7.18 已细分这些状态，实际可用版本仍以下载入口和正式发行记录为准。现有构建流程生成的临时签名兼容包没有 Developer ID 身份，TUN 仍未就绪；重复下载同一临时签名包不会补齐身份。项目更新签名与 Apple 签名、公证分开核验。</p><p>v0.7.19 先交付订阅卡片、导入处理、配置同步与自选节点功能；macOS 兼容包保留项目更新签名和完整性校验，未包含 Developer ID 或 Apple 公证，macOS TUN 本轮仍未就绪。安装检查失败显示“此安装包暂未满足 TUN 要求”，TUN 故障与原模式联网结果分开显示。后续正式签名、公证及实机 TUN 验收单独推进；最新可下载版本以下载入口和发行记录为准。</p><h2>下载更新暂时中断时如何处理</h2><p>当前源码的更新下载保留有限重试、无进度超时和同一下载中心文件的有限恢复。界面分别显示下载中心、实际网络路径及当前尝试；等待重试时仍可取消，当前代理保持运行。只有签名、大小与 SHA-256 全部通过后才显示安装按钮。</p><p>当前源码仅使用下载中心，失败后可重试，不切换到其他下载源。重试保留选定版本、系统架构与内容身份，不能因 latest 更新而悄悄换版。网络、证书、文件校验与安装失败分别说明；历史记录不代表本次结果。旧版首次升级仍使用自身更新逻辑；遇到失败可从官网下载区域获取同架构完整包并保留配置目录。以实际发行版本为准。</p><h2>安装更新失败时如何处理</h2><p>v0.7.28 修正了系统名称与系统＋架构混用导致的更新预检误判：正常已验签包不再被误报为版本、架构或摘要变化。检查、安装与原生测试共用产品更新流程；新进程确认正确版本后才算完成安装。Windows 的 NSIS/MSI 分开检查，Linux deb/rpm 继续通过原包管理方式升级。</p><p>v0.7.26 源码修正了 macOS 应用包被误判为普通文件的安装问题，备份和替换后都核对应用包完整性、身份与版本。预检失败不会停止代理；同一次运行中，已验证安装包保留，可处理磁盘空间或目录权限后重新安装。进入替换阶段后的失败请先核对回退与代理状态，不反复点击安装。</p><p>旧应用备份保留到新版启动确认；失败的阶段和脱敏原因记录在更新日志。备份恢复、项目更新签名、Apple Developer ID 与 TUN 授权分别检查，不以跳过校验解决问题。</p><p><strong>正在使用 v0.7.24–v0.7.27 且内置安装失败：</strong>请从<a href="https://downloads.cmmuu.com/projects/serylane">下载中心</a>核对实际发布版本，获取已正式发布的 v0.7.28 或更高修复版的完整安装包，退出旧版后覆盖原位置，保留配置目录。旧版更新器不会在替换之前获得新代码；仅重新下载同一更新包不解决该问题，重新安装 v0.7.27 仍包含旧更新器。源码说明不代表安装包已发布，以下载中心实际附件为准。</p><h2>应用内更新签名</h2><p>客户端的更新流程会校验更新包的项目签名；签名或校验失败时，应停止安装并保留错误信息。手动查看更新附件时，以下载中心同一版本实际提供的签名文件和更新清单为准。</p><p>需要独立复核时，可查看仓库内的<a href="https://github.com/CMMUU/serylane/blob/main/scripts/verify-update-signature.mjs" target="_blank" rel="noopener noreferrer">更新签名验证脚本</a>及对应标签的配置公钥。务必使用与发行版一致的脚本和公钥，不接受陌生来源替换的密钥。</p><div class="notice"><p><strong>项目更新签名不是 Windows Authenticode 或 Apple 公证。</strong>没有看到发布说明中的明确证据时，不应假定安装包已完成系统级代码签名或公证，也不应自动绕过操作系统的安全提示。</p></div><nav class="document-nav" aria-label="相关文档"><a href="/#download">返回下载</a><a href="/docs/">使用文档</a><a href="https://github.com/CMMUU/serylane/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">更新日志</a></nav></main><footer class="document-footer"><a href="/">Serylane</a> · GPL-3.0-only</footer></body></html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0d14">
+<title>Download verification and update signatures — Serylane</title>
+<meta name="description" content="Download Serylane only from the download center, verify the exact file with SHA-256, distinguish project update signatures from OS signing, and handle update failures.">
+<link rel="canonical" href="https://serylane.cmmuu.com/docs/verification">
+<link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/verification">
+<link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/verification">
+<link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/verification">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Download verification and update signatures — Serylane">
+<meta property="og:description" content="Download Serylane only from the download center, verify the exact file with SHA-256, distinguish project update signatures from OS signing, and handle update failures.">
+<meta property="og:url" content="https://serylane.cmmuu.com/docs/verification">
+<meta property="og:locale" content="en_US">
+<meta property="og:site_name" content="Serylane">
+<meta property="og:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Download verification and update signatures — Serylane">
+<meta name="twitter:description" content="Download Serylane only from the download center, verify the exact file with SHA-256, distinguish project update signatures from OS signing, and handle update failures.">
+<meta name="twitter:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<link rel="icon" href="/assets/serylane-mark.png" type="image/png">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/styles.css">
+<script src="/site.js" defer></script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://serylane.cmmuu.com/docs/verification#webpage","name":"Download verification and update signatures — Serylane","url":"https://serylane.cmmuu.com/docs/verification","inLanguage":"en","isPartOf":{"@type":"WebSite","@id":"https://serylane.cmmuu.com/#website","name":"Serylane"}}</script>
+</head>
+<body class="document-page">
+<a class="skip-link" href="#main">Skip to main content</a>
+<header class="site-header page-width">
+<a class="brand" href="/"><img src="/assets/serylane-mark.png" alt="" width="32" height="32"><span>Serylane</span></a>
+<button class="menu-toggle" type="button" aria-label="Open navigation" aria-controls="main-nav" aria-expanded="false" data-menu-open-label="Open navigation" data-menu-close-label="Close navigation"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="sr-only">Main navigation</span></button>
+<nav id="main-nav" class="main-nav" aria-label="Main navigation">
+<a href="/#capabilities">Capabilities</a>
+<a href="/docs/">Docs</a>
+<a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub source</a>
+<a href="/#download" class="button button-secondary nav-download">Download</a>
+</nav>
+<div class="header-controls">
+<div class="locale-switch" role="group" aria-label="Language"><span lang="en" aria-current="page">EN</span><a href="/zh/docs/verification" lang="zh-CN" hreflang="zh-CN">中文</a></div>
+<div class="theme-buttons" role="group" aria-label="Appearance"><button class="theme-button" type="button" data-theme-value="dark" aria-label="Dark mode" title="Dark mode" aria-pressed="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13.2A9 9 0 0 1 10.8 3.1a9 9 0 1 0 10.1 10.1Z"/></svg></button><button class="theme-button" type="button" data-theme-value="light" aria-label="Light mode" title="Light mode" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="theme-button" type="button" data-theme-value="system" aria-label="Follow system" title="Follow system" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button></div>
+</div>
+</header>
+<main id="main" class="document-main page-width">
+<p class="breadcrumb"><a href="/">Serylane</a> / <a href="/docs/">Docs</a> / <span aria-current="page">Verification</span></p>
+<h1>Verify the file, then understand the signature.</h1>
+<p class="lead">Check the download center, release, operating system and architecture before installing. SHA-256 establishes file consistency; the project update signature verifies a package against the project’s signing key. Neither is a substitute for operating-system code signing.</p>
+<nav class="document-nav" aria-label="On this page">
+<a href="#download-origin">Download origin</a>
+<a href="#checksums">SHA-256</a>
+<a href="#update-signatures">Update signatures</a>
+<a href="#system-signing">OS signing</a>
+<a href="#macos-tun">macOS TUN</a>
+<a href="#update-downloads">Interrupted downloads</a>
+<a href="#update-installation">Installation failures</a>
+<a href="#verification-history">Historical fixes</a>
+</nav>
+<section id="download-origin">
+<h2>Start at the download center</h2>
+<p>Use the <a href="/#download">official download section</a> to select the matching system and architecture. Installers are supplied only by the download center; original asset filenames, signatures and hashes remain unchanged. The center’s actual formal-release record—not a source tag—determines what has been published.</p>
+<p>If the center is unavailable, the matching package is missing or a check fails, retry later. Do not switch to a GitHub/Gitee download or another architecture or older version. Similar filenames and third-party repackaging do not establish a trustworthy source.</p>
+<p>macOS packages distinguish <a href="/download/macos-x64">Intel (x64)</a> from <a href="/download/macos-arm64">Apple silicon (M series, ARM64)</a>. <a href="/docs/#download-center">See all six system/architecture routes</a>. A browser handoff is not a report that a file has finished downloading.</p>
+</section>
+<section id="checksums">
+<h2>Compare SHA-256 for the exact filename</h2>
+<ol>
+<li>Obtain the installer and the project-provided <code>SHA256SUMS.txt</code> from the same version’s formal release record in the download center.</li>
+<li>Calculate the installer’s SHA-256. Find the <strong>exact same filename</strong> in the checksum file and compare the entire digest.</li>
+<li>Do not install if they differ. Obtain the file again through the verified center entry. SHA-256 alone does not establish the publisher’s identity; the checksum file must also come from a trusted source.</li>
+</ol>
+<h3>Windows PowerShell</h3>
+<pre><code>Get-FileHash -LiteralPath 'C:\Downloads\actual-installer.exe' -Algorithm SHA256</code></pre>
+<h3>macOS</h3>
+<pre><code>shasum -a 256 '/Downloads/actual-installer.dmg'</code></pre>
+<h3>Linux</h3>
+<pre><code>sha256sum '/Downloads/actual-installer.AppImage'</code></pre>
+<p>Replace the example paths with your actual downloaded file. These commands read the file; they do not install or run it. The placeholder filenames are not published asset names.</p>
+</section>
+<section id="update-signatures">
+<h2>Project update signatures</h2>
+<p>The client’s updater checks the project signature on an update package. If signature or integrity checks fail, stop installation and retain the error. For manual inspection, use the signature files and update manifest actually supplied for that same version in the download center.</p>
+<p>Independent review can use the <a href="https://github.com/CMMUU/serylane/blob/main/scripts/verify-update-signature.mjs" target="_blank" rel="noopener noreferrer">source update-signature verification script</a> and the configured public key at the matching release tag. Use the script and key corresponding to the release; do not accept a replacement key from an unknown source. GitHub is a source-review link, not an alternate installer source.</p>
+</section>
+<section id="system-signing">
+<h2>Project signatures are not OS trust approval</h2>
+<div class="notice"><p><strong>A project update signature is not Windows Authenticode, Apple Developer ID or Apple notarization.</strong> Do not assume these have been completed without explicit release evidence, and do not automatically bypass operating-system security warnings.</p></div>
+<p>Content integrity, the project’s update signing identity, OS signing and TUN authorization are separate checks. A package can pass the project update check without satisfying macOS TUN helper requirements.</p>
+</section>
+<section id="macos-tun">
+<h2>macOS compatibility packages are not TUN-ready</h2>
+<p>The current compatibility packages retain project update signatures and integrity checks, but do not include the required Developer ID identity or Apple notarization. TUN is not ready in those packages. Reauthorizing a helper or downloading the same temporarily signed package again does not add the missing identity.</p>
+<p>Helper-registration repair and a package-signing problem are different conditions. A request to re-associate a service concerns its registration/start state; it does not repair an unsuitable package. A request for a corrected installer requires an actually published package that meets those requirements—not repeated authorization. Stop the proxy before an applicable helper repair, and follow the actual release’s instructions.</p>
+<p>Formal signing, notarization and real-device TUN acceptance remain separate work. <a href="/docs/#tun-compatibility">Review all platform limits</a>; historical v0.7.18/v0.7.19 messages are preserved <a href="#verification-history">below</a>.</p>
+</section>
+<section id="update-downloads">
+<h2>If an update download is interrupted</h2>
+<p>The current source flow uses bounded retry, a no-progress timeout and limited recovery of the same download-center file. The interface distinguishes the center, actual network path and attempt. Waiting to retry remains cancellable while the current proxy keeps running. Installation is offered only after signature, size and SHA-256 checks all pass.</p>
+<p>A retry keeps the selected version, architecture and content identity; a change in “latest” must not silently select another release. There is no fallback source. Network, certificate, file-verification and installation failures are separate, and old history is not evidence of this attempt’s result.</p>
+<p>An old installed version still uses its own updater. If it cannot update, use the official download section for a verified full package of the same architecture, keeping the configuration directory. Source behavior is not a claim that the current installed binary already contains it.</p>
+</section>
+<section id="update-installation">
+<h2>If installation fails</h2>
+<p>Keep the failure phase and the sanitized error. Check free space, destination permissions, rollback state and proxy state instead of repeatedly clicking install. Preflight happens before stopping the proxy; a failure during replacement needs a different recovery decision from a failed preflight.</p>
+<p>In the source fixes documented below, a verified package can be retained during the same run for retry after correcting space or permissions, and the old application backup is retained until the new process confirms the expected version. Do not solve failures by bypassing signature, size or hash checks.</p>
+<p>For an older broken built-in updater, obtain an actually published, corrected full installer from the <a href="https://downloads.cmmuu.com/projects/serylane" target="_blank" rel="noopener noreferrer">download center</a>, quit the old app, replace it at the same location and keep its configuration directory. Confirm the matching release and architecture rather than assuming a source fix is available as an installer.</p>
+</section>
+<section id="verification-history">
+<h2>Historical signing and installation notes</h2>
+<div class="notice"><p>These versioned records explain earlier behavior and fixes. They are not a claim that a source version is the latest public installer, or that macOS compatibility packages became TUN-ready.</p></div><section id="history-v0-7-28">
+<h3>v0.7.28 — Update preflight identity</h3>
+<p>This source fix separated operating-system names from OS-plus-architecture identifiers to avoid falsely rejecting verified packages. Completion required a new process confirming the expected version. Windows NSIS/MSI checks were distinct; Linux deb/rpm continued through their package managers.</p><p><a href="/zh/docs/verification#history-v0-7-28" lang="zh-CN" hreflang="zh-CN">Read the full historical record in Chinese</a>.</p>
+</section>
+<section id="history-v0-7-26">
+<h3>v0.7.26 — macOS application-bundle installation</h3>
+<p>The source fix recognized macOS application bundles correctly and checked completeness, identity and version after backup and replacement. Preflight failure did not stop the proxy. Old backups remained until new-version startup confirmation; rollback, project signing, Developer ID and TUN authorization remained independent.</p><p><a href="/zh/docs/verification#history-v0-7-26" lang="zh-CN" hreflang="zh-CN">Read the full historical record in Chinese</a>.</p>
+</section>
+<section id="history-v0-7-24-v0-7-27">
+<h3>v0.7.24–v0.7.27 — An old updater cannot fix itself before replacement</h3>
+<p>If built-in installation failed in these versions, the original guidance was a full, actually published v0.7.28-or-later corrected installer from the center, after quitting the old app and retaining configuration. Redownloading the same update or reinstalling v0.7.27 did not replace that old updater logic. Availability still depended on real center attachments.</p><p><a href="/zh/docs/verification#history-v0-7-24-v0-7-27" lang="zh-CN" hreflang="zh-CN">Read the full historical record in Chinese</a>.</p>
+</section>
+<section id="history-v0-7-18">
+<h3>v0.7.18 — Helper state distinctions</h3>
+<p>The record distinguished helper re-association from a package requiring corrected signing/content. Repeated authorization did not repair missing Developer ID identity, and a project update signature was separate from Apple signing/notarization.</p><p><a href="/zh/docs/verification#history-v0-7-18" lang="zh-CN" hreflang="zh-CN">Read the full historical record in Chinese</a>.</p>
+</section>
+<section id="history-v0-7-19">
+<h3>v0.7.19 — Compatibility package boundary</h3>
+<p>Subscription cards, imports, configuration synchronization and custom nodes were delivered first. macOS compatibility packages retained project signatures and integrity checks but not Developer ID or Apple notarization; macOS TUN remained unready and required separate real-device acceptance.</p><p><a href="/zh/docs/verification#history-v0-7-19" lang="zh-CN" hreflang="zh-CN">Read the full historical record in Chinese</a>.</p>
+</section></section>
+<nav class="document-nav" aria-label="Related documentation">
+<a href="/docs/">Getting started</a>
+<a href="/docs/routing">Domain routing</a>
+<a href="/docs/verification">Verification and signatures</a>
+<a href="/docs/privacy">Privacy and data boundaries</a>
+<a href="/#download">Download the app</a>
+</nav><p><a href="https://github.com/CMMUU/serylane/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">Source release notes</a> describe version-specific changes; use the download center for installer availability.</p>
+</main>
+<footer class="document-footer"><div class="page-width"><a href="/">Serylane</a> · <a href="/docs/">Docs</a> · <a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub source</a> · <a href="https://github.com/CMMUU/serylane/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only</a></div></footer>
+</body>
+</html>

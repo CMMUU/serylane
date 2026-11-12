@@ -1,8 +1,53 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://serylane.cmmuu.com/</loc></url>
-  <url><loc>https://serylane.cmmuu.com/docs/</loc></url>
-  <url><loc>https://serylane.cmmuu.com/docs/routing</loc></url>
-  <url><loc>https://serylane.cmmuu.com/docs/verification</loc></url>
-  <url><loc>https://serylane.cmmuu.com/docs/privacy</loc></url>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url><loc>https://serylane.cmmuu.com/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/zh/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/docs/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/zh/docs/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/docs/routing</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/routing"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/routing"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/routing"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/zh/docs/routing</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/routing"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/routing"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/routing"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/docs/verification</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/verification"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/verification"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/verification"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/zh/docs/verification</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/verification"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/verification"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/verification"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/docs/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/privacy"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/privacy"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/privacy"/>
+  </url>
+  <url><loc>https://serylane.cmmuu.com/zh/docs/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/privacy"/>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/privacy"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/privacy"/>
+  </url>
 </urlset>

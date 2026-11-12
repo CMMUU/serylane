@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0d14">
+<title>官网隐私与数据边界 — Serylane</title>
+<meta name="description" content="了解 Serylane 官网的基础访问请求、仅保存在本机的主题偏好、下载中心处理，以及桌面客户端订阅与代理配置的独立数据边界。">
+<link rel="canonical" href="https://serylane.cmmuu.com/zh/docs/privacy">
+<link rel="alternate" hreflang="en" href="https://serylane.cmmuu.com/docs/privacy">
+<link rel="alternate" hreflang="zh-CN" href="https://serylane.cmmuu.com/zh/docs/privacy">
+<link rel="alternate" hreflang="x-default" href="https://serylane.cmmuu.com/docs/privacy">
+<meta property="og:type" content="website">
+<meta property="og:title" content="官网隐私与数据边界 — Serylane">
+<meta property="og:description" content="了解 Serylane 官网的基础访问请求、仅保存在本机的主题偏好、下载中心处理，以及桌面客户端订阅与代理配置的独立数据边界。">
+<meta property="og:url" content="https://serylane.cmmuu.com/zh/docs/privacy">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:site_name" content="Serylane">
+<meta property="og:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="官网隐私与数据边界 — Serylane">
+<meta name="twitter:description" content="了解 Serylane 官网的基础访问请求、仅保存在本机的主题偏好、下载中心处理，以及桌面客户端订阅与代理配置的独立数据边界。">
+<meta name="twitter:image" content="https://serylane.cmmuu.com/assets/serylane-mark.png">
+<link rel="icon" href="/assets/serylane-mark.png" type="image/png">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/styles.css">
+<script src="/site.js" defer></script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://serylane.cmmuu.com/zh/docs/privacy#webpage","name":"官网隐私与数据边界 — Serylane","url":"https://serylane.cmmuu.com/zh/docs/privacy","inLanguage":"zh-CN","isPartOf":{"@type":"WebSite","@id":"https://serylane.cmmuu.com/#website","name":"Serylane"}}</script>
+</head>
+<body class="document-page">
+<a class="skip-link" href="#main">跳到主要内容</a>
+<header class="site-header page-width">
+<a class="brand" href="/zh/"><img src="/assets/serylane-mark.png" alt="" width="32" height="32"><span>Serylane</span></a>
+<button class="menu-toggle" type="button" aria-label="打开导航" aria-controls="main-nav" aria-expanded="false" data-menu-open-label="打开导航" data-menu-close-label="关闭导航"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="sr-only">主要导航</span></button>
+<nav id="main-nav" class="main-nav" aria-label="主要导航">
+<a href="/zh/#capabilities">能力</a>
+<a href="/zh/docs/">文档</a>
+<a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
+<a href="/zh/#download" class="button button-secondary nav-download">下载</a>
+</nav>
+<div class="header-controls">
+<div class="locale-switch" role="group" aria-label="语言"><a href="/docs/privacy" lang="en" hreflang="en">EN</a><span lang="zh-CN" aria-current="page">中文</span></div>
+<div class="theme-buttons" role="group" aria-label="外观主题"><button class="theme-button" type="button" data-theme-value="dark" aria-label="深色模式" title="深色模式" aria-pressed="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.9 13.2A9 9 0 0 1 10.8 3.1a9 9 0 1 0 10.1 10.1Z"/></svg></button><button class="theme-button" type="button" data-theme-value="light" aria-label="浅色模式" title="浅色模式" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="theme-button" type="button" data-theme-value="system" aria-label="跟随系统" title="跟随系统" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button></div>
+</div>
+</header>
+<main id="main" class="document-main page-width">
+<p class="breadcrumb"><a href="/zh/">Serylane</a> / <a href="/zh/docs/">文档</a> / <span aria-current="page">隐私</span></p>
+<h1>清楚区分数据的去向。</h1>
+<p class="lead">官网、下载中心和你电脑上的代理客户端是不同系统。浏览官网不等于启动代理，也不会自动接入 Codex。</p>
+<nav class="document-nav" aria-label="本页目录">
+<a href="#website-data">官网行为</a>
+<a href="#theme-preference">本地主题偏好</a>
+<a href="#hosting">托管访问请求</a>
+<a href="#downloads">下载与外链</a>
+<a href="#desktop-client">桌面客户端</a>
+<a href="#reporting">安全反馈</a>
+</nav>
+<section id="website-data">
+<h2>这个官网做什么、不做什么</h2>
+<p>本站提供静态产品信息与文档，没有账号系统、分析统计或广告追踪，不要求提交订阅地址、认证令牌或本地配置。系统与架构选择、导航菜单以及常见问题展开只改变当前网页显示。</p>
+<p>首页还会向本站接口查询公开发布信息；下载入口由服务器核对最新正式版、安装包元数据与文件可用性，再跳转下载，不要求提供个人代理配置。</p>
+<p>我们的网页脚本不会连接你电脑上的代理端口、启动本地服务或桌面客户端，也不会修改系统设置。产品界面是非实时示意，不是实时连接检测。文档页不加载第三方字体、脚本或图片。</p>
+</section>
+<section id="theme-preference">
+<h2>仅在本机保存主题偏好</h2>
+<p>官网只在浏览器本地存储中保存外观偏好，键名为 <code>serylane-theme</code>，允许值仅为 <code>dark</code>、<code>light</code>、<code>system</code>，分别表示深色、浅色和跟随系统。默认深色；跟随系统时读取浏览器提供的系统外观偏好。本地存储不可用或被禁时安全降级，不要求开放存储权限。</p>
+<p><strong>我们的脚本绝不会把这项已保存的主题偏好发送给服务器、下载中心或其他服务。</strong>它只用于本地网页显示，不是分析数据，也不是桌面代理设置。</p>
+<p>官网脚本不保存语言、订阅、配置、凭据或用户档案，不设置追踪 Cookie。中英文通过英文路径、<code>/zh/</code> 路径和对应页面链接切换，不保存语言值。桌面客户端自己的本地文件属于下方说明的独立边界。</p>
+</section>
+<section id="hosting">
+<h2>基础访问请求仍会被处理</h2>
+<p>交付网页必然涉及请求。网站托管与内容分发服务会为页面交付和安全防护处理 IP 地址、请求时间、请求路径、浏览器信息等基础访问数据。选择语言路径也会让托管服务看到对应请求路径。</p>
+<p>因此不能把本站描述为「完全不处理数据」。基础访问请求不同于收集代理配置、发送已保存主题偏好，或桌面客户端上传订阅与模型请求。下载服务还会分别处理它交付文件时产生的访问请求。</p>
+</section>
+<section id="downloads">
+<h2>下载中心与外部链接</h2>
+<p>本站下载服务只向下载中心查询公开发布元数据，并检查下载中心文件域的对应安装包；不会转发浏览器的 Cookie、授权头或完整访问请求。仅选择核验通过的同版本、同架构包。</p>
+<p>无法确认时提示失败和重试，不切换其他下载源、旧版本或其他架构。下载跳转后由下载中心文件域提供安装包，其访问数据按服务自身规则处理。</p>
+<p>GitHub 链接仅用于源码、变更记录、许可证和问题反馈，不是产品安装包备用源。外部目标按自身规则处理访问请求；不要向陌生站点提交订阅和令牌。<a href="/zh/docs/verification">查看校验与签名说明</a>。</p>
+</section>
+<section id="desktop-client">
+<h2>桌面客户端与本地路由</h2>
+<p>订阅和代理配置由你自行提供。订阅地址可能包含访问凭据；分享截图、日志或问题报告前，请核对并删除令牌、完整订阅链接和个人信息。</p>
+<p>在桌面客户端中，AI 工具与自定义地址保存在本机，后台统一编译域名规则。域名路由默认关闭，保存草稿与确认应用分开；不解密 TLS、不改写模型请求、不新增 Codex 接入。</p>
+<p>旧接入仅按所有权检查恢复，保留外部程序修改和原备份。订阅编辑保留原记录，地址仅在主动打开编辑框时展示。程序代理与旧增强稳定策略仍停用。具体实现与当前版本边界见<a href="/zh/docs/routing">路由文档</a>。</p>
+</section>
+<section id="reporting">
+<h2>反馈问题，不公开秘密</h2>
+<p>可通过<a href="https://github.com/CMMUU/serylane/issues" target="_blank" rel="noopener noreferrer">项目问题追踪</a>反馈。公开问题页可被他人阅读，请不要粘贴密码、私钥、订阅凭据或未脱敏的配置。</p>
+<p>需要报告安全问题时，先查看仓库是否提供合适的私密报告渠道，不要在公开页面披露敏感细节。</p>
+</section>
+<nav class="document-nav" aria-label="相关文档">
+<a href="/zh/docs/">使用文档</a>
+<a href="/zh/docs/routing">域名路由</a>
+<a href="/zh/docs/verification">校验与签名</a>
+<a href="/zh/docs/privacy">隐私与数据边界</a>
+<a href="/zh/#download">下载客户端</a>
+</nav>
+</main>
+<footer class="document-footer"><div class="page-width"><a href="/zh/">Serylane</a> · <a href="/zh/docs/">文档</a> · <a href="https://github.com/CMMUU/serylane" target="_blank" rel="noopener noreferrer">GitHub 源码</a> · <a href="https://github.com/CMMUU/serylane/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only</a></div></footer>
+</body>
+</html>
