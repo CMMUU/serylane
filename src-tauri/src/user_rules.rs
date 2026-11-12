@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -207,6 +207,7 @@ pub struct UserRulesValidation {
 #[derive(Default)]
 pub struct ConfigurationMutationGuard {
     running: Arc<AtomicBool>,
+    revision: AtomicU64,
 }
 
 pub struct ConfigurationMutationPermit {
@@ -214,13 +215,47 @@ pub struct ConfigurationMutationPermit {
 }
 
 impl ConfigurationMutationGuard {
-    fn acquire(&self) -> AppResult<ConfigurationMutationPermit> {
+    fn acquire_gate(&self) -> AppResult<ConfigurationMutationPermit> {
         self.running
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| AppError::Conflict("配置正在保存或切换，请完成后重试".to_string()))?;
         Ok(ConfigurationMutationPermit {
             running: self.running.clone(),
         })
+    }
+
+    fn acquire(&self) -> AppResult<ConfigurationMutationPermit> {
+        let permit = self.acquire_gate()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(permit)
+    }
+
+    fn observe<T>(&self, read: impl FnOnce(u64) -> AppResult<T>) -> AppResult<T> {
+        let _permit = self.acquire_gate()?;
+        read(self.revision.load(Ordering::Relaxed))
+    }
+
+    async fn wait_for_node_selection(
+        &self,
+        budget: std::time::Duration,
+    ) -> AppResult<ConfigurationMutationPermit> {
+        use std::time::Duration;
+        use tokio::time::{sleep_until, Instant};
+        let deadline = Instant::now() + budget;
+        if let Ok(permit) = self.acquire() {
+            return Ok(permit);
+        }
+        loop {
+            sleep_until(deadline.min(Instant::now() + Duration::from_millis(25))).await;
+            if Instant::now() >= deadline {
+                return Err(AppError::Conflict(
+                    "其他配置操作尚未结束，选点未提交；请稍后重试".into(),
+                ));
+            }
+            if let Ok(permit) = self.acquire() {
+                return Ok(permit);
+            }
+        }
     }
 }
 
@@ -232,6 +267,23 @@ impl Drop for ConfigurationMutationPermit {
 
 pub fn acquire_configuration(app: &AppHandle) -> AppResult<ConfigurationMutationPermit> {
     app.state::<ConfigurationMutationGuard>().acquire()
+}
+
+/// Read a coherent stamp and small local snapshot without reserving a permit
+/// during asynchronous work. A mutation starts a new revision even if it fails.
+pub(crate) fn observe_configuration<T>(
+    app: &AppHandle,
+    read: impl FnOnce(u64) -> AppResult<T>,
+) -> AppResult<T> {
+    app.state::<ConfigurationMutationGuard>().observe(read)
+}
+
+pub(crate) async fn acquire_configuration_for_node_selection(
+    app: &AppHandle,
+) -> AppResult<ConfigurationMutationPermit> {
+    app.state::<ConfigurationMutationGuard>()
+        .wait_for_node_selection(std::time::Duration::from_secs(2))
+        .await
 }
 
 pub(crate) async fn acquire_configuration_for_route(
@@ -1836,6 +1888,41 @@ mod tests {
         drop(acquired);
         assert!(guard.acquire().is_ok());
     }
+    #[test]
+    fn observation_does_not_hold_or_advance_the_configuration_gate() {
+        let guard = ConfigurationMutationGuard::default();
+        let read = || guard.observe(Ok);
+        let first = read().unwrap();
+        assert_eq!(read().unwrap(), first);
+        let write = guard.acquire().unwrap();
+        assert!(read().is_err());
+        drop(write);
+        assert_ne!(read().unwrap(), first);
+    }
+
+    #[tokio::test]
+    async fn node_selection_waits_only_up_to_the_prewrite_deadline() {
+        use std::time::Duration;
+        let guard = ConfigurationMutationGuard::default();
+        let held = guard.acquire().unwrap();
+        assert!(guard
+            .wait_for_node_selection(Duration::from_millis(30))
+            .await
+            .is_err());
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            drop(held);
+        };
+        let (write, ()) = tokio::join!(
+            guard.wait_for_node_selection(Duration::from_secs(1)),
+            release
+        );
+        let write = write.unwrap();
+        assert!(guard.observe(Ok).is_err());
+        drop(write);
+        assert!(guard.observe(Ok).is_ok());
+    }
+
     #[tokio::test]
     async fn configuration_wait_has_a_deadline() {
         let guard = ConfigurationMutationGuard::default();

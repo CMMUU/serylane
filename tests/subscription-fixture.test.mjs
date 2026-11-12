@@ -15,7 +15,7 @@ const executable = ts.transpileModule(ast.statements.filter(statement => !ts.isI
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 }).outputText;
 
-function fixture(scenario = "default") {
+function fixture(scenario = "default", options = {}) {
   const elements = new Map(), listeners = new Map(), timers = [];
   let invoke;
   let browserNetworkCalls = 0;
@@ -28,7 +28,7 @@ function fixture(scenario = "default") {
     aiRoutePresets: JSON.parse(readFileSync(new URL('../src-tauri/ai-route-presets.json', import.meta.url), 'utf8')),
     performance: globalThis.performance, emit: async () => {},
     mockIPC: handler => { invoke = handler; }, packageInfo: { version: "0.0.0-fixture" },
-    location: { search: `?subscriptionScenario=${encodeURIComponent(scenario)}` },
+    location: { search: `?${new URLSearchParams({ subscriptionScenario: scenario, ...options })}` },
     localStorage: { getItem: () => null, setItem: () => { throw new Error("unexpected fixture persistence"); } },
     window: {
       addEventListener: (name, handler) => listeners.set(name, handler),
@@ -51,6 +51,9 @@ function fixture(scenario = "default") {
     invoke: (command, args) => invoke(command, args),
     async call(command, args) { const result = invoke(command, args); await flush(); return result; },
     event(detail) { listeners.get("routedeck-fixture-subscriptions")({ detail }); },
+    gate(detail) { listeners.get("serylane-fixture-subscription-import")?.({ detail }); },
+    buttonGate(detail) { listeners.get("serylane-fixture-button-feedback")?.({ detail }); },
+    qa: () => JSON.parse(context.document.documentElement.dataset.fixtureSubscriptionImportQa ?? "null"),
     state: () => JSON.parse(context.document.documentElement.dataset.fixtureSubscriptionImportState),
     profiles: () => JSON.parse(context.document.documentElement.dataset.fixtureSubscriptionsState),
     calls: () => JSON.parse(context.document.documentElement.dataset.fixtureSubscriptionsCalls),
@@ -261,6 +264,107 @@ test("unsafe URLs and implicit activation never enter the synthetic import", asy
   assert.equal(f.calls().create, 0);
   assert.deepEqual(f.trace(), []);
   assert.equal(f.profiles().length, 2);
+  isolated(f);
+});
+
+test("opt-in raw counts expose duplicate IPC without recording a URL or token", async () => {
+  const f = fixture("import", { subscriptionImportQa: "1" });
+  const inputWithSecret = input({ url: "https://new.example.invalid/private-path?token=fixture-secret", taskId: "fixture-test-task" });
+  f.gate({ action: "arm", stage: "before_commit" });
+  const pending = f.invoke("create_subscription_profile", inputWithSecret);
+  await f.flush();
+  assert.deepEqual(f.qa(), { create: 1, cancel: 0, holds: ["before_commit"] });
+  assert.equal(f.profiles().length, 2);
+  await assert.rejects(f.invoke("create_subscription_profile", inputWithSecret), error => error.code === "STATE_CONFLICT");
+  assert.deepEqual(f.qa(), { create: 2, cancel: 0, holds: ["before_commit"] });
+  assert.equal(f.calls().create, 1);
+  const report = JSON.stringify(f.context.document.documentElement.dataset);
+  assert.doesNotMatch(report, /private-path|token=|fixture-secret/);
+  f.gate({ action: "release", stage: "before_commit" });
+  assert.equal((await pending).created, true);
+  assert.deepEqual(f.qa(), { create: 2, cancel: 0, holds: [] });
+  assert.equal(f.profiles().length, 3);
+  assert.equal(f.state().activeProfileId, "fixture-active");
+  assert.doesNotMatch(JSON.stringify(f.context.document.documentElement.dataset), /private-path|token=|fixture-secret/);
+  isolated(f);
+});
+
+test("a held cancel has no effect until released and cannot produce an imported profile", async () => {
+  const f = fixture("import", { subscriptionImportQa: "1" });
+  const taskId = "fixture-cancel-task";
+  for (const stage of ["before_commit", "cancel_request"]) f.gate({ action: "arm", stage });
+  const pending = f.invoke("create_subscription_profile", input({ taskId }));
+  const cancelled = assert.rejects(pending, error => {
+    assert.equal(error.code, "SUBSCRIPTION_ERROR");
+    assert.match(error.message, /已取消订阅任务/);
+    return true;
+  });
+  await f.flush();
+  assert.equal((await f.call("subscription_task_status", { taskId })).canCancel, true);
+  const cancel = f.invoke("cancel_subscription_task", { taskId });
+  assert.deepEqual(f.qa(), { create: 1, cancel: 1, holds: ["before_commit", "cancel_request"] });
+  assert.equal((await f.call("subscription_task_status", { taskId })).canCancel, true);
+  f.gate({ action: "release", stage: "cancel_request" });
+  assert.equal(await cancel, true);
+  assert.equal((await f.call("subscription_task_status", { taskId })).phase, "cancelled");
+  f.gate({ action: "release", stage: "before_commit" });
+  await cancelled;
+  assert.equal(f.profiles().length, 2);
+  assert.equal(f.state().busy, false);
+  assert.deepEqual(f.qa(), { create: 1, cancel: 1, holds: [] });
+  isolated(f);
+});
+
+test("gated pre-commit failure preserves previous state and a committed receipt is not cancellable", async () => {
+  const f = fixture("import", { subscriptionImportQa: "1" });
+  const failedTask = "fixture-fail-task";
+  f.gate({ action: "arm", stage: "before_commit" });
+  const rejected = assert.rejects(f.invoke("create_subscription_profile", input({ taskId: failedTask })), error => {
+    assert.equal(error.code, "SUBSCRIPTION_ERROR");
+    assert.match(error.message, /未保存订阅/);
+    return true;
+  });
+  await f.flush();
+  f.gate({ action: "release", stage: "before_commit", outcome: "fail" });
+  await rejected;
+  assert.equal(f.profiles().length, 2);
+  assert.equal((await f.call("subscription_task_status", { taskId: failedTask })).phase, "failed");
+
+  const taskId = "fixture-saved-task";
+  f.gate({ action: "arm", stage: "after_commit" });
+  const saved = f.invoke("create_subscription_profile", input({ taskId }));
+  await f.flush();
+  assert.deepEqual(f.qa(), { create: 2, cancel: 0, holds: ["after_commit"] });
+  assert.equal(f.profiles().length, 3);
+  const task = await f.call("subscription_task_status", { taskId });
+  assert.equal(task.phase, "committing");
+  assert.equal(task.canCancel, false);
+  assert.equal(await f.call("cancel_subscription_task", { taskId }), false);
+  assert.deepEqual(f.qa(), { create: 2, cancel: 1, holds: ["after_commit"] });
+  f.gate({ action: "release", stage: "after_commit", outcome: "fail" });
+  assert.equal((await saved).created, true);
+  assert.equal(f.state().busy, false);
+  assert.deepEqual(f.qa(), { create: 2, cancel: 1, holds: [] });
+  isolated(f);
+});
+
+test("subscription import gates are inert without opt-in and list hold never records arguments", async () => {
+  const baseline = fixture("import");
+  baseline.gate({ action: "arm", stage: "before_commit" });
+  assert.equal((await create(baseline)).created, true);
+  assert.equal(baseline.qa(), null);
+  isolated(baseline);
+
+  const f = fixture("import", { buttonFeedback: "1", subscriptionImportQa: "1" });
+  const dataset = f.context.document.documentElement.dataset;
+  f.buttonGate({ action: "arm", command: "list_subscriptions", outcome: "hold" });
+  const pending = f.invoke("list_subscriptions", { url: "https://new.example.invalid/private-path?token=fixture-secret" });
+  const feedback = JSON.parse(dataset.fixtureButtonFeedback);
+  assert.deepEqual(feedback.holds, [1]);
+  assert.deepEqual(feedback.calls[0].args, {});
+  assert.doesNotMatch(JSON.stringify(dataset), /private-path|token=|fixture-secret/);
+  f.buttonGate({ action: "release", command: "list_subscriptions", outcome: "success" });
+  assert.equal((await pending).length, 2);
   isolated(f);
 });
 

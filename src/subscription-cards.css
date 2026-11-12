@@ -7,7 +7,36 @@
 .subscription-card-heading h3, .subscription-import-card h3 { font-size: 18px; line-height: 26px; }
 .subscription-card-heading p, .subscription-import-card > div > p { font-size: 13px; line-height: 20px; }
 .subscription-import-card { display: block; background: var(--panel); border-radius: var(--radius-panel); }
-.subscription-import-card[hidden], .subscription-feedback[hidden], .subscription-onboarding[hidden] { display: none; }
+#managed-subscription-panel:not([open]), .subscription-feedback[hidden], .subscription-onboarding[hidden] { display: none; }
+#managed-subscription-panel {
+  position: fixed;
+  inset: 0;
+  width: min(660px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  margin: auto;
+  padding: 22px 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--text);
+  background: var(--panel-solid, var(--panel));
+  box-shadow: var(--panel-shadow);
+}
+#managed-subscription-panel::backdrop { background: var(--overlay, #11182788); }
+#managed-subscription-panel .subscription-import-heading {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+#managed-subscription-panel .subscription-import-intro,
+#managed-subscription-panel .subscription-import-path {
+  color: var(--muted); margin: 8px 0; font-size: 13px; line-height: 20px;
+}
+#managed-subscription-panel .subscription-import-path { margin-bottom: 16px; }
+@media (max-width: 620px) {
+  #managed-subscription-panel { padding: 16px; }
+  #managed-subscription-panel .subscription-import-fields { grid-template-columns: minmax(0, 1fr); }
+}
+@media (forced-colors: active) {
+  #managed-subscription-panel { color: CanvasText; background: Canvas; }
+}
 .subscription-panel-heading > .toolbar { flex-wrap: wrap; justify-content: flex-end; }
 .subscription-import-heading h3 { margin: 0; font-weight: 600; }
 .subscription-import-card > .subscription-import-heading > p { margin: 4px 0 20px; color: var(--muted); font-size: 14px; line-height: 22px; }

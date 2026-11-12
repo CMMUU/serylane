@@ -147,6 +147,39 @@ h3 { margin: 0; font-size: 13px; }
 }
 .button:hover:not(:disabled) { border-color: rgba(var(--accent-rgb), 0.55); transform: translateY(-1px); background: var(--hover); }
 .button:disabled { cursor: default; opacity: 0.35; }
+/* Loading is distinct from a control that is unavailable. Use currentColor
+   so the indicator follows the button in light, dark and contrast themes. */
+button[data-node-action-loading][aria-busy="true"]:disabled { opacity: 1; cursor: progress; }
+.button[data-node-action-loading][aria-busy="true"]:disabled {
+  color: var(--text); background: var(--hover); border-color: var(--line-strong);
+}
+.manual-node .node-latency[data-node-action-loading]:disabled:not([aria-busy="true"]) {
+  color: var(--disabled-text);
+}
+button[data-node-action-loading][aria-busy="true"]::before {
+  content: "";
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  box-sizing: border-box;
+  margin-inline-end: 0.4em;
+  border: 2px solid currentColor;
+  border-inline-end-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.08em;
+  animation: node-action-spin 0.8s linear infinite;
+}
+.manual-node > button[data-node-choice][aria-busy="true"] { position: relative; padding-inline-start: 2.3em; }
+.manual-node > button[data-node-choice][aria-busy="true"]::before {
+  position: absolute;
+  inset-inline-start: 0.75em;
+  inset-block-start: calc(50% - 0.425em);
+}
+@keyframes node-action-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  button[data-node-action-loading][aria-busy="true"]::before { animation: none; }
+}
+
 .button-primary { color: var(--on-accent); border-color: var(--accent); background: var(--primary-background); font-weight: 700; box-shadow: var(--accent-shadow); }
 .button-primary:hover:not(:disabled) { background: var(--primary-hover); }
 .button-quiet { background: transparent; }

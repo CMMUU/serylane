@@ -49,6 +49,17 @@ import type {
   UserRulesValidation,
 } from "./types";
 
+// The native command returns the result of a fresh read of the one target
+// group; a successful IPC or controller PUT is not proof of the actual exit.
+export type NodeSelectionReceipt = {
+  writeState: "accepted" | "unknown";
+  group: string;
+  groupType: string | null;
+  now: string | null;
+  fixed: string | null;
+  manualNode: string | null;
+};
+
 const reads = new ReadCoordinator();
 const readCommands = new Set(["run_connectivity_diagnostic_step", "read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
 async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
@@ -191,11 +202,11 @@ export const api = {
     invoke<UserRule[]>("parse_user_rules_text", { text }),
   connections: () => invoke<Record<string, unknown>>("get_connections"),
   selectProxy: (group: string, proxy: string, profileId: string, revisionId: string, modeRevision: string) =>
-    invoke<void>("select_proxy", { group, proxy, profileId, revisionId, modeRevision }),
+    invoke<NodeSelectionReceipt>("select_proxy", { group, proxy, profileId, revisionId, modeRevision }),
   openAiCosts: (profileId: string) => invoke<CostSnapshot>("get_openai_costs", { profileId }),
   saveOpenAiCosts: (input: CostInput) => invoke<CostSnapshot>("save_openai_costs", { input, confirmed: true }),
   clearProxySelection: (group: string, profileId: string, revisionId: string, modeRevision: string) =>
-    invoke<void>("clear_proxy_selection", { group, profileId, revisionId, modeRevision }),
+    invoke<NodeSelectionReceipt>("clear_proxy_selection", { group, profileId, revisionId, modeRevision }),
   testProxyDelay: (proxy: string, url?: string, timeoutMs = 5_000) =>
     invoke<Record<string, unknown>>("test_proxy_delay", {
       proxy,
