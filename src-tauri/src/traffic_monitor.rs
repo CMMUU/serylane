@@ -6,6 +6,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use sysinfo::Networks;
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
 #[cfg(target_os = "macos")]
@@ -244,7 +246,85 @@ fn update_tray_if_changed(
     update_tray(app, snapshot);
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn install_macos_panel(
+    enabled: bool,
+    on_action: impl Fn(crate::macos_menu_panel::Action) + Send + Sync + 'static,
+) -> Result<(), &'static str> {
+    let mtm = objc2::MainThreadMarker::new().ok_or("菜单栏不在主线程")?;
+    let brand = macos_title::status_image(macos_layout::brand_icon(), true)?;
+    crate::macos_menu_panel::install(mtm, brand, enabled, on_action)
+}
+
+#[cfg(target_os = "macos")]
 fn update_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSCellImagePosition;
+    use objc2_foundation::NSString;
+
+    let app = app.clone();
+    let snapshot = snapshot.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let monitor = app.state::<GlobalTrafficMonitor>();
+        if monitor.shutdown.load(Ordering::Acquire)
+            || monitor.enabled.load(Ordering::Acquire) != snapshot.enabled
+        {
+            return;
+        }
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let rendered = crate::macos_menu_panel::with_item(mtm, |item, brand, traffic| {
+            let Some(button) = item.button(mtm) else {
+                return;
+            };
+            if !button
+                .image()
+                .is_some_and(|image| std::ptr::eq(&*image, brand))
+            {
+                button.setImage(Some(brand));
+            }
+            if !snapshot.enabled {
+                let _ = macos_title::clear_item(item, mtm);
+                button.setImagePosition(NSCellImagePosition::ImageOnly);
+                button.setToolTip(Some(&NSString::from_str("Serylane")));
+                traffic.setStringValue(&NSString::from_str("流量显示已关闭"));
+                return;
+            }
+
+            let upload = snapshot.upload_bytes_per_second;
+            let download = snapshot.download_bytes_per_second;
+            let tip = macos_title::tooltip(upload, download);
+            button.setToolTip(Some(&NSString::from_str(&tip)));
+            let (up, down) = (
+                macos_title::format_rate(upload),
+                macos_title::format_rate(download),
+            );
+            traffic.setStringValue(&NSString::from_str(&format!(
+                "↑ {} {}      ↓ {} {}",
+                up.number, up.full_unit, down.number, down.full_unit,
+            )));
+            if macos_title::apply_to_item(item, upload, download, mtm).is_err() {
+                let _ = macos_title::clear_item(item, mtm);
+                let (icon, template) = render_macos_tray_icon(upload, download);
+                if let Ok(image) = macos_title::status_image(&icon, template) {
+                    button.setImage(Some(&image));
+                    let _ = macos_title::apply_bitmap_to_item(item, mtm);
+                }
+            }
+        });
+        if rendered.is_none() {
+            update_legacy_tray(&app, &snapshot);
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn update_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
+    update_legacy_tray(app, snapshot);
+}
+
+fn update_legacy_tray(app: &AppHandle, snapshot: &GlobalTrafficSnapshot) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         eprintln!("global traffic tray icon not found");
         return;

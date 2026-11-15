@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.41 - 2026-11-15
+
+- Disable the AI node button and label it 「已应用」 only when Mihomo confirms the selected node is both the effective exit and manually pinned. Selecting another node re-enables the button. An active automatic exit is still pinnable.
+- Open a native macOS quick panel from either menu-bar mouse button, without activating the main window. Show global traffic and explicit actions to open the current page, stop the proxy, or quit. Keep Windows and Linux tray behavior unchanged.
+- Full-screen clicks with another app in front are tracked separately from automated AppKit checks. macOS signing and TUN support are unchanged.
+
 ## 0.7.40 - 2026-11-12
 
 - Add subscriptions in a dialog. Click outside or press Escape to hide it; reopening restores the in-session draft or ongoing import.

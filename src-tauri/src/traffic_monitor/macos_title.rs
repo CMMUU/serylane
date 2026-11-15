@@ -1,12 +1,12 @@
-//! Native, two-row macOS traffic title. No custom status-item view or bitmap
-//! text: the existing Tauri button keeps ownership of its menu and events.
+//! Shared status artwork and native two-row traffic title. Rendering never
+//! changes the NSStatusBarButton target, action, or native menu ownership.
 
 use objc2::{rc::Retained, AnyThread, MainThreadMarker};
 use objc2_app_kit::{
-    NSBaselineOffsetAttributeName, NSCellImagePosition, NSFont, NSFontAttributeName,
-    NSFontWeightMedium, NSFontWeightRegular, NSLineBreakMode, NSMutableParagraphStyle,
-    NSParagraphStyleAttributeName, NSStatusItem, NSTextAlignment, NSTextTab,
-    NSVariableStatusItemLength,
+    NSBaselineOffsetAttributeName, NSBitmapFormat, NSBitmapImageRep, NSCellImagePosition,
+    NSDeviceRGBColorSpace, NSFont, NSFontAttributeName, NSFontWeightMedium, NSFontWeightRegular,
+    NSImage, NSLineBreakMode, NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStatusItem,
+    NSTextAlignment, NSTextTab, NSVariableStatusItemLength,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSDictionary, NSMutableAttributedString, NSNumber, NSRange,
@@ -65,6 +65,45 @@ pub(super) fn tooltip(upload: u64, download: u64) -> String {
         "Serylane\n↑ {} {}\n↓ {} {}",
         up.number, up.full_unit, down.number, down.full_unit
     )
+}
+
+pub(super) fn status_image(
+    rgba: &tauri::image::Image<'_>,
+    template: bool,
+) -> Result<Retained<NSImage>, &'static str> {
+    let (width, height) = (rgba.width() as usize, rgba.height() as usize);
+    let length = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if width == 0
+        || height == 0
+        || width > 2048
+        || height > 2048
+        || length != Some(rgba.rgba().len())
+    {
+        return Err("invalid status icon dimensions");
+    }
+    // SAFETY: a null planes argument asks AppKit to own and allocate the exact
+    // buffer described below; the checked RGBA source has the same row stride.
+    let bitmap = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(), std::ptr::null_mut(), width as isize, height as isize,
+            8, 4, true, false, NSDeviceRGBColorSpace, NSBitmapFormat::AlphaNonpremultiplied,
+            (width * 4) as isize, 32,
+        )
+    }.ok_or("native status icon allocation failed")?;
+    let pixels = bitmap.bitmapData();
+    if pixels.is_null() {
+        return Err("native status icon has no pixels");
+    }
+    // SAFETY: checked dimensions and distinct buffers, sized and owned by AppKit.
+    unsafe { std::ptr::copy_nonoverlapping(rgba.rgba().as_ptr(), pixels, rgba.rgba().len()) };
+    let size = NSSize::new(width as f64 / 2.0, height as f64 / 2.0);
+    bitmap.setSize(size);
+    let image = NSImage::initWithSize(NSImage::alloc(), size);
+    image.addRepresentation(&bitmap);
+    image.setTemplate(template);
+    Ok(image)
 }
 
 pub(super) fn build_title(upload: u64, download: u64) -> Retained<NSMutableAttributedString> {
