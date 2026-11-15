@@ -147,6 +147,15 @@ h3 { margin: 0; font-size: 13px; }
 }
 .button:hover:not(:disabled) { border-color: rgba(var(--accent-rgb), 0.55); transform: translateY(-1px); background: var(--hover); }
 .button:disabled { cursor: default; opacity: 0.35; }
+.node-choice [data-render-key="node-choice-apply"] { min-inline-size: 6.25em; }
+.node-choice .button[data-ai-choice-applied]:disabled {
+  opacity: 1;
+  color: var(--muted);
+  background: var(--hover);
+  border-color: var(--line);
+  box-shadow: none;
+  transition: none;
+}
 /* Loading is distinct from a control that is unavailable. Use currentColor
    so the indicator follows the button in light, dark and contrast themes. */
 button[data-node-action-loading][aria-busy="true"]:disabled { opacity: 1; cursor: progress; }

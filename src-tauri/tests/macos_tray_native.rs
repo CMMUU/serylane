@@ -1,5 +1,5 @@
 // AppKit must run on the process main thread, not a Rust test worker. This
-// harness tests the production title builder against a disposable status item;
+// harness tests the production title and quick panel with disposable status items;
 // it never opens Serylane, reads user configuration or starts networking.
 #[cfg(target_os = "macos")]
 #[path = "../src/traffic_monitor/macos_layout.rs"]
@@ -9,6 +9,10 @@ mod macos_layout;
 #[path = "../src/traffic_monitor/macos_title.rs"]
 #[allow(dead_code)]
 mod macos_title;
+
+#[cfg(target_os = "macos")]
+#[path = "../src/macos_menu_panel.rs"]
+mod macos_menu_panel;
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -265,6 +269,154 @@ fn main() {
     );
     bar.removeStatusItem(&item);
     println!("native tray: fixed-width two-row title, unit changes, clear and re-enable passed");
+    check_panel(&app, mtm);
+}
+
+#[cfg(target_os = "macos")]
+fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker) {
+    use macos_menu_panel::Action;
+    use objc2::{rc::Retained, sel};
+    use objc2_app_kit::{
+        NSButton, NSEventMask, NSPopUpMenuWindowLevel, NSStandardKeyBindingResponding,
+        NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    };
+    use objc2_foundation::{
+        NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSRunLoop, NSSize, NSString,
+    };
+    use std::sync::{Arc, Mutex};
+
+    fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
+        NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
+    }
+    let reference = rect(-1440.0, 138.0, 1440.0, 850.0);
+    let panel_size = NSSize::new(340.0, 158.0);
+    assert_eq!(
+        macos_menu_panel::panel_origin(panel_size, rect(-280.0, 985.0, 64.0, 24.0), reference),
+        NSPoint::new(-418.0, 819.0)
+    );
+    assert_eq!(
+        macos_menu_panel::panel_origin(panel_size, rect(-1440.0, 1080.0, 40.0, 24.0), reference),
+        NSPoint::new(-1432.0, 822.0)
+    );
+    assert_eq!(
+        macos_menu_panel::panel_origin(panel_size, rect(-27.0, 140.0, 25.0, 24.0), reference),
+        NSPoint::new(-348.0, 146.0)
+    );
+
+    app.finishLaunching();
+    let actions = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&actions);
+    let brand = || macos_title::status_image(macos_layout::brand_icon(), true).unwrap();
+    macos_menu_panel::install(mtm, brand(), false, move |action| {
+        observed.lock().unwrap().push(action);
+    })
+    .unwrap();
+    assert!(macos_menu_panel::install(mtm, brand(), true, |_| {}).is_err());
+
+    let status = macos_menu_panel::with_item(mtm, |item, brand, traffic| {
+        let button = item.button(mtm).unwrap();
+        assert!(
+            item.menu(mtm).is_none(),
+            "native panel and old menu cannot coexist"
+        );
+        assert!(button.image().unwrap().isTemplate());
+        assert_eq!(button.image().unwrap().size(), brand.size());
+        assert_eq!(traffic.stringValue().to_string(), "流量显示已关闭");
+        assert_eq!(
+            button.sendActionOn(NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown),
+            (NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown).bits() as isize
+        );
+        // Rendering a new sample does not replace the AppKit target or action.
+        macos_title::apply_to_item(item, 8_192, 16_384, mtm).unwrap();
+        assert_eq!(button.action(), Some(sel!(toggleSerylanePanel:)));
+        macos_title::clear_item(item, mtm).unwrap();
+        assert_eq!(button.action(), Some(sel!(toggleSerylanePanel:)));
+        button
+    })
+    .expect("status registered");
+    let panel = app
+        .windows()
+        .iter()
+        .find(|window| window.title().to_string() == "Serylane 快捷面板")
+        .expect("panel window registered");
+    assert!(panel
+        .styleMask()
+        .contains(NSWindowStyleMask::NonactivatingPanel));
+    assert!(panel.collectionBehavior().contains(
+        NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::CanJoinAllApplications
+            | NSWindowCollectionBehavior::CanJoinAllSpaces
+    ));
+    assert_eq!(panel.level(), NSPopUpMenuWindowLevel);
+    assert!(panel.canBecomeKeyWindow() && !panel.canBecomeMainWindow());
+    assert!(!panel.isVisible());
+    let click_status = || {
+        // Dispatch through the real button and target; this is not a physical click.
+        assert!(unsafe { status.sendAction_to(status.action(), status.target().as_deref()) });
+    };
+    let foreground = || {
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|app| app.processIdentifier())
+    };
+    let initial_foreground = foreground();
+    click_status();
+    assert!(panel.isVisible(), "button should place the panel");
+    assert_eq!(
+        foreground(),
+        initial_foreground,
+        "opening must preserve the foreground application"
+    );
+    assert!(
+        panel.isOnActiveSpace(),
+        "panel should show on the active Space"
+    );
+    click_status();
+    assert!(!panel.isVisible(), "second click toggles it off");
+    click_status();
+    // Exercise the actual panel's Escape responder without system input injection.
+    unsafe { panel.cancelOperation(None) };
+    assert!(!panel.isVisible());
+    assert!(actions.lock().unwrap().is_empty());
+
+    let surface = panel.contentView().expect("native content view");
+    let buttons: Vec<Retained<NSButton>> = surface
+        .subviews()
+        .iter()
+        .filter_map(|view| view.downcast().ok())
+        .collect();
+    for (tag, action, title) in [
+        (0, Action::OpenWindow, "打开主窗口"),
+        (1, Action::Stop, "停止代理"),
+        (2, Action::Quit, "退出 Serylane"),
+    ] {
+        click_status();
+        let action_button = buttons.iter().find(|button| button.tag() == tag).unwrap();
+        assert_eq!(action_button.title(), NSString::from_str(title));
+        let len = actions.lock().unwrap().len();
+        // Only the injected handler is called. No actual proxy/window actions.
+        assert!(unsafe {
+            action_button.sendAction_to(action_button.action(), action_button.target().as_deref())
+        });
+        assert!(!panel.isVisible(), "dismiss before dispatch");
+        // An additional delivery to a hidden panel must not enqueue a second action.
+        assert!(unsafe {
+            action_button.sendAction_to(action_button.action(), action_button.target().as_deref())
+        });
+        let deadline = NSDate::dateWithTimeIntervalSinceNow(1.0);
+        let run_loop = NSRunLoop::currentRunLoop();
+        while actions.lock().unwrap().len() == len && deadline.timeIntervalSinceNow() > 0.0 {
+            run_loop.runMode_beforeDate(unsafe { NSDefaultRunLoopMode }, &deadline);
+        }
+        assert_eq!(&actions.lock().unwrap()[len..], &[action]);
+    }
+
+    click_status();
+    macos_menu_panel::uninstall(mtm);
+    assert!(!panel.isVisible() && status.target().is_none() && status.action().is_none());
+    assert!(macos_menu_panel::with_item(mtm, |_, _, _| ()).is_none());
+    macos_menu_panel::uninstall(mtm);
+    println!("native panel: geometry, actual status target, left/right event mask, nonactivation, toggle, Escape, single deferred actions and teardown passed; full-screen physical input not exercised");
 }
 
 #[cfg(target_os = "macos")]

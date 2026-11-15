@@ -87,6 +87,12 @@
 <p>Manual subscription downloads can follow Serylane, use direct access, or use an already-running local HTTP proxy. They do not start the core or change system proxy settings. Failure on the selected proxy path does not silently switch to direct. Fetching and validation have bounded retries and timeouts; failures retain the existing configuration. Cancellation is available before saving begins, while a started save transaction is allowed to finish.</p>
 <p>In v0.7.40, health checks, node selection and speed tests show loading on the clicked button. If the selected AI node is eligible and its traffic multiplier is known, click <span lang="zh-CN">「应用节点」</span> (apply node) once to submit. The app checks the policy group's actual exit in Mihomo before reporting success. Only new connections matching that group use the new exit; Serylane does not proactively close existing connections.</p>
 <p>Node tests report basic reachability, timeouts and failures, not bandwidth, AI login or successful model requests. They do not automatically start the core or proactively choose an exit; automatic groups retain their own policy. Diagnostics reveal checks progressively, skip network checks when the core is stopped, and do not change proxy modes, routes or configuration.</p>
+<p>From v0.7.41, the AI node button becomes disabled and shows <span lang="zh-CN">「已应用」</span> (Applied) only after Mihomo confirms that the selection is manually pinned and is the actual exit. Selecting a different node lets you apply it. An automatically selected exit can still be pinned.</p>
+</section>
+<section id="macos-quick-panel">
+<h2>macOS menu-bar quick panel</h2>
+<p>From v0.7.41, left-click or right-click the Serylane menu-bar icon to open the native panel without bringing the main window forward. Click the icon again, click outside the panel, or press Escape to dismiss it. The panel shows global traffic and offers actions to open the main window on its current page, stop the proxy, or quit.</p>
+<p>Windows and Linux keep their existing tray behavior. Physical clicks while another app is full screen are a separate device check. See the <a href="/#download">download section</a> for the currently available release.</p>
 </section>
 <section id="subscription-usage">
 <h2>Read allowance data carefully</h2>

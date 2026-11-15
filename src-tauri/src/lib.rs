@@ -13,6 +13,8 @@ mod error;
 mod lifecycle;
 mod local_routing;
 #[cfg(target_os = "macos")]
+mod macos_menu_panel;
+#[cfg(target_os = "macos")]
 mod macos_service;
 #[cfg(target_os = "macos")]
 mod macos_update_install;
@@ -1533,11 +1535,18 @@ fn cleanup_resources(app: &AppHandle, deadline: std::time::Instant) {
     );
 }
 
-fn show_home_window(app: &AppHandle) {
+fn reveal_main_window(app: &AppHandle) -> bool {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        return true;
+    }
+    false
+}
+
+fn show_home_window(app: &AppHandle) {
+    if reveal_main_window(app) {
         let _ = app.emit("navigate-view", "overview");
     }
 }
@@ -1622,43 +1631,77 @@ pub fn run() {
             storage
                 .mark_clean_shutdown(false)
                 .map_err(|error| error.to_string())?;
-            let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-            let stop_item = MenuItem::with_id(app, "stop", "停止 Mihomo", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &stop_item, &quit_item])?;
-            let mut tray = TrayIconBuilder::with_id(TRAY_ID).tooltip("Serylane");
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
+            #[cfg(target_os = "macos")]
+            let native_tray = {
+                let handle = app.handle().clone();
+                let result = traffic_monitor::install_macos_panel(
+                    settings.show_global_traffic,
+                    move |action| match action {
+                        macos_menu_panel::Action::OpenWindow => {
+                            reveal_main_window(&handle);
+                        }
+                        macos_menu_panel::Action::Stop => {
+                            let app = handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = stop_runtime_by_user(&app).await;
+                            });
+                        }
+                        macos_menu_panel::Action::Quit => {
+                            cleanup_app(&handle);
+                            handle.exit(0);
+                        }
+                    },
+                );
+                if let Err(error) = result {
+                    app_log::record(
+                        1,
+                        app_log::Area::App,
+                        &format!("菜单栏面板初始化失败：{error}"),
+                    );
+                }
+                result.is_ok()
+            };
+            #[cfg(not(target_os = "macos"))]
+            let native_tray = false;
+            if !native_tray {
+                let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+                let stop_item = MenuItem::with_id(app, "stop", "停止 Mihomo", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show_item, &stop_item, &quit_item])?;
+                let mut tray = TrayIconBuilder::with_id(TRAY_ID).tooltip("Serylane");
+                if let Some(icon) = app.default_window_icon() {
+                    tray = tray.icon(icon.clone());
+                }
+                tray.menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            show_home_window(tray.app_handle());
+                        }
+                    })
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => {
+                            show_home_window(app);
+                        }
+                        "stop" => {
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = stop_runtime_by_user(&app).await;
+                            });
+                        }
+                        "quit" => {
+                            cleanup_app(app);
+                            app.exit(0);
+                        }
+                        _ => {}
+                    })
+                    .build(app)?;
             }
-            tray.menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_home_window(tray.app_handle());
-                    }
-                })
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        show_home_window(app);
-                    }
-                    "stop" => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = stop_runtime_by_user(&app).await;
-                        });
-                    }
-                    "quit" => {
-                        cleanup_app(app);
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
-                .build(app)?;
             app.state::<GlobalTrafficMonitor>()
                 .start(app.handle().clone(), settings.show_global_traffic);
             let _ = app
@@ -1805,6 +1848,10 @@ pub fn run() {
             // Tao maps confirmed Windows WM_ENDSESSION to LoopDestroyed,
             // which reaches Tauri as Exit (not necessarily Window::Destroyed).
             if matches!(event, tauri::RunEvent::Exit) {
+                #[cfg(target_os = "macos")]
+                if let Some(mtm) = objc2::MainThreadMarker::new() {
+                    macos_menu_panel::uninstall(mtm);
+                }
                 cleanup_app(app);
             }
         });

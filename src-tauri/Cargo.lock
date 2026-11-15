@@ -2386,6 +2386,7 @@ dependencies = [
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
+ "objc2-quartz-core",
 ]
 
 [[package]]
@@ -3691,7 +3692,7 @@ dependencies = [
 
 [[package]]
 name = "serylane"
-version = "0.7.40"
+version = "0.7.41"
 dependencies = [
  "block2",
  "bytes",
