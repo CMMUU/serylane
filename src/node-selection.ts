@@ -3,7 +3,7 @@ import type { CurrentNodeDetails, ProfileRecord, RouteSnapshot, RoutingMode } fr
 export const OPENAI_GROUP = "🤖 OpenAI 自动灾备";
 export type NodeMetadata = { regions: string[]; regionStatus: "supported" | "unsupported" | "restricted" | "unknown" | "ambiguous"; regionReason: string; eligible: boolean; ruleVersion: string; ruleSource: string; checkedAt: string; nameMultiplier: number | null; multiplierSource: "name" | "manual" | "unknown" | "conflict" | "invalid" };
 export const multiplierSourceLabel = (source: NodeMetadata["multiplierSource"] | undefined): string => ({ name: "名称识别", manual: "手动覆盖", unknown: "倍率未知", conflict: "倍率冲突", invalid: "倍率无效" })[source ?? "unknown"];
-export type ProxyNode = { history?: { delay: number; time?: string }[]; type?: string; now?: string; all?: string[]; fixed?: string | boolean; manualNode?: string | null; alive?: boolean; udp?: boolean; trafficMultiplier?: number | null; withinCostBudget?: boolean; metadata?: NodeMetadata };
+export type ProxyNode = { history?: { delay: number; time?: string }[]; type?: string; now?: string; all?: string[]; fixed?: string | boolean; manualNode?: string | null; aiChoiceUnverified?: boolean; alive?: boolean; udp?: boolean; trafficMultiplier?: number | null; withinCostBudget?: boolean; metadata?: NodeMetadata };
 export type ProxyMap = Record<string, ProxyNode>;
 export type OpenAiRecommendation = { name: string; rank: number | null; score: number | null; streamSamples: number; connectionSamples: number; cooling: boolean; unavailable: boolean };
 export const escapeNode = (value: unknown): string => String(value ?? "—").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
@@ -83,6 +83,15 @@ export function aiNodeBlockReason(node?: ProxyNode): string | null {
   return null;
 }
 
+// A draft matching the automatic exit is still a new manual choice. Fallback
+// and URLTest likewise need both the explicit preference and the running exit.
+export function isConfirmedAiChoice(group: string, state: ProxyNode | undefined, name: string | null): boolean {
+  if (group !== OPENAI_GROUP || !name || !state || state.aiChoiceUnverified ||
+      state.now !== name || (!Array.isArray(state.all) || !state.all.includes(name))) return false;
+  if (state.type === "Selector") return state.manualNode === name;
+  return (state.type === "Fallback" || state.type === "URLTest") && state.fixed === name;
+}
+
 type NodePickerState = {
   draft?: string;
   pending?: { node: string | null; phase: "write" | "verify" };
@@ -109,6 +118,7 @@ export function nodeSelectionMarkup(
   const applying = Boolean(pending && pending.node !== null);
   const restoring = pending?.node === null;
   const locked = busy || Boolean(pending);
+  const applied = !locked && selectedAvailable && isConfirmedAiChoice(group, node, selected);
   const phaseLabel = pending?.phase === "verify" ? "正在核对出口…" : null;
   const mode = node.manualNode ? "手动固定 · 自动切换已暂停" : node.type === "Selector" ? (group === OPENAI_GROUP ? "自动 · 稳定优先" : "手动选择") : node.fixed ? "手动优先 · 失效时由核心回退" : "自动选择";
   const selectedReason = selected ? blockReason(selected) : null;
@@ -123,7 +133,7 @@ export function nodeSelectionMarkup(
       const eligible = available(name);
       return `<option data-render-key="node-choice-option:${escapeNode(name)}" value="${escapeNode(name)}" ${name === selected ? "selected" : ""} ${eligible ? "" : "disabled"}>${escapeNode(label)}${prices ? ` · ${prices[name]?.trafficMultiplier == null ? "倍率未知" : `${prices[name]?.trafficMultiplier}×`}` : ""}${recommendation?.cooling ? " · 冷却中" : ""}${eligible ? "" : ` · ${escapeNode(blockReason(name))}`}</option>`;
     }).join("")}</select></label>
-    <button type="submit" class="button button-primary" data-render-key="node-choice-apply" data-node-action-loading aria-busy="${applying}" ${locked || !selectedAvailable ? "disabled" : ""}>${applying ? phaseLabel ?? "正在应用节点…" : "应用节点"}</button>
+    <button type="submit" class="button${applied ? "" : " button-primary"}" data-render-key="node-choice-apply" data-node-action-loading ${applied ? "data-ai-choice-applied" : ""} aria-busy="${applying}" ${locked || !selectedAvailable || applied ? "disabled" : ""}>${applying ? phaseLabel ?? "正在应用节点…" : applied ? "已应用" : "应用节点"}</button>
     ${restoring || canRestoreAuto(group, node) ? `<button type="button" class="button button-quiet" data-render-key="node-choice-auto" data-node-auto="${escapeNode(group)}" data-node-action-loading aria-busy="${restoring}" ${locked ? "disabled" : ""}>${restoring ? phaseLabel ?? "正在恢复自动…" : "恢复自动"}</button>` : ""}
   </form><p class="node-choice-help" data-render-key="node-choice-help:${escapeNode(group)}" role="status" ${choiceHelp ? "" : "hidden"}>${escapeNode(choiceHelp)}</p>${node.manualNode && !candidates.includes(node.manualNode) ? '<p class="node-choice-help">原手动节点已不在候选中，请重新选择或恢复自动；不会静默恢复自动。</p>' : ""}`;
 }

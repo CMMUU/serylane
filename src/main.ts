@@ -16,7 +16,7 @@ import "./subscription-cards.css";
 import "./node-selection.css";
 import "./manual-outbound.css";
 import { manualOutboundMarkup, mountManualOutbound, nodeGridMarkup, type ManualOutboundState } from "./manual-outbound";
-import { aiNodeBlockReason, generalGroups, currentNodeMarkup, nodeSelectionMarkup, openAiRecommendations, openAiRecommendationMarkup, type ProxyMap } from "./node-selection";
+import { aiNodeBlockReason, isConfirmedAiChoice, generalGroups, currentNodeMarkup, nodeSelectionMarkup, openAiRecommendations, openAiRecommendationMarkup, type ProxyMap } from "./node-selection";
 import { mountOpenAiCosts, openAiCostsMarkup } from "./openai-costs";
 import { subscriptionCardMarkup, subscriptionRecommendationRanks, newestSubscriptionStatus, synchronizedProfiles } from "./subscription-cards";
 import { subscriptionImportMarkup, subscriptionNetworkMarkup, describeSubscriptionImport } from "./subscription-import";
@@ -108,6 +108,7 @@ const store: {
   activeProfile: ProfileDetails | null;
   selectedProfile: ProfileDetails | null;
   proxies: Record<string, unknown> | null;
+  proxySnapshotRuntime: string | null;
   rules: Record<string, unknown> | null;
   connections: Record<string, unknown> | null;
   openAiTask: OpenAiPolicyTask | null;
@@ -129,6 +130,7 @@ const store: {
   activeProfile: null,
   selectedProfile: null,
   proxies: null,
+  proxySnapshotRuntime: null,
   rules: null,
   connections: null,
   openAiTask: null,
@@ -149,6 +151,14 @@ function dataContext(): string {
 function pageContext(): string { return `${viewNavigationRevision}/${dataContext()}`; }
 function nodeSelectionContext(): string {
   return JSON.stringify([dataContext(), store.runtime?.startedAt, store.activeProfile?.profile.routingMode, store.manualOutbound?.mode]);
+}
+function runningProxyIdentity(): string | null {
+  const runtime = store.runtime;
+  return runtime?.phase === "running" ? JSON.stringify([runtime.pid, runtime.startedAt]) : null;
+}
+function currentAiProxySnapshot() {
+  const identity = runningProxyIdentity();
+  return identity && store.proxySnapshotRuntime === identity ? store.proxies : null;
 }
 function currentNodeSelection() {
   return nodeSelectionPending?.context === nodeSelectionContext() ? nodeSelectionPending : null;
@@ -1541,6 +1551,10 @@ async function performRuntimeRead(allowDuringRuntimeAction: boolean) {
     overviewNodeDetails = {};
     proxyReadSequence++;
     renderProxies();
+  } else if (store.proxies && !currentAiProxySnapshot()) {
+    // A pid/start-time change can go directly from running to running. Do not
+    // retain an Applied badge from the previous core while the next read loads.
+    renderOpenAiPolicy();
   }
   renderTunHelper();
   renderHeader();
@@ -2191,8 +2205,10 @@ function renderOpenAiPolicy() {
     ? store.subscriptions.find((subscription) => subscription.profile.id === task?.profileId)
         ?.profile.displayName ?? "其他订阅"
     : null;
-  const matchingProxies = store.proxies?.profileId === active.profile.id && store.proxies?.revisionId === active.profile.activeRevisionId
-    ? store.proxies : null;
+  const liveProxies = currentAiProxySnapshot();
+  const matchingProxies = liveProxies?.profileId === active.profile.id &&
+    liveProxies.revisionId === active.profile.activeRevisionId &&
+    liveProxies.modeRevision === store.manualOutbound?.revision ? liveProxies : null;
   const proxyMap = (matchingProxies?.proxies ?? {}) as ProxyMap;
   const runtimeGroup = store.runtime?.phase === "running" && active.profile.routingMode === "rule" && store.manualOutbound?.mode === "ai"
     ? proxyMap[OPENAI_GROUP_NAME] : undefined;
@@ -2346,8 +2362,8 @@ async function performProxyRead(quiet: boolean, context: string, contextKey = pa
   const profile = store.activeProfile?.profile;
   const sequence = ++proxyReadSequence;
   const runtimeRevision = runtimeMutationRevision;
-  const runtimePid = store.runtime?.pid;
-  const contextCurrent = () => context === contextKey() && sequence === proxyReadSequence && runtimeRevision === runtimeMutationRevision && store.runtime?.pid === runtimePid
+  const runtimeIdentity = runningProxyIdentity();
+  const contextCurrent = () => context === contextKey() && sequence === proxyReadSequence && runtimeRevision === runtimeMutationRevision && runningProxyIdentity() === runtimeIdentity
     && profile?.id === store.activeProfile?.profile.id && profile?.activeRevisionId === store.activeProfile?.profile.activeRevisionId;
   if (store.runtime?.phase !== "running" || !profile) {
     store.proxies = null;
@@ -2364,6 +2380,7 @@ async function performProxyRead(quiet: boolean, context: string, contextKey = pa
     if (result.modeRevision !== store.manualOutbound?.revision) throw new Error("选点方式已变化，请刷新页面状态后重试");
     if (result.profileId !== profile.id || result.revisionId !== profile.activeRevisionId) throw new Error("节点信息与当前配置不一致，请刷新重试");
     store.proxies = result;
+    store.proxySnapshotRuntime = runtimeIdentity;
     proxyReadError = "";
     renderProxies();
     renderOverviewNodes();
@@ -2417,9 +2434,9 @@ function renderOverviewNodes() {
 
 async function changeNode(group: string, node: string | null, returnFocus?: HTMLElement) {
   const profile = store.activeProfile?.profile;
-  const snapshot = store.proxies;
   const mode = store.manualOutbound;
   const ai = group === OPENAI_GROUP_NAME;
+  const snapshot = ai ? currentAiProxySnapshot() : store.proxies;
   if (nodeSelectionBusy) {
     if (nodeSelectionPending && nodeSelectionPending.context !== nodeSelectionContext())
       toast("上一项节点操作尚未结束，请稍后重试", "info");
@@ -2440,6 +2457,13 @@ async function changeNode(group: string, node: string | null, returnFocus?: HTML
   }
   const blocked = ai && node !== null ? aiNodeBlockReason(map[node]) : null;
   if (blocked) { toast(blocked, "info"); return; }
+  const alreadyApplied = () => {
+    if (!ai) return false;
+    const live = currentAiProxySnapshot();
+    return live?.profileId === profile.id && live.revisionId === profile.activeRevisionId &&
+      live.modeRevision === mode.revision && isConfirmedAiChoice(group, (live.proxies as ProxyMap | undefined)?.[group], node);
+  };
+  if (alreadyApplied()) return;
 
   const context = nodeSelectionContext();
   const current = () => context === nodeSelectionContext();
@@ -2453,7 +2477,11 @@ async function changeNode(group: string, node: string | null, returnFocus?: HTML
       const confirmed = await confirmAction({ title: "确认节点费用", message: "此节点的流量倍率未知，仍要应用吗？已有连接不会断开。", confirmLabel: "应用节点", returnFocus });
       if (!confirmed) return;
     }
-    if (!current() || !eligible()) { toast("配置或运行状态已变化，请重新选择", "error"); return; }
+    if (!current() || !eligible() || (ai && !currentAiProxySnapshot())) {
+      toast("配置或运行状态已变化，请重新选择", "error");
+      return;
+    }
+    if (alreadyApplied()) return;
 
     nodeSelectionPending = { context, group, node, phase: "write" };
     proxySelectionReadRevision++;
@@ -2487,6 +2515,9 @@ async function changeNode(group: string, node: string | null, returnFocus?: HTML
         // Match the full-list projection: only managed Selector exposes a
         // persisted manual choice as "auto switching paused".
         manualNode: receipt.groupType === "Selector" ? receipt.manualNode : undefined,
+        // An ambiguous write can expose the actual exit without confirming the
+        // operation. A fresh, scoped full list can replace this local projection.
+        aiChoiceUnverified: ai && receipt.writeState !== "accepted",
       };
       store.proxies = { ...latest, proxies: { ...proxies, [group]: groupView } };
       delete overviewNodeDetails[group];

@@ -5,7 +5,7 @@ import ts from "typescript";
 import vm from "node:vm";
 const source = readFileSync(new URL("../src/node-selection.ts", import.meta.url), "utf8");
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { generalGroups, resolvedNode, nodeSelectionMarkup, currentNodeMarkup, canRestoreAuto, openAiRecommendations, openAiRecommendationMarkup, aiNodeBlockReason, OPENAI_GROUP } = await import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
+const { generalGroups, resolvedNode, nodeSelectionMarkup, currentNodeMarkup, canRestoreAuto, openAiRecommendations, openAiRecommendationMarkup, aiNodeBlockReason, isConfirmedAiChoice, OPENAI_GROUP } = await import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
 const map = { PROXY: { type: "Selector", now: "AUTO", all: ["AUTO", "B"] }, AUTO: { type: "URLTest", now: "B", all: ["B"] }, B: { type: "Trojan", trafficMultiplier: 1 }, GLOBAL: { type: "Selector", now: "PROXY", all: ["PROXY"] }, [OPENAI_GROUP]: { type: "Selector", now: "B", all: ["B"] } };
 test("ordinary selection is independent of OpenAI, direct and global are explicit", () => {
   assert.deepEqual(generalGroups(map, "rule"), ["PROXY", "AUTO"]);
@@ -47,6 +47,36 @@ test("no eligible current choice disables only Apply and a valid draft enables i
   assert.match(none, /暂无可手动选用的节点/);
   assert.match(none, /value="stale"\s+disabled/);
 });
+test("only the read-back exit and matching AI manual intent produce a disabled Applied state", () => {
+  const base = { type: "Selector", now: "B", all: ["A", "B"], manualNode: "B" };
+  const prices = { A: { metadata: { eligible: true } }, B: { metadata: { eligible: true } } };
+  const button = (group, data, draft = "B", pending) =>
+    nodeSelectionMarkup(group, data, false, data.all, prices, undefined, { draft, pending })
+      .match(/<button type="submit"[^>]*>[^<]*<\/button>/)?.[0] ?? "";
+  for (const data of [base, { ...base, type: "Fallback", manualNode: null, fixed: "B" }, { ...base, type: "URLTest", manualNode: null, fixed: "B" }]) {
+    const applied = button(OPENAI_GROUP, data);
+    assert.match(applied, /data-ai-choice-applied[^>]*aria-busy="false"[^>]*disabled>已应用/);
+    assert.doesNotMatch(applied, /button-primary/);
+  }
+  for (const data of [
+    { ...base, manualNode: null }, // current automatic choice can still be pinned
+    { ...base, now: "A" }, // stored intent is not the running exit
+    { ...base, now: undefined }, // no controller readback
+    { ...base, aiChoiceUnverified: true },
+    { ...base, type: "Fallback", manualNode: null, fixed: "B", now: "A" },
+    { ...base, type: "URLTest", manualNode: null, fixed: true },
+  ]) {
+    assert.match(button(OPENAI_GROUP, data), /button-primary[^>]*>应用节点/);
+    assert.doesNotMatch(button(OPENAI_GROUP, data), /disabled|data-ai-choice-applied/);
+  }
+  assert.doesNotMatch(button(OPENAI_GROUP, base, "A"), /disabled|data-ai-choice-applied/);
+  assert.doesNotMatch(button("PROXY", base), /disabled|data-ai-choice-applied/);
+  assert.match(button(OPENAI_GROUP, base, "B", { node: "B", phase: "write" }), /aria-busy="true"[^>]*disabled>正在应用节点/);
+  const restore = nodeSelectionMarkup(OPENAI_GROUP, base, false, base.all, prices).match(/<button[^>]*data-node-auto[^>]*>/)?.[0];
+  assert.ok(restore);
+  assert.doesNotMatch(restore, /disabled/);
+});
+
 test("only the invoked picker control shows busy while write and read-back are pending", () => {
   const group = { type: "Selector", all: ["A", "B"], now: "A", manualNode: "A" };
   const prices = { A: { metadata: { eligible: true } }, B: { metadata: { eligible: true } } };
@@ -122,11 +152,11 @@ function controllerFixture(names) {
   const coordinatorAst = ts.createSourceFile("read-coordinator.ts", readCoordinator, ts.ScriptTarget.Latest, true);
   const pageReads = coordinatorAst.statements.find(statement => ts.isClassDeclaration(statement) && statement.name?.text === "PageReads").getText(coordinatorAst).replace(/^export /, "");
   const context = {
-    store: { view: "proxies", activeProfile: { profile }, runtime: { phase: "running", pid: 1 }, manualOutbound: {mode:"ai",revision:"m1"}, proxies: snapshot, openAiTask: null },
+    store: { view: "proxies", activeProfile: { profile }, runtime: { phase: "running", pid: 1 }, manualOutbound: {mode:"ai",revision:"m1"}, proxies: snapshot, proxySnapshotRuntime: JSON.stringify([1, null]), openAiTask: null },
     manualModeSwitching: false, nodeSelectionBusy: false, nodeSelectionPending: null, aiNodeDraft: null,
     runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false,
     proxySelectionReadRevision: 0, proxyReadSequence: 0, runtimeMutationRevision: 0, viewNavigationRevision: 0,
-    overviewNodeDetails: {}, proxyReadError: "", OPENAI_GROUP_NAME: OPENAI_GROUP, aiNodeBlockReason,
+    overviewNodeDetails: {}, proxyReadError: "", OPENAI_GROUP_NAME: OPENAI_GROUP, aiNodeBlockReason, isConfirmedAiChoice,
     confirmAction: async ({ title }) => { calls.push(["confirm", title]); return true; },
     openNodeDetails: async group => { calls.push(["details", group]); },
     api: {
@@ -141,7 +171,7 @@ function controllerFixture(names) {
   };
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   const ast = ts.createSourceFile("main.ts", main, ts.ScriptTarget.Latest, true);
-  const selected = ["pageContext", "dataContext", "nodeSelectionContext", "currentNodeSelection", ...names];
+  const selected = ["pageContext", "dataContext", "nodeSelectionContext", "runningProxyIdentity", "currentAiProxySnapshot", "currentNodeSelection", ...names];
   const functions = ast.statements.filter(statement => ts.isFunctionDeclaration(statement) && selected.includes(statement.name?.text)).map(statement => statement.getText(ast)).join("\n");
   vm.createContext(context);
   vm.runInContext(ts.transpileModule(pageReads + "\nconst pageReads = new PageReads();\n" + functions, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
@@ -177,6 +207,59 @@ test("AI apply is one explicit action, deduplicates, and completes without waiti
   assert.deepEqual(calls.filter(call => call[0] === "refresh"), [["refresh", true]]);
   assert.deepEqual(calls.filter(call => call[0] === "toast"), [["toast", "已应用节点：B", "success"]]);
   read.resolve(); await first;
+});
+
+test("an already verified AI choice cannot resubmit, even through the command handler", async () => {
+  const { context: c, calls } = controllerFixture(["changeNode"]);
+  await c.changeNode(OPENAI_GROUP, "A");
+  assert.deepEqual(calls, [], "verified A: no confirmation, PUT or unrelated refresh");
+  await c.changeNode(OPENAI_GROUP, "B");
+  await c.changeNode(OPENAI_GROUP, "B");
+  assert.equal(calls.filter(call => call[0] === "select").length, 1);
+  await c.changeNode(OPENAI_GROUP, null);
+  await c.changeNode(OPENAI_GROUP, "B");
+  assert.equal(calls.filter(call => call[0] === "select").length, 2, "automatic B can be explicitly pinned");
+});
+
+test("a replacement core needs fresh AI verification even when profile and mode did not change", async () => {
+  const { context: c, calls } = controllerFixture(["changeNode", "performProxyRead"]);
+  const stale = c.store.proxies;
+  c.store.runtime = { ...c.store.runtime, startedAt: "later" };
+  await c.changeNode(OPENAI_GROUP, "B");
+  assert.ok(!calls.some(call => call[0] === "select"), "an old runtime snapshot cannot authorize AI selection");
+  c.api.proxies = async () => stale;
+  await c.performProxyRead(true, c.pageContext());
+  await c.changeNode(OPENAI_GROUP, "B");
+  assert.equal(calls.filter(call => call[0] === "select").length, 1, "a fresh read reenables selection");
+});
+
+test("an unknown-cost confirmation rechecks a newly verified identical choice before writing", async () => {
+  const { context: c, calls } = controllerFixture(["changeNode"]);
+  c.store.proxies.proxies.B.trafficMultiplier = null;
+  c.confirmAction = async () => {
+    Object.assign(c.store.proxies.proxies[OPENAI_GROUP], { now: "B", manualNode: "B" });
+    return true;
+  };
+  await c.changeNode(OPENAI_GROUP, "B");
+  assert.ok(!calls.some(call => ["select", "refresh", "toast"].includes(call[0])));
+  assert.equal(c.nodeSelectionBusy, false);
+});
+
+test("an uncertain receipt cannot grey out Apply even if it observes the attempted exit", async () => {
+  const { context: c, calls } = controllerFixture(["changeNode", "refreshProxies", "performProxyRead"]);
+  const fresh = deferred();
+  c.api.selectProxy = async () => receipt({ writeState: "unknown" });
+  c.api.proxies = () => fresh.promise;
+  const snapshot = c.store.proxies;
+  await c.changeNode(OPENAI_GROUP, "B");
+  const observed = c.store.proxies.proxies[OPENAI_GROUP];
+  assert.equal(observed.now, "B");
+  assert.doesNotMatch(nodeSelectionMarkup(OPENAI_GROUP, observed, false, undefined, c.store.proxies.proxies), /data-ai-choice-applied/);
+  assert.deepEqual(calls.filter(call => call[0] === "toast"), [["toast", "节点操作结果未确认，核心当前出口：B。请刷新核对。", "info"]]);
+  const reconcile = c.refreshProxies(true);
+  fresh.resolve({ ...snapshot, proxies: { ...snapshot.proxies, [OPENAI_GROUP]: { ...snapshot.proxies[OPENAI_GROUP], now: "B", manualNode: "B" } } });
+  await reconcile;
+  assert.match(nodeSelectionMarkup(OPENAI_GROUP, c.store.proxies.proxies[OPENAI_GROUP], false, undefined, c.store.proxies.proxies), /data-ai-choice-applied/);
 });
 
 test("known budget and eligibility blocks do not request write, and show the reason", async () => {
