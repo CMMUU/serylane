@@ -323,7 +323,14 @@ fn state_with_runtime(app: &AppHandle, running: Option<bool>) -> AppResult<Snaps
     Ok(Snapshot { document, presets: presets(), targets: groups, profile_id: current.active_profile_id, profile_revision: current.active_revision_id,
         status, readiness, verification, ingress, warning: "域名路由优先于本地规则、AI 规则与订阅规则；未匹配流量保持原规则。*.example.com 仅匹配子域，根域须另列；覆盖 HTTPS/WSS 的所有路径，不解密内容，不修改 Codex 配置。".into(), user_rule_count: storage.user_rules()?.rules.len() })
 }
-async fn verified_state(app: &AppHandle) -> AppResult<Snapshot> {
+pub(crate) async fn proxy_ingress(
+    app: &AppHandle,
+    settings: &crate::models::AppSettings,
+) -> ingress::IngressState {
+    read_ingress(app, settings, true).await.state
+}
+
+pub(crate) async fn verified_state(app: &AppHandle) -> AppResult<Snapshot> {
     let storage = AppStorage::from_app(app)?;
     let ticket = crate::lifecycle::PROCESS_LIFECYCLE.ticket()?;
     let (marker, running) = crate::user_rules::configuration_runtime(app, &storage)?;
@@ -442,6 +449,31 @@ pub async fn apply_domain_route(
     profile_revision: Option<Uuid>,
     confirmed: bool,
 ) -> Result<Snapshot, AppErrorDto> {
+    let intent = crate::proxy_control::RouteIntent {
+        enabled,
+        expected_revision,
+        profile_id,
+        profile_revision,
+        confirmed,
+    };
+    tauri::async_runtime::spawn(
+        async move { crate::proxy_control::apply_route(&app, intent).await },
+    )
+    .await
+    .map_err(|error| AppError::Runtime(error.to_string()).dto())?
+}
+
+pub(crate) async fn apply_confirmed(
+    app: &AppHandle,
+    intent: crate::proxy_control::RouteIntent,
+) -> Result<Snapshot, AppErrorDto> {
+    let crate::proxy_control::RouteIntent {
+        enabled,
+        expected_revision,
+        profile_id,
+        profile_revision,
+        confirmed,
+    } = intent;
     let operation = Uuid::new_v4();
     let started = std::time::Instant::now();
     let action = if enabled { "enable" } else { "disable" };
@@ -451,12 +483,12 @@ pub async fn apply_domain_route(
         if !confirmed {
             return Err(AppError::InvalidInput("应用域名路由需要确认".into()));
         }
-        let permit = crate::user_rules::acquire_configuration_for_route(&app).await?;
-        let storage = AppStorage::from_app(&app)?;
+        let permit = crate::user_rules::acquire_configuration_for_route(app).await?;
+        let storage = AppStorage::from_app(app)?;
         let old = Document::read(&storage)?;
         let mut next = old.clone();
         next.bump(expected_revision)?;
-        let current = state(&app)?;
+        let current = state(app)?;
         if (current.profile_id, current.profile_revision) != (profile_id, profile_revision) {
             return Err(AppError::Conflict(
                 "活动配置已变化，请刷新后再应用路由".into(),
@@ -493,7 +525,7 @@ pub async fn apply_domain_route(
             phase = "validate_load_verify_commit";
             record_operation(operation, action, phase, started, None);
             crate::user_rules::apply_verified_route_config(
-                &app,
+                app,
                 &storage,
                 &candidate.yaml,
                 || {
@@ -517,7 +549,7 @@ pub async fn apply_domain_route(
             next.write(&storage)?;
         }
         phase = "readback";
-        verified_state(&app).await
+        verified_state(app).await
     };
     let result = work.await;
     record_operation(

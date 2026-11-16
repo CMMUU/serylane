@@ -124,10 +124,10 @@ test("configuration activation/import/refresh never stops the core before backen
   assert.ok(configActions.includes("refreshSubscriptionTracked("));
   const refreshWrapper = main.slice(main.indexOf("function refreshSubscriptionTracked("), main.indexOf("async function createSubscription("));
   assert.match(refreshWrapper, /api\.refreshProfile\(profileId, id, download\)/);
-  assert.doesNotMatch(refreshWrapper, /api\.stop\(|api\.startActive\(/);
+  assert.doesNotMatch(refreshWrapper, /api\.(?:stop|startActive|proxyControlAction)\(|runProxyControl\(/);
   assert.ok(configActions.includes("api.activateProfile("));
-  assert.doesNotMatch(configActions, /api\.(?:stop|startActive)\(/);
-  assert.match(main.slice(main.indexOf("async function stopRuntime("), main.indexOf("function toggleGlobalNetworkMode(")), /api\.stop\(/);
+  assert.doesNotMatch(configActions, /api\.(?:stop|startActive|proxyControlAction)\(|runProxyControl\(/);
+  assert.match(main.slice(main.indexOf("async function stopRuntime("), main.indexOf("function toggleGlobalNetworkMode(")), /runProxyControl\(\{ action: "stop" \}\)/);
 });
 
 test("clipboard export only reports success after the write promise fulfills", async () => {

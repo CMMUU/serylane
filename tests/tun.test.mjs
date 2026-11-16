@@ -12,13 +12,12 @@ const importSource = (path) => import(`data:text/javascript;base64,${Buffer.from
 const { prepareTunForStart } = await importSource("src/tun-preflight.ts");
 const { friendlyError, mountConnectionFeedback } = await importSource("src/connection-feedback.ts");
 const { canStartRuntime } = await importSource("src/runtime-start.ts");
-const { proxyPresentation } = await importSource("src/proxy-state.ts");
 const main = read("src/main.ts");
-const switchStart = main.indexOf("async function switchNetworkMode(");
+const actionStart = main.indexOf("async function runProxyControl(");
 const preflightStart = main.indexOf("async function ensureTunHelperReady(");
 const nextStart = main.indexOf("async function switchRoutingMode(");
-assert.ok(switchStart >= 0 && preflightStart > switchStart && nextStart > preflightStart);
-const switchSource = main.slice(switchStart, preflightStart);
+assert.ok(actionStart >= 0 && preflightStart > actionStart && nextStart > preflightStart);
+const switchSource = main.slice(actionStart, preflightStart);
 const preflightSource = main.slice(preflightStart, nextStart);
 const noop = () => {};
 const helper = (state = "ready", overrides = {}) => ({
@@ -36,19 +35,6 @@ const deferred = () => {
   return { promise, resolve };
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
-
-test("invalid installation and spawn-failed services keep the current network intact", async () => {
-  for (const state of ["invalid_installation", "needs_repair"]) {
-    const f = mainFixture({ status: helper(state) });
-    await f.switch();
-    assert.deepEqual(f.mutations(), []);
-    assert.deepEqual(f.preflight.calls, ["status"]);
-    assert.ok(f.calls.includes("navigate:settings"));
-    assert.equal(f.issues[0].action, state === "invalid_installation" ? "diagnostics" : "settings");
-    if (state === "invalid_installation") assert.doesNotMatch(f.issues[0].title, /更新|重新下载/);
-    assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
-  }
-});
 
 function feedbackView(initial) {
   const elements = new Map();
@@ -122,33 +108,30 @@ function preflightFixture(platform = "macos", options = {}) {
 }
 
 function mainFixture(options = {}) {
-  const calls = [], issues = [], toasts = [], observations = [];
+  const calls = [], issues = [], toasts = [], observations = [], requests = [];
   let actualMode = options.actualMode ?? "system_proxy";
   let actualRuntime = runtime(options.actualPhase ?? "running");
-  let saveCount = 0, startCount = 0;
   const preflight = preflightFixture(options.platform ?? "macos", options);
-  const elements = new Map();
   const feedback = options.feedbackSnapshot ? feedbackView(options.feedbackSnapshot) : null;
   const env = {
     store: {
       appInfo: { targetOs: options.platform ?? "macos" },
-      settings: { networkMode: options.cachedMode ?? actualMode },
-      runtime: runtime(options.cachedPhase ?? actualRuntime.phase),
-      activeProfile: options.hasProfile === false ? null : { profile: { id: "fixture" } },
+      settings: { networkMode: actualMode },
+      runtime: actualRuntime,
+      activeProfile: { profile: { id: "fixture" } },
       systemProxy: { active: actualMode === "system_proxy" && actualRuntime.phase === "running" },
     },
-    networkModeSwitching: false, domainRouteChanging: false, runtimeActionInFlight: false, settingsSaving: false, runtimeMutationRevision: 0,
-    proxyStopIssue: '', localRouting: { invalidate: noop, refresh: async () => {} },
-    currentProxyPresentation: () => ({ tunActive: actualMode === 'tun' && actualRuntime.phase === 'running' }),
+    networkModeSwitching: false, domainRouteChanging: false, runtimeActionInFlight: false,
+    settingsSaving: false, manualModeSwitching: false, runtimeMutationRevision: 0, runtimeActivity: null,
+    proxyControlSnapshot: null, proxyControlsPending: () => Boolean(env.proxyControlSnapshot?.busy),
+    proxyStopIssue: '',
+    localRouting: { invalidate: noop, refresh: async () => calls.push("route-read") },
     prepareTunForStart, canStartRuntime, friendlyError,
-    errorMessage: error => error?.userMessage?.details ?? error?.message ?? String(error),
-    $: selector => {
-      if (!elements.has(selector)) elements.set(selector, { disabled: false });
-      return elements.get(selector);
-    },
+    errorMessage: error => error?.userMessage?.details ?? String(error),
     themeController: { snapshot: {} },
     renderAppearance: noop, renderHeader: noop, renderOverview: noop,
     renderTunHelper: () => observations.push(env.store.tunHelper),
+    acceptProxyControl: snapshot => { env.proxyControlSnapshot = snapshot; },
     connectionFeedback: {
       clearIssue: () => feedback?.component.clearIssue(),
       showError: error => { issues.push(friendlyError(error)); feedback?.component.showError(error); },
@@ -157,42 +140,21 @@ function mainFixture(options = {}) {
     navigate: view => calls.push(`navigate:${view}`),
     api: {
       settings: async () => { calls.push("read-settings"); return { networkMode: actualMode }; },
-      runtime: async () => { calls.push("read-runtime"); return { ...actualRuntime }; },
-      tunHelperStatus: preflight.context.status,
-      installTunHelper: preflight.context.install,
-      repairTunHelper: preflight.context.repair,
-      openTunHelperSettings: preflight.context.openApproval,
-      prepareTun: preflight.context.prepare,
-      stop: async () => {
-        calls.push("stop");
-        if (options.stopError) throw options.stopError;
-        actualRuntime = runtime("stopped");
-        return { ...actualRuntime };
-      },
-      setNetworkMode: async mode => {
-        calls.push(`mode:${mode}`);
-        saveCount++;
-        if (options.saveErrors?.[saveCount - 1]) throw options.saveErrors[saveCount - 1];
-        actualMode = mode;
-        return { networkMode: mode };
-      },
-      startActive: async () => {
-        calls.push(`start:${actualMode}`);
-        startCount++;
+      tunHelperStatus: preflight.context.status, installTunHelper: preflight.context.install,
+      openTunHelperSettings: preflight.context.openApproval, prepareTun: preflight.context.prepare,
+      proxyControlAction: async request => {
+        requests.push({ ...request });
         if (options.startWait) await options.startWait;
-        const outcome = options.startResults?.[startCount - 1] ?? "running";
-        if (typeof outcome !== "string") {
-          actualRuntime = runtime(options.failedStartPhase ?? "crashed");
-          throw outcome;
-        }
-        actualRuntime = runtime(outcome);
-        return { ...actualRuntime };
+        if (options.actionError) throw options.actionError;
+        actualMode = request.mode;
+        actualRuntime = runtime("running");
+        return { serial: 2, completed: 1, network: { active: true, tunActive: actualMode === "tun", systemProxyActive: actualMode === "system_proxy" } };
       },
     },
     refreshRuntimeOnly: async force => {
       calls.push("refresh-runtime");
-      assert.equal(force, true, "switch must request authoritative readback despite its own lock");
-      assert.equal(env.networkModeSwitching, true, "mutation lock covers final runtime readback");
+      assert.equal(force, true);
+      assert.equal(env.networkModeSwitching, true);
       if (options.refreshWait) await options.refreshWait;
       if (options.refreshError) throw options.refreshError;
       if (options.refreshedPhase) actualRuntime = runtime(options.refreshedPhase);
@@ -201,35 +163,32 @@ function mainFixture(options = {}) {
     },
     refreshConnectionFeedback: async () => {
       calls.push("refresh-feedback");
-      assert.equal(env.networkModeSwitching, true, "mutation lock covers final feedback readback");
+      assert.equal(env.networkModeSwitching, true);
       if (options.feedbackWait) await options.feedbackWait;
-      if (feedback) feedback.component.accept(options.feedbackSnapshot);
+      if (feedback) feedback.component.accept(options.feedbackReadback ?? options.feedbackSnapshot);
     },
+    refreshSessionResume: async () => {},
     refreshBase: async () => { calls.push("refresh-base"); },
   };
   vm.createContext(env);
-  vm.runInContext(javascript(`${switchSource}\n${preflightSource}`), env);
+  vm.runInContext(javascript(`${switchSource}
+${preflightSource}`), env);
   return {
-    env, calls, issues, toasts, observations, preflight, feedback,
-    mutations: () => calls.filter(call => /^(stop|mode:|start:)/.test(call)),
+    env, calls, issues, toasts, observations, preflight, feedback, requests,
     observed: () => ({ mode: actualMode, phase: actualRuntime.phase }),
     prepare: () => env.ensureTunHelperReady(),
     switch: (mode = "tun") => env.switchNetworkMode(mode),
   };
 }
 
-test("repeated enable of a live TUN only reads back status while its busy projection is checking", async () => {
-  const f=mainFixture({actualMode:'tun',actualPhase:'running'});
-  let ingress={state:'tun',message:'verified'};
-  f.env.currentProxyPresentation=()=>proxyPresentation({runtime:f.env.store.runtime,mode:f.env.store.settings.networkMode,systemProxy:f.env.store.systemProxy,ingress,activity:f.env.networkModeSwitching?'switching':null});
-  f.env.localRouting.invalidate=()=>{ingress=null;f.calls.push('invalidate-route');};
-  f.env.localRouting.refresh=async()=>{assert.equal(f.env.networkModeSwitching,false);f.calls.push('route-read');ingress={state:'tun',message:'verified'};};
-  await f.switch('tun');
-  assert.deepEqual(f.mutations(),[],'an enabled TUN must not be stopped or restarted just because presentation is busy');
-  assert.deepEqual(f.preflight.calls,[]);
-  assert.equal(f.calls.filter(c=>c==='refresh-runtime').length,1);
-  assert.equal(f.calls.filter(c=>c==='route-read').length,1);
-  assert.deepEqual(f.observed(),{mode:'tun',phase:'running'});
+test("TUN uses a single shared command even when already active", async () => {
+  const f = mainFixture({ actualMode: "tun" });
+  await f.switch();
+  assert.deepEqual(f.requests, [{ action: "switch", mode: "tun" }]);
+  assert.deepEqual(f.preflight.calls, [], "the WebView must not also install, switch or start the core");
+  assert.equal(f.calls.filter(c => c === "refresh-runtime").length, 1);
+  assert.equal(f.calls.filter(c => c === "route-read").length, 1);
+  assert.deepEqual(f.observed(), { mode: "tun", phase: "running" });
 });
 
 test("Tauri Rust unit result contract is represented by JSON null in the browser fixture", () => {
@@ -329,7 +288,7 @@ test("the real main preflight accepts null and makes no enabled claim until the 
     for (const payload of [null, undefined]) {
       const f = mainFixture({ platform, payload });
       assert.equal(await f.prepare(), true);
-      assert.deepEqual(f.mutations(), []);
+      assert.deepEqual(f.requests, []);
       assert.equal(f.toasts.length, 1);
       assert.equal(f.toasts[0].tone, "info");
       assert.match(f.toasts[0].message, /尚未切换网络/);
@@ -350,7 +309,7 @@ test("the real main preflight exposes platform-specific block reasons without Ma
   ]) {
     const f = mainFixture({ platform, status: helper(state, { supported, lastError: "fixture diagnostic" }) });
     assert.equal(await f.prepare(), false);
-    assert.deepEqual(f.mutations(), []);
+    assert.deepEqual(f.requests, []);
     assert.equal(f.issues.at(-1).action, action);
     assert.equal(f.issues.at(-1).details, "fixture diagnostic");
     assert.match(f.issues.at(-1).description, /未切换网络模式/);
@@ -358,145 +317,27 @@ test("the real main preflight exposes platform-specific block reasons without Ma
   }
 });
 
-test("failed or pending preflight leaves the existing proxy untouched, including repeated clicks", async () => {
+// Stop, hot switch, preflight before mutation and failure/rollback order
+// are exercised on the production transaction in proxy_control::tests.
+test("shared preflight waits and reports its original failure without a second switch", async () => {
   const gate = deferred();
-  const f = mainFixture({ prepareWait: gate.promise, prepareError: failure("prepare failed") });
+  const error = failure("prepare failed");
+  error.userMessage.title = "TUN 预检尚未通过";
+  error.userMessage.description = "本次未切换网络模式。";
+  const f = mainFixture({ startWait: gate.promise, actionError: error });
   const pending = f.switch();
   await tick();
   assert.equal(f.env.networkModeSwitching, true);
-  assert.deepEqual(f.preflight.calls, ["status", "prepare"]);
-  assert.deepEqual(f.mutations(), []);
-  assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
-  await f.switch();
-  assert.deepEqual(f.preflight.calls, ["status", "prepare"]);
+  await f.switch("manual");
+  assert.deepEqual(f.requests, [{ action: "switch", mode: "tun" }]);
+  assert.deepEqual(f.preflight.calls, []);
   gate.resolve();
   await pending;
-  assert.deepEqual(f.mutations(), []);
-  assert.match(f.issues.at(-1).title, /预检尚未通过/);
-  assert.match(f.issues.at(-1).description, /尚未切换网络模式/);
+  assert.equal(f.issues.at(-1).title, "TUN 预检尚未通过");
+  assert.match(f.issues.at(-1).description, /未切换网络模式/);
+  assert.equal(f.issues.at(-1).details, "prepare failed");
+  assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
   assert.equal(f.env.networkModeSwitching, false);
-});
-
-test("blocked Linux or Windows permissions never stop a running original session", async () => {
-  for (const [platform, status] of [
-    ["linux", helper("unsupported", { supported: false })],
-    ["windows", helper("requires_approval")],
-    ["windows", helper("unreachable")],
-  ]) {
-    const f = mainFixture({ platform, status });
-    await f.switch();
-    assert.deepEqual(f.mutations(), []);
-    assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
-    assert.equal(f.env.networkModeSwitching, false);
-  }
-});
-
-test("successful native null preflight precedes stop, mode save and one accepted TUN start", async () => {
-  const f = mainFixture();
-  await f.switch();
-  assert.deepEqual(f.preflight.calls, ["status", "prepare"]);
-  assert.deepEqual(f.mutations(), ["stop", "mode:tun", "start:tun"]);
-  assert.deepEqual(f.observed(), { mode: "tun", phase: "running" });
-  assert.equal(f.toasts.filter(item => item.tone === "success").length, 1);
-  assert.equal(f.env.networkModeSwitching, false);
-});
-
-test("mode save failure after stopping restores the original running proxy", async () => {
-  const f = mainFixture({ saveErrors: [failure("mode save failed")] });
-  await f.switch();
-  assert.deepEqual(f.mutations(), ["stop", "mode:tun", "mode:system_proxy", "start:system_proxy"]);
-  assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
-  assert.match(f.issues.at(-1).description, /已恢复之前的网络模式与运行状态/);
-  assert.equal(f.issues.at(-1).details, "mode save failed");
-  assert.equal(f.toasts.filter(item => item.tone === "success").length, 0);
-});
-
-test("failed TUN start reports successful rollback together with the original diagnostic", async () => {
-  const f = mainFixture({ startResults: [failure("driver initialization failed"), "running"] });
-  await f.switch();
-  assert.deepEqual(f.mutations(), ["stop", "mode:tun", "start:tun", "mode:system_proxy", "start:system_proxy"]);
-  assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
-  assert.match(f.issues.at(-1).description, /已恢复/);
-  assert.equal(f.issues.at(-1).details, "driver initialization failed");
-});
-
-test("a crashed start result never claims TUN success and restores the previous session", async () => {
-  const f = mainFixture({ startResults: ["crashed", "running"] });
-  await f.switch();
-  assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
-  assert.match(f.issues.at(-1).description, /已恢复/);
-  assert.equal(f.toasts.filter(item => item.tone === "success").length, 0);
-});
-
-test("rollback save and rollback start failures retain both failure details without claiming recovery", async () => {
-  for (const options of [
-    { startResults: [failure("TUN rejected")], saveErrors: [null, failure("rollback save failed")] },
-    { startResults: [failure("TUN rejected"), failure("rollback start failed")] },
-    { startResults: [failure("TUN rejected"), "crashed"] },
-  ]) {
-    const f = mainFixture(options);
-    await f.switch();
-    const issue = f.issues.at(-1);
-    assert.match(issue.description, /恢复原模式时遇到问题/);
-    assert.doesNotMatch(issue.description, /已恢复之前/);
-    assert.match(issue.details, /TUN rejected/);
-    assert.match(issue.details, /rollback|原模式尚未恢复运行/);
-    assert.equal(f.toasts.filter(item => item.tone === "success").length, 0);
-    assert.equal(f.env.networkModeSwitching, false);
-  }
-});
-
-test("rollback does not stop or overwrite a still-running or transitional core", async () => {
-  for (const failedStartPhase of ["running", "starting", "stopping", "recovering", "validating"]) {
-    const f = mainFixture({ failedStartPhase, startResults: [failure("start acknowledgement lost")] });
-    await f.switch();
-    assert.deepEqual(f.mutations(), ["stop", "mode:tun", "start:tun"]);
-    assert.match(f.issues.at(-1).details, /已保留现场/);
-    assert.equal(f.observed().phase, failedStartPhase);
-  }
-});
-
-test("an uncertain stop failure does not launch another core or claim the old session was restored", async () => {
-  const f = mainFixture({ stopError: failure("stop confirmation missing") });
-  await f.switch();
-  assert.deepEqual(f.mutations(), ["stop"]);
-  assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
-  assert.doesNotMatch(f.issues.at(-1).description, /已恢复/);
-  assert.equal(f.issues.at(-1).details, "stop confirmation missing");
-});
-
-test("a previously stopped proxy only restores its setting after startup failure, never starts it", async () => {
-  const f = mainFixture({ actualMode: "manual", actualPhase: "stopped", startResults: [failure("TUN rejected")] });
-  await f.switch();
-  assert.deepEqual(f.mutations(), ["mode:tun", "start:tun", "mode:manual"]);
-  assert.match(f.issues.at(-1).description, /代理保持停止/);
-  assert.notEqual(f.observed().phase, "running");
-});
-
-test("fresh settings, not the stale toolbar mode, determine the restored original session", async () => {
-  const f = mainFixture({ cachedMode: "manual", actualMode: "system_proxy", cachedPhase: "stopped", startResults: [failure("TUN rejected"), "running"] });
-  await f.switch();
-  assert.deepEqual(f.mutations(), ["stop", "mode:tun", "start:tun", "mode:system_proxy", "start:system_proxy"]);
-  assert.equal(f.observed().mode, "system_proxy");
-});
-
-test("a fresh transitional state blocks switching before preflight or any runtime mutation", async () => {
-  for (const actualPhase of ["starting", "validating", "stopping", "recovering"]) {
-    const f = mainFixture({ actualPhase, cachedPhase: "running" });
-    await f.switch();
-    assert.deepEqual(f.mutations(), []);
-    assert.deepEqual(f.preflight.calls, []);
-    assert.equal(f.issues.length, 1);
-    assert.equal(f.env.networkModeSwitching, false);
-  }
-});
-
-test("non-TUN mode switches preserve the core rather than introducing a stop/start regression", async () => {
-  const f = mainFixture({ actualMode: "manual" });
-  await f.switch("system_proxy");
-  assert.deepEqual(f.mutations(), ["mode:system_proxy"]);
-  assert.deepEqual(f.preflight.calls, []);
-  assert.deepEqual(f.observed(), { mode: "system_proxy", phase: "running" });
 });
 
 test("repeat clicks remain blocked through startup, final runtime readback and final feedback readback", async () => {
@@ -514,7 +355,7 @@ test("repeat clicks remain blocked through startup, final runtime readback and f
   await tick();
   assert.ok(f.calls.includes("refresh-feedback"));
   await f.switch("manual");
-  assert.deepEqual(f.mutations(), ["stop", "mode:tun", "start:tun"]);
+  assert.deepEqual(f.requests, [{ action: "switch", mode: "tun" }]);
   feedback.resolve();
   await pending;
   assert.equal(f.env.networkModeSwitching, false);
@@ -524,7 +365,7 @@ test("repeat clicks remain blocked through startup, final runtime readback and f
 test("readback errors release the mutation lock without retrying or stopping the accepted core", async () => {
   const f = mainFixture({ refreshError: failure("readback failed") });
   await f.switch();
-  assert.deepEqual(f.mutations(), ["stop", "mode:tun", "start:tun"]);
+  assert.deepEqual(f.requests, [{ action: "switch", mode: "tun" }]);
   assert.equal(f.issues.at(-1).details, "readback failed");
   assert.equal(f.env.networkModeSwitching, false);
 });
@@ -533,25 +374,28 @@ test("final authoritative crash readback suppresses success without stopping or 
   const f = mainFixture({ refreshedPhase: "crashed" });
   await f.switch();
   assert.equal(f.env.store.runtime.phase, "crashed");
-  assert.deepEqual(f.mutations(), ["stop", "mode:tun", "start:tun"]);
+  assert.deepEqual(f.requests, [{ action: "switch", mode: "tun" }]);
   assert.equal(f.toasts.filter(item => item.tone === "success").length, 0, "a stale accepted start is not final enablement");
   assert.ok(f.issues.length > 0, "readback mismatch should explain that the runtime was not confirmed");
 });
 
 test("an old failed backend feedback snapshot cannot erase the current TUN preflight error", async () => {
+  const previous = {
+    revision: 8, operation: 3, phase: "failed", mode: "system_proxy", health: "unchecked",
+    retrying: false, elapsedMs: 0, checks: [],
+    issue: { title: "上次启动错误", description: "旧失败说明", details: "old error", action: "retry" },
+  };
+  const error = failure("current preflight failure");
+  error.userMessage.title = "TUN 预检尚未通过";
+  error.userMessage.description = "本次未切换网络模式。";
   const f = mainFixture({
-    actualPhase: "crashed",
-    prepareError: failure("current preflight failure"),
-    feedbackSnapshot: {
-      revision: 8, operation: 3, phase: "failed", mode: "system_proxy", health: "unchecked",
-      retrying: false, elapsedMs: 0, checks: [],
-      issue: { title: "上次启动错误", description: "旧失败说明", details: "old error", action: "retry" },
-    },
+    actualPhase: "crashed", actionError: error,
+    feedbackSnapshot: previous, feedbackReadback: { ...previous, revision: 9, operation: 4 },
   });
   await f.switch();
-  assert.deepEqual(f.mutations(), []);
+  assert.deepEqual(f.requests, [{ action: "switch", mode: "tun" }]);
   assert.equal(f.feedback.text("title"), "TUN 预检尚未通过");
-  assert.match(f.feedback.text("description"), /尚未切换网络模式/);
+  assert.match(f.feedback.text("description"), /未切换网络模式/);
   assert.match(f.feedback.text("detail-text"), /current preflight failure/);
 });
 
@@ -814,6 +658,14 @@ test("global route mutation prevents simultaneous network-mode switching", async
   const f = mainFixture();
   f.env.domainRouteChanging = true;
   await f.switch("tun");
-  assert.deepEqual(f.mutations(), []);
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(f.calls, []);
+});
+
+test("a busy native panel prevents the toolbar from submitting a second write", async () => {
+  const f = mainFixture();
+  f.env.proxyControlSnapshot = { serial: 1, busy: "starting" };
+  await f.switch("tun");
+  assert.deepEqual(f.requests, []);
   assert.deepEqual(f.calls, []);
 });

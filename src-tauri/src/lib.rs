@@ -35,6 +35,7 @@ mod openai_stability;
 mod platform;
 mod profile_service;
 mod program_proxy;
+mod proxy_control;
 mod route_health;
 mod runtime;
 mod session_resume;
@@ -458,7 +459,7 @@ async fn delete_profile(
         // Serylane. Codex route settings and unrelated local YAML are untouched.
         app.state::<session_resume::SessionResumeManager>()
             .cancel_pending(&app);
-        stop_runtime_with_permit(&app, true).map_err(dto)?;
+        stop_runtime_with_permit(&app, true, true).map_err(dto)?;
     }
     let manager = app.state::<OpenAiPolicyTaskManager>();
     if manager.snapshot().map_err(dto)?.profile_id == Some(profile_id) {
@@ -499,23 +500,30 @@ async fn start_active_profile(
     let _configuration = session_resume::acquire_manual_configuration(&app)
         .await
         .map_err(dto)?;
-    let storage = AppStorage::from_app(&app).map_err(dto)?;
+    start_active_with_permit(&app, &state).await
+}
+
+async fn start_active_with_permit(
+    app: &AppHandle,
+    state: &MihomoRuntime,
+) -> Result<RuntimeStatus, AppErrorDto> {
+    let storage = AppStorage::from_app(app).map_err(dto)?;
     let settings = storage.settings().map_err(dto)?;
-    start_runtime_for_settings(&app, &state, &settings, None).await?;
+    start_runtime_for_settings(app, state, &settings, None).await?;
     if let Err(error) = app
         .state::<session_resume::SessionResumeManager>()
         .while_open(|| storage.set_desired_running(true))
     {
-        let _ = platform::restore_system_proxy(&app);
-        let _ = state.stop(Some(&app));
+        let _ = platform::restore_system_proxy(app);
+        let _ = state.stop(Some(app));
         return Err(dto(error));
     }
-    Ok(state.status(Some(&app)))
+    Ok(state.status(Some(app)))
 }
 
 async fn start_runtime_for_settings(
     app: &AppHandle,
-    state: &State<'_, MihomoRuntime>,
+    state: &MihomoRuntime,
     settings: &AppSettings,
     automatic_proxy: Option<&platform::ResumeProxyGuard>,
 ) -> Result<(), AppErrorDto> {
@@ -554,7 +562,7 @@ async fn start_runtime_for_settings(
 
 async fn start_runtime_inner(
     app: &AppHandle,
-    state: &State<'_, MihomoRuntime>,
+    state: &MihomoRuntime,
     settings: &AppSettings,
     automatic_proxy: Option<&platform::ResumeProxyGuard>,
 ) -> Result<(), AppErrorDto> {
@@ -636,7 +644,7 @@ async fn start_runtime_inner(
 
 async fn finish_runtime_start(
     app: &AppHandle,
-    state: &State<'_, MihomoRuntime>,
+    state: &MihomoRuntime,
     settings: &AppSettings,
     automatic_proxy: Option<&platform::ResumeProxyGuard>,
 ) -> Result<(), AppErrorDto> {
@@ -963,10 +971,13 @@ async fn prepare_tun_active_profile(app: AppHandle) -> Result<(), AppErrorDto> {
     let _configuration = session_resume::acquire_manual_configuration(&app)
         .await
         .map_err(dto)?;
+    prepare_tun_with_permit(app).await
+}
+
+async fn prepare_tun_with_permit(app: AppHandle) -> Result<(), AppErrorDto> {
     // Permission checks and native validation can block. No current runtime or
     // network mode is changed during this preflight.
     tauri::async_runtime::spawn_blocking(move || {
-        let _configuration = _configuration;
         let mut stage = "权限服务";
         app_log::record(
             0,
@@ -1026,12 +1037,13 @@ async fn stop_runtime_by_user(app: &AppHandle) -> Result<RuntimeStatus, AppError
     let _configuration = session_resume::acquire_manual_configuration(app)
         .await
         .map_err(dto)?;
-    stop_runtime_with_permit(app, false).map_err(dto)
+    stop_runtime_with_permit(app, false, true).map_err(dto)
 }
 
 fn stop_runtime_with_permit(
     app: &AppHandle,
     deleting_profile: bool,
+    notify_stop: bool,
 ) -> Result<RuntimeStatus, AppError> {
     let storage = AppStorage::from_app(app)?;
     // Persist the accepted Stop intent before cleanup. Even an interrupted
@@ -1060,7 +1072,9 @@ fn stop_runtime_with_permit(
         });
     // Native tray Stop has no frontend command completion to refresh from.
     // Publish the transaction outcome, never a potentially stale OS snapshot.
-    let _ = app.emit("proxy-stop-finished", result.is_ok());
+    if notify_stop {
+        let _ = app.emit("proxy-stop-finished", result.is_ok());
+    }
     result
 }
 
@@ -1112,7 +1126,15 @@ async fn set_network_mode(
     let _configuration = session_resume::acquire_manual_configuration(&app)
         .await
         .map_err(dto)?;
-    let storage = AppStorage::from_app(&app).map_err(dto)?;
+    set_network_mode_with_permit(&app, &state, mode).await
+}
+
+async fn set_network_mode_with_permit(
+    app: &AppHandle,
+    state: &MihomoRuntime,
+    mode: NetworkMode,
+) -> Result<PublicAppSettings, AppErrorDto> {
+    let storage = AppStorage::from_app(app).map_err(dto)?;
     let current = storage.settings().map_err(dto)?;
     if state.running_identity().is_some() {
         if !can_switch_without_restart(current.network_mode, mode) {
@@ -1121,7 +1143,7 @@ async fn set_network_mode(
             )));
         }
         let feedback = app.state::<ConnectionFeedback>();
-        let operation = feedback.begin(&app, mode, ConnectionPhase::Applying);
+        let operation = feedback.begin(app, mode, ConnectionPhase::Applying);
         if mode == NetworkMode::SystemProxy {
             let result = MihomoApiClient::new(&current)
                 .map_err(dto)?
@@ -1129,19 +1151,19 @@ async fn set_network_mode(
                 .await;
             if let Err(error) = result {
                 let error = dto(AppError::startup(StartupReason::CoreNotReady, error, None));
-                feedback.fail(&app, operation, &error);
+                feedback.fail(app, operation, &error);
                 return Err(error);
             }
         }
         let result = app
             .state::<session_resume::SessionResumeManager>()
             .while_open(|| {
-                platform::proxy_transaction(&app, || {
+                platform::proxy_transaction(app, || {
                     if mode == NetworkMode::SystemProxy {
-                        platform::enable_system_proxy(&app, current.mixed_port)?;
+                        platform::enable_system_proxy(app, current.mixed_port)?;
                         platform::verify_system_proxy(current.mixed_port)?;
                     } else {
-                        platform::restore_system_proxy(&app)?;
+                        platform::restore_system_proxy(app)?;
                     }
                     let mut next = current.clone();
                     next.network_mode = mode;
@@ -1151,18 +1173,18 @@ async fn set_network_mode(
             });
         return match result {
             Ok(settings) => {
-                feedback.advance(&app, operation, ConnectionPhase::Enabled);
-                feedback.probe(&app, operation, settings.clone());
+                feedback.advance(app, operation, ConnectionPhase::Enabled);
+                feedback.probe(app, operation, settings.clone());
                 Ok(PublicAppSettings::from(&settings))
             }
             Err(error) => {
                 let error = dto(error);
-                feedback.fail(&app, operation, &error);
+                feedback.fail(app, operation, &error);
                 Err(error)
             }
         };
     }
-    app.state::<ConnectionFeedback>().invalidate(&app);
+    app.state::<ConnectionFeedback>().invalidate(app);
     if mode == NetworkMode::Tun {
         let helper = tun_service::status();
         if !helper.ready() {
@@ -1170,9 +1192,9 @@ async fn set_network_mode(
         }
     }
     if mode != NetworkMode::SystemProxy {
-        platform::restore_system_proxy(&app).map_err(dto)?;
+        platform::restore_system_proxy(app).map_err(dto)?;
     }
-    let storage = AppStorage::from_app(&app).map_err(dto)?;
+    let storage = AppStorage::from_app(app).map_err(dto)?;
     let mut settings = storage.settings().map_err(dto)?;
     settings.network_mode = mode;
     storage.save_settings(&settings).map_err(dto)?;
@@ -1551,6 +1573,124 @@ fn show_home_window(app: &AppHandle) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn update_macos_proxy_controls(app: &AppHandle, snapshot: &proxy_control::Snapshot) {
+    let controls = macos_menu_panel::Controls {
+        serial: snapshot.serial,
+        action_serial: snapshot.action_serial,
+        busy: snapshot.busy,
+        status: snapshot.network.label,
+        can_switch: snapshot.can_switch,
+        can_start: snapshot.can_start,
+        can_stop: snapshot.can_stop,
+        system_proxy: snapshot.network.system_proxy_active,
+        tun: snapshot.network.tun_active,
+        tun_supported: snapshot.tun_supported,
+        tun_hint: snapshot.tun_hint.clone(),
+        detail: snapshot.detail.clone(),
+        route: snapshot
+            .route
+            .as_ref()
+            .map(|route| macos_menu_panel::RouteRow {
+                token: macos_menu_panel::RouteToken {
+                    enabled: route.intent.enabled,
+                    revision: route.intent.expected_revision,
+                    profile: route.intent.profile_id,
+                    profile_revision: route.intent.profile_revision,
+                },
+                label: route.label,
+                message: route.message.clone(),
+                can_toggle: route.ready_to_toggle,
+                active: route.active,
+                domains: route.domains,
+                target: route.target.clone(),
+            }),
+    };
+    let _ = app.run_on_main_thread(move || {
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            macos_menu_panel::update_controls(mtm, controls);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn macos_proxy_action(app: &AppHandle, action: macos_menu_panel::Action) {
+    use macos_menu_panel::Action;
+    use proxy_control::{Request, RouteIntent};
+    match action {
+        Action::OpenWindow => {
+            reveal_main_window(app);
+            return;
+        }
+        Action::OpenRoute => {
+            if reveal_main_window(app) {
+                let _ = app.emit("navigate-view", "routing");
+            }
+            return;
+        }
+        Action::Quit => {
+            cleanup_app(app);
+            app.exit(0);
+            return;
+        }
+        _ => {}
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if action == Action::Observe {
+            proxy_control::observe(&app).await;
+            return;
+        }
+        let previous_action = proxy_control::current(&app).action_serial;
+        let result = if let Action::Route(token) = action {
+            proxy_control::apply_route(
+                &app,
+                RouteIntent {
+                    enabled: token.enabled,
+                    expected_revision: token.revision,
+                    profile_id: token.profile,
+                    profile_revision: token.profile_revision,
+                    confirmed: true,
+                },
+            )
+            .await
+            .map(|_| ())
+        } else {
+            let request = match action {
+                Action::Refresh => Request::Refresh,
+                Action::Start => Request::Start { mode: None },
+                Action::Stop => Request::Stop { mode: None },
+                Action::SystemProxy(true) => Request::Switch {
+                    mode: NetworkMode::SystemProxy,
+                },
+                Action::Tun(true) => Request::Switch {
+                    mode: NetworkMode::Tun,
+                },
+                Action::SystemProxy(false) => Request::Stop {
+                    mode: Some(NetworkMode::SystemProxy),
+                },
+                Action::Tun(false) => Request::Stop {
+                    mode: Some(NetworkMode::Tun),
+                },
+                _ => return,
+            };
+            proxy_control::execute(&app, request).await.map(|_| ())
+        };
+        if let Err(error) = result {
+            // A busy/admission rejection might not have emitted a new state.
+            let view = proxy_control::current(&app);
+            if view.action_serial == previous_action {
+                let detail = error.user_message.title;
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(mtm) = objc2::MainThreadMarker::new() {
+                        macos_menu_panel::reject_queued(mtm, previous_action, detail);
+                    }
+                });
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(windows)]
@@ -1576,6 +1716,7 @@ pub fn run() {
                 .build(),
         )
         .manage(MihomoRuntime::default())
+        .manage(proxy_control::Service::default())
         .manage(ConnectionFeedback::default())
         .manage(session_resume::SessionResumeManager::default())
         .manage(app_update::AppUpdateManager::default())
@@ -1636,21 +1777,7 @@ pub fn run() {
                 let handle = app.handle().clone();
                 let result = traffic_monitor::install_macos_panel(
                     settings.show_global_traffic,
-                    move |action| match action {
-                        macos_menu_panel::Action::OpenWindow => {
-                            reveal_main_window(&handle);
-                        }
-                        macos_menu_panel::Action::Stop => {
-                            let app = handle.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let _ = stop_runtime_by_user(&app).await;
-                            });
-                        }
-                        macos_menu_panel::Action::Quit => {
-                            cleanup_app(&handle);
-                            handle.exit(0);
-                        }
-                    },
+                    move |action| macos_proxy_action(&handle, action),
                 );
                 if let Err(error) = result {
                     app_log::record(
@@ -1661,6 +1788,24 @@ pub fn run() {
                 }
                 result.is_ok()
             };
+            #[cfg(target_os = "macos")]
+            if native_tray {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        if handle
+                            .state::<session_resume::SessionResumeManager>()
+                            .is_shutting_down()
+                        {
+                            break;
+                        }
+                        if macos_menu_panel::is_visible() {
+                            proxy_control::observe(&handle).await;
+                        }
+                    }
+                });
+            }
             #[cfg(not(target_os = "macos"))]
             let native_tray = false;
             if !native_tray {
@@ -1794,6 +1939,8 @@ pub fn run() {
             delete_profile,
             probe_mihomo,
             runtime_status,
+            proxy_control::proxy_control_status,
+            proxy_control::proxy_control_action,
             start_active_profile,
             stop_mihomo,
             runtime_logs,

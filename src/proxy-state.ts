@@ -1,7 +1,11 @@
 import type { NetworkMode, RuntimeStatus, SystemProxyStatus } from './types';
 
 export type IngressState = 'stopped' | 'system_proxy' | 'tun' | 'local_only' | 'unavailable' | 'unknown';
-export type ProxyActivity = 'starting' | 'stopping' | 'switching' | 'restoring' | 'working';
+export type ProxyActivity = 'starting' | 'stopping' | 'switching' | 'restoring' | 'working' | 'refreshing' | 'routing';
+export type ProxyPresentation = {
+  state: 'closed' | 'system_proxy' | 'tun' | 'local_only' | 'checking' | 'unavailable' | 'error';
+  label: string; message: string; active: boolean; systemProxyActive: boolean; tunActive: boolean;
+};
 export type ProxyStateInput = {
   runtime: RuntimeStatus | null;
   mode?: NetworkMode;
@@ -10,20 +14,22 @@ export type ProxyStateInput = {
   activity?: ProxyActivity | null;
   readIssue?: string;
   stopIssue?: string;
+  verifiedControl?: ProxyPresentation;
 };
 
 /** Public connection state is distinct from the remembered mode and core details. */
-export function proxyPresentation(input: ProxyStateInput) {
+export function proxyPresentation(input: ProxyStateInput): ProxyPresentation {
   const result = (state: 'closed' | 'system_proxy' | 'tun' | 'local_only' | 'checking' | 'unavailable' | 'error', label: string, message = '') => ({
     state, label, message, active: state === 'system_proxy' || state === 'tun',
     systemProxyActive: state === 'system_proxy', tunActive: state === 'tun',
   });
   const progress: Record<ProxyActivity, string> = {
     starting: '正在开启代理', stopping: '正在关闭代理', switching: '正在切换网络',
-    restoring: '正在恢复代理', working: '正在处理代理',
+    restoring: '正在恢复代理', working: '正在处理代理', refreshing: '正在刷新状态', routing: '正在应用路由',
   };
   if (input.activity) return result('checking', progress[input.activity]);
   if (input.stopIssue) return result('error', '关闭未完成', input.stopIssue);
+  if (input.verifiedControl) return input.verifiedControl;
   if (input.readIssue || !input.runtime) return result('checking', '状态待确认', input.readIssue || '正在读取代理状态');
   const phase = input.runtime.phase;
   if (['validating', 'starting', 'stopping', 'recovering'].includes(phase)) {

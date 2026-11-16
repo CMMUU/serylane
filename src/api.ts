@@ -60,8 +60,26 @@ export type NodeSelectionReceipt = {
   manualNode: string | null;
 };
 
+export type ProxyControlRequest =
+  | { action: "refresh" }
+  | { action: "start" | "stop"; mode?: NetworkMode }
+  | { action: "switch"; mode: NetworkMode };
+export type ProxyControlSnapshot = {
+  serial: number;
+  completed: number;
+  busy: "starting" | "stopping" | "switching" | "refreshing" | "routing" | null;
+  network: import("./proxy-state").ProxyPresentation;
+  route: { active: boolean; enabled: boolean; label: string; message: string; readyToToggle: boolean } | null;
+  canStart: boolean;
+  canStop: boolean;
+  canSwitch: boolean;
+  tunSupported: boolean;
+  tunHint: string;
+  detail: string;
+};
+
 const reads = new ReadCoordinator();
-const readCommands = new Set(["run_connectivity_diagnostic_step", "read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
+const readCommands = new Set(["proxy_control_status", "run_connectivity_diagnostic_step", "read_subscription_edit", "domain_route_status", "node_test_status", "get_manual_outbound", "connection_feedback", "legacy_route_status", "local_route_status", "app_info", "app_update_status", "get_settings", "global_traffic_snapshot", "list_profiles", "list_subscriptions", "get_profile_details", "get_active_profile", "probe_mihomo", "runtime_status", "get_session_resume_status", "get_startup_status", "system_proxy_status", "tun_helper_status", "get_proxies", "get_rules", "get_connections", "get_openai_policy_task", "get_current_node_details", "application_logs", "runtime_logs", "get_user_rules", "get_openai_costs"]);
 async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
   if (command === "app_update_status") {
     appLifecycle.requireStatus();
@@ -76,6 +94,8 @@ async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
 }
 
 export const api = {
+  proxyControlStatus: () => invoke<ProxyControlSnapshot>("proxy_control_status"),
+  proxyControlAction: (request: ProxyControlRequest) => invoke<ProxyControlSnapshot>("proxy_control_action", { request }),
   lifecycle: () => nativeInvoke<LifecycleSnapshot>("app_lifecycle_status"),
   readSubscriptionEdit: (profileId: string) => invoke<SubscriptionEdit>("read_subscription_edit", {profileId}),
   saveSubscriptionEdit: (input: SubscriptionEdit) => invoke<SubscriptionEdit>("save_subscription_edit", {input, confirmed: true}),

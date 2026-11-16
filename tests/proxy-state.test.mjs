@@ -49,18 +49,23 @@ const main=read('main.ts');
 function stopFixture(mode='system_proxy', fail=false) {
   const calls=[];
   const noop=()=>{};
-  const environment={runtimeActionInFlight:false,networkModeSwitching:false,settingsSaving:false,manualModeSwitching:false,domainRouteChanging:false,runtimeActivity:null,proxyStopIssue:'',runtimeMutationRevision:0,
+  const environment={proxyControlSnapshot:null,proxyControlsPending:()=>false,
+    acceptProxyControl:()=>{},refreshBase:()=>{},runtimeActionInFlight:false,networkModeSwitching:false,settingsSaving:false,manualModeSwitching:false,domainRouteChanging:false,runtimeActivity:null,proxyStopIssue:'',runtimeMutationRevision:0,
     store:{settings:{networkMode:mode},runtime:{phase:'running'},systemProxy:{active:mode==='system_proxy'},activeProfile:{}},
     desiredRunning:true,routeEnabled:true,
     connectionFeedback:{clearIssue:noop,showError:()=>calls.push('error')},
     localRouting:{invalidate:()=>calls.push('invalidate'),refresh:async()=>{assert.equal(environment.runtimeActionInFlight,false);calls.push('route-read');}},
     themeController:{snapshot:{}},renderHeader:noop,renderOverview:noop,renderAppearance:noop,
     toast:()=>calls.push('success'),errorMessage:e=>e.message,friendlyError:e=>({title:e.message,description:'',action:'refresh',details:''}),
-    api:{stop:async()=>{calls.push('stop');environment.desiredRunning=false;if(fail)throw Error('cleanup failed');environment.store.systemProxy.active=false;return {phase:'stopped'};}},
-    refreshRuntimeOnly:async allowed=>{assert.equal(allowed,true);assert.equal(environment.runtimeActionInFlight,true);calls.push('readback');},refreshSessionResume:async()=>calls.push('resume-read'),
+    api:{settings:async()=>environment.store.settings,proxyControlAction:async req=>{
+      assert.equal(req.action,'stop');calls.push('stop');environment.desiredRunning=false;
+      if(fail){environment.proxyControlSnapshot={network:{label:'关闭未完成'}};throw Error('cleanup failed');}
+      environment.store.runtime.phase='stopped';environment.store.systemProxy.active=false;
+    }},
+    refreshRuntimeOnly:async allowed=>{assert.equal(allowed,true);assert.equal(environment.runtimeActionInFlight,true);calls.push('readback');},refreshConnectionFeedback:async()=>{},refreshSessionResume:async()=>calls.push('resume-read'),
   };
   vm.createContext(environment);
-  vm.runInContext(compile(main.slice(main.indexOf('async function stopRuntime()'),main.indexOf('function toggleGlobalNetworkMode('))),environment);
+  vm.runInContext(compile(main.slice(main.indexOf('async function runProxyControl('),main.indexOf('function toggleGlobalNetworkMode('))),environment);
   return {environment,calls,stop:()=>environment.stopRuntime()};
 }
 test('ordinary Stop preserves the last mode and route policy while cancelling running intent', async () => {
@@ -70,7 +75,7 @@ test('ordinary Stop preserves the last mode and route policy while cancelling ru
     assert.equal(f.environment.routeEnabled,true);
     assert.equal(f.environment.desiredRunning,false);
     assert.equal(f.environment.store.runtime.phase,'stopped');
-    assert.deepEqual(f.calls,['invalidate','stop','success','readback','invalidate','route-read','resume-read']);
+    assert.deepEqual(f.calls,['invalidate','stop','readback','invalidate','route-read','resume-read']);
   }
 });
 test('failed Stop is visible, keeps actual running state and still refreshes route state', async () => {
@@ -92,10 +97,10 @@ function baseReadFixture() {
   const element=id=>{if(!elements.has(id))elements.set(id,{textContent:'',disabled:false,title:'',classList:{toggle:noop},setAttribute:noop});return elements.get(id);};
   const profile={id:'p',activeRevisionId:'r',displayName:'测试订阅'};
   let failRuntimeOnce=false,settingsWait=null,osProxyActive=true,corePhase='running';
-  const environment={
+  const environment={proxyControlSnapshot:null,proxyControlsPending:()=>Boolean(environment.proxyControlSnapshot?.busy),refreshBase:noop,
     store:{view:'overview',settings:{networkMode:'system_proxy',theme:'system'},runtime:{phase:'running'},systemProxy:{active:true},activeProfile:{profile},profiles:[profile],subscriptions:[],tunHelper:null,manualOutbound:null,selectedProfile:null},
     runtimeActionInFlight:false,networkModeSwitching:false,domainRouteChanging:false,settingsSaving:false,manualModeSwitching:false,
-    runtimeActivity:null,proxyReadIssue:'',proxyStopIssue:'',verifiedIngress:null,runtimeMutationRevision:0,baseReadSequence:0,runtimeReadSequence:0,proxyReadSequence:0,overviewNodeDetails:{},baseLoading:false,
+    runtimeActivity:null,staleNetworkProjectionSerial:0,proxyReadIssue:'',proxyStopIssue:'',verifiedIngress:null,runtimeMutationRevision:0,baseReadSequence:0,runtimeReadSequence:0,proxyReadSequence:0,overviewNodeDetails:{},baseLoading:false,
     sessionResumeStatus:null,startupStatus:null,NAV_ITEMS:[{id:'overview',label:'概览'}],desiredRunning:true,
     proxyPresentation,canStartRuntime,canStopSession,sessionResumePresentation,modeLabel:m=>m,
     document:{documentElement:{dataset:{}}},$:element,pageReads:new PageReads(),dataContext:()=>'',
@@ -111,27 +116,30 @@ function baseReadFixture() {
       binary:async()=>({}),runtime:async()=>{calls.push('runtime');if(failRuntimeOnce){failRuntimeOnce=false;throw Error('transient IPC timeout');}return {phase:corePhase};},
       systemProxy:async()=>({active:osProxyActive}),profiles:async()=>[profile],subscriptions:async()=>[],activeProfile:async()=>({profile}),
       openAiPolicyTask:async()=>null,globalTraffic:async()=>null,manualOutbound:async()=>null,tunHelperStatus:async()=>null,
-      stop:async()=>{calls.push('stop');corePhase='stopped';osProxyActive=false;environment.desiredRunning=false;return {phase:'stopped'};},
+      proxyControlStatus:async()=>({serial:calls.length,completed:0,busy:null,
+        network:proxyPresentation(input('system_proxy',corePhase,osProxyActive)),canStart:corePhase==='stopped',canStop:corePhase==='running',canSwitch:true,tunSupported:true}),
+      proxyControlAction:async(req)=>{assert.equal(req.action,'stop');calls.push('stop');corePhase='stopped';osProxyActive=false;environment.desiredRunning=false;
+        return {serial:2,completed:1,busy:null,network:proxyPresentation(input('system_proxy','stopped',false)),canStart:true,canStop:false,canSwitch:true,tunSupported:true};
+      },
     },
   };
   vm.createContext(environment);
   const sources=[
     main.slice(main.indexOf('function currentProxyPresentation()'),main.indexOf('function renderOverview()')),
     main.slice(main.indexOf('function refreshRuntimeOnly('),main.indexOf('async function startRuntime(')),
-    main.slice(main.indexOf('async function performBaseRead()'),main.indexOf('function renderSessionResume()')),
     main.slice(main.indexOf('async function stopRuntime()'),main.indexOf('function toggleGlobalNetworkMode(')),
+    main.slice(main.indexOf('async function performBaseRead()'),main.indexOf('function renderSessionResume()')),
   ];
   vm.runInContext(compile(sources.join('\n')),environment);
   return {environment,calls,control:element,failNextRuntime:()=>{failRuntimeOnce=true;},waitForSettings:promise=>{settingsWait=promise;},refresh:()=>environment.performBaseRead(),stop:()=>environment.stopRuntime()};
 }
 
-test('global refresh recovers Start after Stop succeeds but its immediate status read fails',async()=>{
+test('a verified shared Stop is not undone by an older WebView status failure',async()=>{
   const f=baseReadFixture();f.failNextRuntime();await f.stop();
-  assert.equal(f.environment.store.runtime.phase,'stopped');
   assert.equal(f.environment.desiredRunning,false);
   assert.equal(f.environment.proxyReadIssue,'transient IPC timeout');
-  assert.equal(f.control('#global-start').disabled,true);
-  assert.equal(f.control('#application-runtime-state').textContent,'状态待确认');
+  assert.equal(f.control('#global-start').disabled,false);
+  assert.equal(f.control('#application-runtime-state').textContent,'已关闭');
   assert.equal(await f.refresh(),true);
   assert.equal(f.environment.proxyReadIssue,'');
   assert.equal(f.control('#application-runtime-state').textContent,'已关闭');
@@ -151,7 +159,10 @@ test('a base read invalidated by a newer operation cannot clear the unresolved s
 });
 
 test('an incomplete Stop leaves retry Stop available and forbids starting a duplicate live core',async()=>{
-  const f=baseReadFixture();f.environment.api.stop=async()=>{f.environment.desiredRunning=false;throw Error('proxy cleanup failed');};
+  const f=baseReadFixture();f.environment.api.proxyControlAction=async()=>{f.environment.desiredRunning=false;
+    f.environment.proxyControlSnapshot={serial:2,completed:1,busy:null,canStart:false,canStop:true,canSwitch:true,
+      network:proxyPresentation({...input(),stopIssue:'proxy cleanup failed'})};
+    throw Error('proxy cleanup failed');};
   await f.stop();
   assert.equal(f.environment.store.runtime.phase,'running');
   assert.equal(f.control('#application-runtime-state').textContent,'关闭未完成');
@@ -161,7 +172,7 @@ test('an incomplete Stop leaves retry Stop available and forbids starting a dupl
 
 test('native Stop signals invalidate route state and read the current runtime without changing it',async()=>{
   const calls=[];
-  const env={appLifecycle:{paused:false},runtimeActionInFlight:false,networkModeSwitching:false,settingsSaving:false,manualModeSwitching:false,domainRouteChanging:false,runtimeMutationRevision:7,proxyStopIssue:'',
+  const env={proxyControlsPending:()=>false,appLifecycle:{paused:false},runtimeActionInFlight:false,networkModeSwitching:false,settingsSaving:false,manualModeSwitching:false,domainRouteChanging:false,runtimeMutationRevision:7,proxyStopIssue:'',
     localRouting:{invalidate:()=>calls.push('invalidate'),refresh:async()=>calls.push('route-read')},
     refreshRuntimeOnly:async()=>calls.push('runtime-read'),refreshSessionResume:async()=>calls.push('resume-read')};
   vm.createContext(env);
@@ -190,4 +201,16 @@ test('automatic restoration keeps Stop cancellable while modes and Start wait fo
   f.environment.sessionResumeStatus={phase:'idle',message:'stopped'};f.environment.renderHeader();
   assert.equal(f.control('#application-runtime-state').textContent,'已关闭');
   assert.equal(f.control('#global-start').disabled,false);
+});
+
+test('out-of-order snapshots from panel and main window cannot overwrite the last accepted state',()=>{
+  const f=baseReadFixture();
+  const active={serial:9,completed:1,busy:null,network:proxyPresentation(input()),canStart:false,canStop:true,canSwitch:true,tunSupported:true};
+  f.environment.acceptProxyControl(active);
+  f.environment.acceptProxyControl({...active,serial:8,network:proxyPresentation(input('system_proxy','stopped',false)),canStart:true});
+  assert.equal(f.control('#application-runtime-state').textContent,'系统代理运行中');
+  assert.equal(f.control('#global-start').disabled,true);
+  f.environment.acceptProxyControl({...active,serial:10,busy:'routing'});
+  assert.equal(f.control('#application-runtime-state').textContent,'正在应用路由');
+  assert.equal(f.control('#global-stop').disabled,true);
 });

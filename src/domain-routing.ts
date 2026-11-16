@@ -35,6 +35,7 @@ export function mountDomainRouting(root: HTMLElement, services: {
   confirm: (options: { title: string; message: string; confirmLabel?: string; returnFocus?: HTMLElement }) => Promise<boolean>;
   error: (error: unknown) => string;
   globalToggle?: HTMLButtonElement;
+  globalControl?: () => { active: boolean; label: string; message: string } | null | undefined;
   isBlocked?: () => boolean;
   contextKey?: () => string;
   busyChanged?: (busy: boolean) => void;
@@ -149,15 +150,16 @@ export function mountDomainRouting(root: HTMLElement, services: {
     const detail = !readError && snapshotValid && setup ? `已关闭 · ${setup.text}` : display.text;
     for (const button of [$<HTMLButtonElement>('toggle'), services.globalToggle].filter((b): b is HTMLButtonElement => Boolean(b))) {
       const global = button === services.globalToggle;
-      button.textContent = pending || (global ? display.label : enabled ? '关闭路由' : setup ? '设置路由' : '开启路由');
+      const shared = global && !readError && snapshotValid && !dirty ? services.globalControl?.() : null;
+      button.textContent = pending || (global ? shared?.label ?? display.label : enabled ? '关闭路由' : setup ? '设置路由' : '开启路由');
       button.disabled = locked || !state;
       button.setAttribute('aria-pressed', String(enabled));
       button.setAttribute('aria-busy', String(Boolean(pending) || Boolean(state && !snapshotValid && !readError)));
       button.setAttribute('aria-label', `${enabled ? '关闭' : '开启'}域名路由`);
-      button.classList.toggle('is-active', display.active && !locked);
+      button.classList.toggle('is-active', (shared?.active ?? display.active) && !locked);
       button.dataset.verification = readError || !snapshotValid ? 'unknown' : state?.verification ?? 'unknown';
       button.dataset.ingress = display.ingress;
-      button.title = setup ? `${setup.text} 点击前往设置。` : `${detail}；${enabled ? '点击关闭路由配置' : '点击启用路由配置'}。仅影响名单规则，不启停主代理。`;
+      button.title = setup ? `${setup.text} 点击前往设置。` : `${shared?.message || detail}；${enabled ? '点击关闭路由配置' : '点击启用路由配置'}。仅影响名单规则，不启停主代理。`;
     }
     $('status').textContent = detail;
     $('status').dataset.tone = setup ? 'info' : display.tone;
