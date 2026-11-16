@@ -278,14 +278,23 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker) {
+    use block2::RcBlock;
     use macos_menu_panel::Action;
     use objc2::{rc::Retained, sel};
     use objc2_app_kit::{
         NSButton, NSEventMask, NSPopUpMenuWindowLevel, NSStandardKeyBindingResponding,
         NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
     };
-    use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSRunLoop, NSSize};
-    use std::sync::{Arc, Mutex};
+    use objc2_foundation::{
+        NSDate, NSDefaultRunLoopMode, NSOperationQueue, NSPoint, NSRect, NSRunLoop, NSSize,
+    };
+    use std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
+        time::{Duration, Instant},
+    };
 
     fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
         NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
@@ -411,15 +420,37 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
     };
     update_controls(mtm, system_on.clone());
 
-    let pump = || {
-        let until = NSDate::dateWithTimeIntervalSinceNow(0.12);
-        let run_loop = NSRunLoop::currentRunLoop();
-        while until.timeIntervalSinceNow() > 0.0 {
-            run_loop.runMode_beforeDate(unsafe { NSDefaultRunLoopMode }, &until);
+    let drain_scheduled_actions = || {
+        let drained = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::clone(&drained);
+        let block = RcBlock::new(move || barrier.store(true, Ordering::Release));
+        // SAFETY: this callback only stores into a shared atomic. The native
+        // queue barrier runs after all action blocks enqueued by the click.
+        unsafe { NSOperationQueue::mainQueue().addBarrierBlock(&block) };
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(3);
+        // Programmatic status actions can follow one another much faster
+        // than mouse clicks. Give AppKit a window-order/event cycle between
+        // assertions; actual action completion is the barrier, not time.
+        let settle = now + Duration::from_millis(120);
+        while !drained.load(Ordering::Acquire) || Instant::now() < settle {
+            assert!(
+                Instant::now() < deadline,
+                "native action queue did not drain before the deadline"
+            );
+            let slice = NSDate::dateWithTimeIntervalSinceNow(0.03);
+            NSRunLoop::currentRunLoop().runMode_beforeDate(unsafe { NSDefaultRunLoopMode }, &slice);
         }
     };
-    let take = || {
-        pump();
+    let take = |expected_count| {
+        // AppKit may defer dispatching the selector itself to the next
+        // run-loop turn; wait for the exact expected delivery when positive.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while actions.lock().unwrap().len() < expected_count && Instant::now() < deadline {
+            let slice = NSDate::dateWithTimeIntervalSinceNow(0.03);
+            NSRunLoop::currentRunLoop().runMode_beforeDate(unsafe { NSDefaultRunLoopMode }, &slice);
+        }
+        drain_scheduled_actions();
         std::mem::take(&mut *actions.lock().unwrap())
     };
     let initial_foreground = foreground();
@@ -431,7 +462,7 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
         "opening must preserve foreground"
     );
     assert!(panel.isOnActiveSpace());
-    assert_eq!(take(), [Action::Observe]);
+    assert_eq!(take(1), [Action::Observe]);
 
     let inside = NSPoint::new(
         panel.frame().origin.x + 40.0,
@@ -442,19 +473,24 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
     let outside = NSPoint::new(panel.frame().origin.x + 40.0, panel.frame().origin.y - 6.0);
     macos_menu_panel::dismiss_if_outside(mtm, outside);
     assert!(!panel.isVisible() && !macos_menu_panel::is_visible());
+    assert!(
+        take(0).is_empty(),
+        "outside dismissal must not dispatch an action"
+    );
     click_status();
-    assert_eq!(take(), [Action::Observe]);
+    assert_eq!(take(1), [Action::Observe]);
     click_status();
     assert!(!panel.isVisible(), "same icon toggles off");
-    pump(); // allow AppKit to finish the prior status button's tracking cycle
+    drain_scheduled_actions();
     click_status();
     assert!(panel.isVisible());
-    assert_eq!(take(), [Action::Observe]);
+    assert_eq!(take(1), [Action::Observe]);
     unsafe { panel.cancelOperation(None) };
     assert!(!panel.isVisible(), "Escape closes");
+    assert!(take(0).is_empty(), "Escape must not dispatch an action");
 
     click_status();
-    assert_eq!(take(), [Action::Observe]);
+    assert_eq!(take(1), [Action::Observe]);
     let surface = panel.contentView().expect("native content view");
     assert!(!panel.isOpaque() && panel.hasShadow());
     let layer = surface.layer().expect("blur layer");
@@ -485,7 +521,7 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
     );
     press(0);
     press(0);
-    assert_eq!(take(), [Action::SystemProxy(false)]);
+    assert_eq!(take(1), [Action::SystemProxy(false)]);
     assert!(panel.isVisible(), "leave controls visible for feedback");
     assert!(
         !buttons[0].isEnabled(),
@@ -514,7 +550,7 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
     );
     press(3);
     assert!(
-        take().is_empty(),
+        take(0).is_empty(),
         "reject actions until the shared operation completes"
     );
 
@@ -531,7 +567,7 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
     update_controls(mtm, system_on.clone()); // delayed IPC read
     assert!(!buttons[0].title().to_string().starts_with('✓') && buttons[4].isEnabled());
     press(0);
-    assert_eq!(take(), [Action::SystemProxy(true)]);
+    assert_eq!(take(1), [Action::SystemProxy(true)]);
     let update = |serial| {
         update_controls(
             mtm,
@@ -544,23 +580,23 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
     };
     update(5);
     press(1);
-    assert_eq!(take(), [Action::Tun(true)]);
+    assert_eq!(take(1), [Action::Tun(true)]);
     update(6);
     press(4);
-    assert_eq!(take(), [Action::Start]);
+    assert_eq!(take(1), [Action::Start]);
     update(7);
     press(3);
-    assert_eq!(take(), [Action::Refresh]);
+    assert_eq!(take(1), [Action::Refresh]);
     update(8);
 
     press(2);
-    assert!(buttons[2].title().to_string().contains("确认开启路由") && take().is_empty());
+    assert!(buttons[2].title().to_string().contains("确认开启路由") && take(0).is_empty());
     press(3);
-    assert!(take().is_empty() && !buttons[2].title().to_string().contains("确认"));
+    assert!(take(0).is_empty() && !buttons[2].title().to_string().contains("确认"));
     press(2);
     press(2);
     press(2);
-    assert_eq!(take(), [Action::Route(token)]);
+    assert_eq!(take(1), [Action::Route(token)]);
     assert!(panel.isVisible());
     update_controls(
         mtm,
@@ -571,7 +607,7 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
         },
     );
     press(5);
-    assert_eq!(take(), [Action::Stop]);
+    assert_eq!(take(1), [Action::Stop]);
     assert!(panel.isVisible());
     assert!(!buttons[5].isEnabled());
     macos_menu_panel::reject_queued(mtm, 8, "old rejection".into());
@@ -586,11 +622,11 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
     for (index, action) in [(6, Action::OpenWindow), (7, Action::Quit)] {
         if !panel.isVisible() {
             click_status();
-            assert_eq!(take(), [Action::Observe]);
+            assert_eq!(take(1), [Action::Observe]);
         }
         press(index);
         assert!(!panel.isVisible());
-        assert_eq!(take(), [action]);
+        assert_eq!(take(1), [action]);
     }
 
     click_status();
