@@ -76,10 +76,17 @@ test('System Proxy acceptance is independent of the external probe and helper UI
   assert.doesNotMatch(system, /verify_local_proxy|inspect_local_proxy|verify_tun_route/);
   assert.match(system, /verify_system_proxy/);
   const main = read('src/main.ts');
-  const refresh = main.slice(main.indexOf('async function refreshRuntimeOnly'), main.indexOf('async function startRuntime('));
-  assert.doesNotMatch(refresh, /await.*tunHelperStatus/);
-  assert.match(main, /if \(wasRunning && !keepCore\) \{\s*await api\.stop\(\);\s*stoppedPrevious = true;/);
-  assert.match(main, /if \(!keepCore && store\.activeProfile/);
+  const refresh = main.slice(main.indexOf('function refreshRuntimeOnly('), main.indexOf('async function startRuntime('));
+  assert.doesNotMatch(refresh, /await [^;\n]*tunHelperStatus/);
+  assert.doesNotMatch(refresh, /recheckConnection\(/);
+  const shared = read('src-tauri/src/proxy_control.rs');
+  const quick = shared.slice(shared.indexOf('ReadDetail::Quick(_) =>'), shared.indexOf('let (raw, (route, helper))'));
+  assert.match(quick, /ReadDetail::Quick\(_\) => \(None, None\)/);
+  assert.match(quick, /ReadDetail::Full => [\s\S]*verified_state\(app\)[\s\S]*read_tun_helper_status\(\)/);
+  const execute = shared.slice(shared.indexOf('pub(crate) async fn execute('), shared.indexOf('pub(crate) async fn apply_route('));
+  assert.match(execute, /perform_network\(app, request\).await;[\s\S]*read\(app, ReadDetail::Quick\(None\)\).await/);
+  assert.match(execute, /drop\(slot\);[\s\S]*observe_after_action\(app\)/);
+
 });
 test('network health has cancellation and config/core attribution guards, no mutating work', () => {
   const module = read('src-tauri/src/connection_feedback.rs');

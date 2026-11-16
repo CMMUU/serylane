@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.42 - 2026-11-17
+
+- Share one proxy control and readback path between the main toolbar and the macOS menu. The menu can switch System Proxy or TUN, confirm saved routing changes, refresh, start in the saved mode, or stop.
+- Use a grouped vertical native menu with rounded edges. Keep it open while operating; click outside, press Escape, or click the icon again to dismiss without changing the current app. Explicitly opening the main window preserves its page.
+- Preserve TUN preflight and rollback, and distinguish route configuration from verified traffic. Leave transport preferences, Windows/Linux tray entry points, and macOS signing policy unchanged.
+
 ## 0.7.41 - 2026-11-15
 
 - Disable the AI node button and label it 「已应用」 only when Mihomo confirms the selected node is both the effective exit and manually pinned. Selecting another node re-enables the button. An active automatic exit is still pinnable.

@@ -16,174 +16,97 @@ const settingsUrl = moduleUrl(read("settings-view.ts")
 const { preferencesMarkup } = await import(settingsUrl);
 const css = read("desktop-theme.css");
 const main = read("main.ts");
-const { startRuntimeInMode, canStartRuntime } = await import(moduleUrl(read("runtime-start.ts")));
+const { networkToggleIntent, canStartRuntime } = await import(moduleUrl(read("runtime-start.ts")));
 
-function runtimeFixture(mode = "manual", options = {}) {
-  const calls = [];
-  const runtime = (phase) => ({ phase, message: `synthetic ${phase}`, lastError: null });
-  const state = { settings: { networkMode: mode }, runtime: runtime("stopped"), systemProxyActive: false, hasProfile: true, busy: false };
-  let persistedMode = options.actualMode ?? mode;
-  const context = {
-    state: () => state,
-    setBusy: (busy) => { state.busy = busy; },
-    setSettings: (settings) => { state.settings = settings; },
-    setRuntime: (value) => { state.runtime = value; },
-    readRuntime: async () => { calls.push("read"); return runtime(options.actualPhase ?? "stopped"); },
-    readSettings: async () => ({ networkMode: persistedMode }),
-    setNetworkMode: async (nextMode) => {
-      calls.push(`mode:${nextMode}`);
-      if (options.failSave || (options.failRollback && nextMode === mode)) throw new Error("save failed");
-      persistedMode = nextMode;
-      return { networkMode: nextMode };
+function toolbarFixture({ submit, settle } = {}) {
+  const writes = [], notices = [], refreshes = [];
+  const noop = () => {};
+  const e = {
+    store: { settings: { networkMode: "tun" }, activeProfile: {}, runtime: { phase: "stopped" } },
+    proxyControlSnapshot: null, proxyStopIssue: "", runtimeMutationRevision: 0,
+    settingsSaving:false, manualModeSwitching:false, domainRouteChanging:false, networkModeSwitching:false, runtimeActionInFlight:false, runtimeActivity:null,
+    proxyControlsPending: () => Boolean(e.proxyControlSnapshot?.busy),
+    networkToggleIntent, currentProxyPresentation: () => e.proxyControlSnapshot?.network ?? { systemProxyActive:false, tunActive:false },
+    acceptProxyControl: snapshot => { e.proxyControlSnapshot = snapshot; },
+    renderHeader:noop,renderOverview:noop,renderAppearance:noop,themeController:{snapshot:{}},
+    connectionFeedback:{ clearIssue:noop, showError: v => notices.push(v) }, friendlyError: error => ({ title:error.message,action:"refresh" }),
+    errorMessage:error=>error.message, navigate:noop,
+    api:{
+      settings:async()=>e.store.settings,
+      proxyControlAction: async (request) => { writes.push({ ...request }); return submit ? await submit(request) : null; },
     },
-    startActive: async () => {
-      calls.push(`start:${state.settings.networkMode}`);
-      if (options.waitForStart) await options.waitForStart;
-      if (options.failStart) throw new Error("start failed");
-      state.systemProxyActive = state.settings.networkMode === "system_proxy" && options.proxyActive !== false;
-      return runtime(options.resultPhase ?? "running");
-    },
-    ensureTunReady: async () => { calls.push("tun-ready"); return options.tunReady ?? true; },
-    refresh: async () => {
-      calls.push("refresh");
-      assert.equal(state.busy, true, "lock remains held while status is refreshed");
-      if (options.waitForRefresh) await options.waitForRefresh;
-      if (options.failRefresh) throw new Error("refresh failed");
-      if (options.refreshedPhase) state.runtime = runtime(options.refreshedPhase);
-      if (options.refreshedMode) state.settings = { networkMode: options.refreshedMode };
-    },
+    refreshRuntimeOnly: async (forced) => { assert.equal(forced,true);assert.equal(e.runtimeActionInFlight,true);refreshes.push("core");if(settle)await settle; },
+    localRouting:{invalidate:noop,refresh:async()=>refreshes.push("route")},
+    refreshSessionResume:async()=>{},refreshBase:async()=>{},refreshConnectionFeedback:async()=>{},
   };
-  return { calls, state, start: (intent = "system_proxy") => startRuntimeInMode(intent, context) };
+  vm.createContext(e);
+  vm.runInContext(ts.transpileModule(main.slice(main.indexOf("async function runProxyControl("),main.indexOf("async function ensureTunHelperReady(")),{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,e);
+  return {e,writes,notices,refreshes};
 }
 
-test("main Start requests the last saved scheme accessibly", async () => {
+test("main Start submits saved-mode intent; explicit TUN is never substituted", async () => {
   assert.match(main, /#global-start.*addEventListener\("click", \(\) => void startRuntime\("previous"\)\)/);
   assert.match(main, /id="global-start"[^>]*aria-label="按上次方案启动"/);
-  const f = runtimeFixture();
-  assert.equal((await f.start("previous")).kind, "started");
-  assert.deepEqual(f.calls, ["read", "start:manual", "refresh"]);
-  assert.equal(f.state.settings.networkMode, "manual");
-  assert.equal(f.state.busy, false);
+  const f=toolbarFixture();
+  await f.e.startRuntime("previous");
+  await f.e.startRuntime("tun");
+  assert.deepEqual(f.writes,[{action:"start",mode:undefined},{action:"start",mode:"tun"}]);
+  assert.equal(f.e.store.settings.networkMode,"tun");
 });
 
-test("an existing system-proxy preference starts directly without rewriting mode", async () => {
-  const f = runtimeFixture("system_proxy");
-  assert.equal((await f.start()).kind, "started");
-  assert.deepEqual(f.calls, ["read", "start:system_proxy", "refresh"]);
+test("toolbar and overview send one absolute, mode-specific intent", async () => {
+  assert.deepEqual(networkToggleIntent("system_proxy",false),{action:"switch",mode:"system_proxy"});
+  assert.deepEqual(networkToggleIntent("tun",true),{action:"stop",mode:"tun"});
+  const f=toolbarFixture();
+  f.e.proxyControlSnapshot={network:{systemProxyActive:true}};
+  f.e.toggleGlobalNetworkMode("system_proxy");
+  await new Promise(resolve=>setImmediate(resolve));
+  await f.e.switchNetworkMode("tun");
+  await f.e.stopRuntime();
+  await f.e.runProxyControl({action:"refresh"});
+  assert.deepEqual(f.writes,[{action:"stop",mode:"system_proxy"},{action:"switch",mode:"tun"},{action:"stop"},{action:"refresh"}]);
 });
 
-test("main Start restores saved TUN with permission preflight, not system proxy", async () => {
-  const f = runtimeFixture("tun");
-  assert.equal((await f.start("previous")).kind, "started");
-  assert.deepEqual(f.calls, ["read", "tun-ready", "start:tun", "refresh"]);
-  const stale = runtimeFixture("system_proxy", { actualMode: "tun", tunReady: false });
-  assert.equal((await stale.start("previous")).kind, "cancelled");
-  assert.deepEqual(stale.calls, ["read", "tun-ready", "refresh"]);
+test("the UI holds its lock through IPC and readback without replay or a second core command", async () => {
+  let ready, settled;
+  const result=new Promise(resolve=>{ready=resolve;});
+  const settle=new Promise(resolve=>{settled=resolve;});
+  const f=toolbarFixture({submit:()=>result,settle});
+  const first=f.e.startRuntime("previous");
+  await f.e.stopRuntime();
+  assert.equal(f.writes.length,1);
+  ready(null);
+  await new Promise(resolve=>setImmediate(resolve));
+  await f.e.switchNetworkMode("tun");
+  assert.equal(f.writes.length,1);
+  settled(); await first;
+  assert.equal(f.e.runtimeActionInFlight,false);
+  assert.deepEqual(f.refreshes,["core","route"]);
 });
 
-test("startup uses the authoritative prior preference rather than a stale toolbar snapshot", async () => {
-  const currentSystem = runtimeFixture("manual", { actualMode: "system_proxy" });
-  assert.equal((await currentSystem.start()).kind, "started");
-  assert.deepEqual(currentSystem.calls, ["read", "start:system_proxy", "refresh"]);
-  const rollback = runtimeFixture("manual", { actualMode: "tun", failStart: true });
-  assert.equal((await rollback.start()).restored, true);
-  assert.equal(rollback.state.settings.networkMode, "tun");
+test("a macOS panel write disables the other surface, and TUN failures are not replayed", async () => {
+  const f=toolbarFixture({submit:()=>{throw Error("TUN 预检未通过");}});
+  f.e.proxyControlSnapshot={busy:"switching"};
+  await f.e.stopRuntime(); assert.equal(f.writes.length,0);
+  f.e.proxyControlSnapshot=null;
+  await f.e.switchNetworkMode("tun");
+  assert.deepEqual(f.writes,[{action:"switch",mode:"tun"}]);
+  assert.equal(f.notices[0].userMessage.title,"TUN 预检未通过");
+  assert.equal(f.e.runtimeActionInFlight,false);
 });
 
-test("explicit TUN still requires readiness and never turns into system proxy", async () => {
-  for (const previousMode of ["manual", "tun"]) {
-    const f = runtimeFixture(previousMode);
-    assert.equal((await f.start("tun")).kind, "started");
-    assert.deepEqual(f.calls, ["read", "tun-ready", ...(previousMode === "tun" ? [] : ["mode:tun"]), "start:tun", "refresh"]);
-  }
-  const denied = runtimeFixture("manual", { tunReady: false });
-  assert.equal((await denied.start("tun")).kind, "cancelled");
-  assert.deepEqual(denied.calls, ["read", "tun-ready", "refresh"]);
-  // Same-mode TUN toggle forwards its explicit intent rather than the main button default.
-  assert.match(main, /store\.settings\.networkMode === mode && !running\) \{\s*void startRuntime\(mode\)/);
+test("a transitional or live runtime has no standalone Start affordance", () => {
+  for (const phase of ["running","starting","validating","stopping","recovering"]) assert.equal(canStartRuntime({phase}),false);
+  for (const phase of ["stopped","crashed","uninitialized"]) assert.equal(canStartRuntime({phase}),true);
 });
 
-test("a failed mode save never starts the runtime or claims rollback", async () => {
-  const f = runtimeFixture("manual", { failSave: true });
-  const result = await f.start();
-  assert.equal(result.kind, "failed");
-  assert.equal(result.restored, false);
-  assert.deepEqual(f.calls, ["read", "mode:system_proxy", "refresh"]);
-  assert.equal(f.state.settings.networkMode, "manual");
-  assert.equal(f.state.busy, false);
-});
-
-test("failed start restores the old preference without restarting a previous session", async () => {
-  for (const previousMode of ["manual", "tun"]) {
-    const f = runtimeFixture(previousMode, { failStart: true });
-    const result = await f.start();
-    assert.equal(result.kind, "failed");
-    assert.equal(result.restored, true);
-    assert.equal(f.state.settings.networkMode, previousMode);
-    assert.deepEqual(f.calls, ["read", "mode:system_proxy", "start:system_proxy", `mode:${previousMode}`, "refresh"]);
-  }
-});
-
-test("rollback failure and non-running results are never reported as successful starts", async () => {
-  const f = runtimeFixture("manual", { failStart: true, failRollback: true });
-  const result = await f.start();
-  assert.equal(result.kind, "failed");
-  assert.equal(result.restored, false);
-  assert.match(result.rollbackError.message, /save failed/);
-  assert.equal(f.state.busy, false);
-  assert.equal((await runtimeFixture("manual", { resultPhase: "crashed" }).start()).kind, "failed");
-});
-
-test("busy lock deduplicates real asynchronous preflight/start/refresh work", async () => {
-  let releaseStart, releaseRefresh;
-  const waitForStart = new Promise(resolve => { releaseStart = resolve; });
-  const waitForRefresh = new Promise(resolve => { releaseRefresh = resolve; });
-  const f = runtimeFixture("manual", { waitForStart, waitForRefresh });
-  const first = f.start();
-  assert.equal((await f.start()).kind, "skipped");
-  await Promise.resolve();
-  assert.equal((await f.start("tun")).kind, "skipped");
-  releaseStart();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal((await f.start()).kind, "skipped");
-  releaseRefresh();
-  assert.equal((await first).kind, "started");
-  assert.equal(f.calls.filter(call => call.startsWith("start:")).length, 1);
-  assert.equal(f.state.busy, false);
-});
-
-test("missing profile, busy/transitional state and stale running sessions remain guarded", async () => {
-  const missing = runtimeFixture(); missing.state.hasProfile = false;
-  assert.equal((await missing.start()).kind, "needs-profile");
-  assert.deepEqual(missing.calls, []);
-  for (const phase of ["running", "starting", "validating", "stopping", "recovering"]) {
-    assert.equal(canStartRuntime({ phase }), false);
-    const f = runtimeFixture("manual", { actualPhase: phase });
-    assert.equal((await f.start()).kind, "skipped");
-    assert.deepEqual(f.calls, ["read", "refresh"]);
-  }
-  const busy = runtimeFixture(); busy.state.busy = true;
-  assert.equal((await busy.start()).kind, "skipped");
-  assert.deepEqual(busy.calls, []);
-});
-
-test("status refresh failure is exposed and releases the busy lock", async () => {
-  const f = runtimeFixture("manual", { failRefresh: true });
-  const result = await f.start();
-  assert.match(result.refreshError.message, /refresh failed/);
-  assert.equal(f.state.busy, false);
-});
-
-test("final refreshed runtime and actual system proxy state must agree before success", async () => {
-  for (const options of [{ proxyActive: false }, { refreshedPhase: "crashed" }, { refreshedMode: "manual" }]) {
-    const f = runtimeFixture("manual", options);
-    const result = await f.start();
-    assert.equal(result.kind, "failed");
-    assert.match(result.error.message, /未确认/);
-    assert.deepEqual(f.calls, ["read", "mode:system_proxy", "start:system_proxy", "refresh"]);
-  }
-  const tun = runtimeFixture("tun", { proxyActive: false });
-  assert.equal((await tun.start("tun")).kind, "started", "TUN does not use system proxy or macOS-only helper runtime flags");
+test("a successful IPC with an unverified readback is displayed as pending, not forced active", async () => {
+  const observed={serial:2,busy:null,network:{state:"checking",label:"系统代理待确认",systemProxyActive:false}};
+  const f=toolbarFixture({submit:async()=>observed});
+  await f.e.startRuntime("system_proxy");
+  assert.equal(f.e.proxyControlSnapshot.network.state,"checking");
+  assert.equal(f.e.proxyControlSnapshot.network.systemProxyActive,false);
+  assert.equal(f.writes.length,1);
 });
 
 test("refreshBase rejects a delayed pre-start snapshot after a network mutation", async () => {
@@ -227,7 +150,7 @@ function runtimeRefreshFixture() {
   let activeRequest;
   let reads = 0;
   const environment = {
-    runtimeMutationRevision: 0, runtimeReadSequence: 0,
+    proxyControlSnapshot: null, staleNetworkProjectionSerial: 0, runtimeMutationRevision: 0, runtimeReadSequence: 0, proxyReadSequence: 0, overviewNodeDetails: {}, renderProxies: noop,
     domainRouteChanging: false, runtimeActionInFlight: false, networkModeSwitching: false, settingsSaving: false, manualModeSwitching: false,
     store: { runtime: { phase: "stopped" }, systemProxy: { active: false } },
     api: {
@@ -235,7 +158,7 @@ function runtimeRefreshFixture() {
       systemProxy: async () => ({ active: activeRequest.proxyActive }),
       tunHelperStatus: async () => ({ state: "ready" }),
     },
-    renderTunHelper: noop, invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshConnectionFeedback: async () => {},
+    invalidateNodeDetailsContext: noop, localRouting: { refresh: async () => {} }, renderTunHelper: noop, renderHeader: noop, renderOverview: noop, renderSubscriptions: noop, refreshProxyControls: noop, refreshConnectionFeedback: async () => {},
   };
   const source = main.slice(main.indexOf("async function performRuntimeRead("), main.indexOf("async function startRuntime("));
   vm.createContext(environment);
@@ -333,4 +256,15 @@ test("idle update hides status details, never the check/preferences controls", (
   assert.ok(preferencesMarkup.indexOf('id="app-update-check"') < preferencesMarkup.indexOf('id="app-update-feedback"'));
   assert.ok(preferencesMarkup.indexOf('id="app-update-save"') < preferencesMarkup.indexOf('id="app-update-feedback"'));
   assert.match(main, /#app-update-feedback[\s\S]*?appUpdateStatus\.phase === "idle"/);
+});
+
+test("fresh core crash readback invalidates an older active shared projection", async () => {
+  const f = runtimeRefreshFixture();
+  f.environment.proxyControlSnapshot = { serial: 6, network: { active: true, systemProxyActive: true } };
+  const complete = f.queue("crashed", false);
+  const pending = f.environment.performRuntimeRead();
+  complete();
+  await pending;
+  assert.equal(f.environment.staleNetworkProjectionSerial, 6);
+  assert.equal(f.environment.store.runtime.phase, "crashed");
 });

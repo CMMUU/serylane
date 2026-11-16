@@ -16,15 +16,15 @@ function harness(enabled=false){
  const draft={tools:['openai'],customDomains:[],domains:['openai.com'],target:'出口'};
  let snapshot={document:{schemaVersion:1,revision:1,enabled,draft,applied:enabled?clone(draft):null},presets:[{id:'openai',name:'OpenAI',domains:['openai.com'],note:''}],targets:['出口'],profileId:'p',profileRevision:'r',status:enabled?'已启用 · 核心规则已核对':'已关闭',verification:enabled?'verified':'off',ingress:{state:'system_proxy',message:'系统代理已接管'},warning:'规则说明',userRuleCount:0};
  const calls=[],confirmations=[],answers=[],reads=[],writes=[],notices=[],busy=[],statuses=[];
- let context='p/r/running',blocked=false;
+ let context='p/r/running',blocked=false,shared;
  let opened=0;
- const services={openSetup:()=>opened++,globalToggle:element('global'),isBlocked:()=>blocked,contextKey:()=>context,busyChanged:b=>busy.push(b),reportError:s=>notices.push(s),error:e=>e.message,onStatus:s=>statuses.push(s&&clone(s)),
+ const services={openSetup:()=>opened++,globalToggle:element('global'),globalControl:()=>shared,isBlocked:()=>blocked,contextKey:()=>context,busyChanged:b=>busy.push(b),reportError:s=>notices.push(s),error:e=>e.message,onStatus:s=>statuses.push(s&&clone(s)),
  confirm:async o=>{confirmations.push(o);return answers.length?await answers.shift():true;},
  api:{domainRouteStatus:async()=>{calls.push(['read']);return reads.length?await reads.shift():clone(snapshot);},legacyRouteStatus:async()=>null,
  saveDomainRoute:async(policy,revision)=>{calls.push(['save',clone(policy),revision]);if(revision!==snapshot.document.revision)throw Error('修订冲突');snapshot.document={...snapshot.document,revision:revision+1,draft:{...policy,domains:[...(policy.tools.includes('openai')?['openai.com']:[]),...policy.customDomains]}};return clone(snapshot);},
  applyDomainRoute:async(enabled,expected)=>{calls.push(['apply',enabled,expected.document.revision]);if(writes.length)await writes.shift();if(expected.document.revision!==snapshot.document.revision)throw Error('修订冲突');snapshot.document={...snapshot.document,enabled,revision:expected.document.revision+1,applied:enabled?clone(snapshot.document.draft):snapshot.document.applied};snapshot.status=enabled?'已启用 · 核心规则已核对':'已关闭';snapshot.verification=enabled?snapshot.ingress.state==='stopped'?'waiting_core':'verified':'off';return clone(snapshot);}}};
  const controller=mountDomainRouting(root,services);
- return {get opened(){return opened;},controller,control:element,calls,confirmations,answers,reads,writes,notices,busy,statuses,tool,get snapshot(){return snapshot;},set snapshot(v){snapshot=v;},set context(v){context=v;},set blocked(v){blocked=v;},fire(id,type='click',values={}){Object.assign(element(id),values);element(id).listeners[type]?.({preventDefault(){}});},settle};
+ return {get opened(){return opened;},controller,control:element,calls,confirmations,answers,reads,writes,notices,busy,statuses,tool,get snapshot(){return snapshot;},set snapshot(v){snapshot=v;},set context(v){context=v;},set blocked(v){blocked=v;},set shared(v){shared=v;},fire(id,type='click',values={}){Object.assign(element(id),values);element(id).listeners[type]?.({preventDefault(){}});},settle};
 }
 test('both entry points share authoritative state, confirmation and one mutation lock',async()=>{
  const h=harness();assert.equal(h.control('global').disabled,true);await h.controller.refresh();
@@ -218,4 +218,16 @@ test('closing routing removes only the routing preference and keeps the active i
  assert.deepEqual(h.snapshot.ingress,ingress);
  assert.deepEqual(h.calls.filter(c=>c[0]!=='read').map(c=>c.slice(0,2)),[['apply',false]]);
  assert.match(h.confirmations.at(-1).message,/系统代理与 TUN 状态不变/);
+});
+
+test('a shared native route observation renders the global control without overwriting dirty edits',async()=>{
+ const h=harness(true);await h.controller.refresh();
+ h.shared={active:false,label:'路由 · 待启动',message:'已启用 · 暂停，等待代理启动'};h.controller.render();
+ assert.equal(h.control('global').classList.values['is-active'],false);
+ assert.equal(h.control('global').textContent,'路由 · 待启动');
+ h.control('domains').value='unsaved.example.com';h.fire('form','input');
+ h.context='p/r/stopped';h.snapshot.ingress.state='stopped';
+ await h.controller.refresh(true);
+ assert.equal(h.control('domains').value,'unsaved.example.com');
+ assert.equal(h.calls.filter(c=>['apply','save'].includes(c[0])).length,0);
 });
