@@ -624,7 +624,7 @@ fn real_space_host(
     // position when the system folds status items around the notch.
     let source = macos_layout::brand_icon();
     let mut pixels = source.rgba().to_vec();
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[..3].copy_from_slice(&[245, 17, 157]);
     }
     let brand = image_from_rgba(&tauri::image::Image::new_owned(

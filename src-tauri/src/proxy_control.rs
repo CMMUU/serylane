@@ -253,8 +253,18 @@ struct Observed {
     runtime: RuntimeStatus,
     system: Option<bool>,
     profile: (Option<Uuid>, Option<Uuid>),
-    restoring: bool,
+    resume: ResumePhase,
+    desired_running: bool,
     admitting: bool,
+}
+
+impl Observed {
+    fn restoring(&self) -> bool {
+        matches!(
+            self.resume,
+            ResumePhase::Pending | ResumePhase::Restoring | ResumePhase::WaitingNetwork
+        )
+    }
 }
 
 fn idle(phase: RuntimePhase) -> bool {
@@ -266,7 +276,7 @@ fn idle(phase: RuntimePhase) -> bool {
 
 fn network_view(raw: &Observed, ingress: Option<IngressState>) -> Presentation {
     let p = Presentation::new;
-    if raw.restoring {
+    if raw.restoring() {
         return p("checking", "正在恢复代理", "");
     }
     match raw.runtime.phase {
@@ -329,13 +339,18 @@ fn project(
         route: route.map(RouteControl::from_route),
         can_start: raw.admitting
             && has_profile
-            && !raw.restoring
+            && !raw.restoring()
             && idle(phase)
             && raw.system.is_some(),
-        can_stop: raw.admitting && (raw.restoring || !idle(phase) || raw.system == Some(true)),
+        can_stop: raw.admitting
+            && (raw.desired_running
+                || raw.restoring()
+                || raw.resume == ResumePhase::Paused
+                || !idle(phase)
+                || raw.system == Some(true)),
         can_switch: raw.admitting
             && has_profile
-            && !raw.restoring
+            && !raw.restoring()
             && (idle(phase) || phase == RuntimePhase::Running),
         tun_supported,
         tun_hint: helper.map_or_else(|| "TUN 权限与接管状态待核对".into(), |h| h.message),
@@ -356,10 +371,7 @@ async fn read(app: &AppHandle, detail: ReadDetail<'_>) -> Snapshot {
         let persistent = storage.state().map_err(dto)?;
         let settings = storage.settings().map_err(dto)?;
         let runtime = handle.state::<MihomoRuntime>().status(Some(&handle));
-        let restoring = matches!(
-            handle.state::<SessionResumeManager>().snapshot().phase,
-            ResumePhase::Pending | ResumePhase::Restoring | ResumePhase::WaitingNetwork
-        );
+        let resume = handle.state::<SessionResumeManager>().snapshot().phase;
         let system = crate::platform::checked_status(&handle)
             .ok()
             .map(|status| status.active);
@@ -368,7 +380,8 @@ async fn read(app: &AppHandle, detail: ReadDetail<'_>) -> Snapshot {
             runtime,
             system,
             profile: (persistent.active_profile_id, persistent.active_revision_id),
-            restoring,
+            resume,
+            desired_running: persistent.desired_running,
             admitting: crate::lifecycle::PROCESS_LIFECYCLE.ticket().is_ok(),
         })
     });
@@ -407,6 +420,8 @@ async fn read(app: &AppHandle, detail: ReadDetail<'_>) -> Snapshot {
     };
     let handle = app.clone();
     let settings = raw.settings.clone();
+    let resume = raw.resume;
+    let desired_running = raw.desired_running;
     let identity = (raw.runtime.phase, raw.runtime.pid, raw.runtime.started_at);
     // A status read may have started before a profile change, automatic
     // recovery or a core exit. Match the observations again before publishing.
@@ -420,6 +435,8 @@ async fn read(app: &AppHandle, detail: ReadDetail<'_>) -> Snapshot {
             && latest.controller_port == settings.controller_port
             && latest.controller_secret == settings.controller_secret
             && (state.active_profile_id, state.active_revision_id) == profile
+            && state.desired_running == desired_running
+            && handle.state::<SessionResumeManager>().snapshot().phase == resume
             && (runtime.phase, runtime.pid, runtime.started_at) == identity)
     })
     .await
@@ -960,6 +977,32 @@ mod tests {
             false
         )
         .is_err());
+    }
+
+    #[test]
+    fn stop_remains_available_for_a_paused_or_pending_restore() {
+        let project_stop = |resume, desired_running, admitting| {
+            project(
+                Observed {
+                    settings: AppSettings::default(),
+                    runtime: MihomoRuntime::default().status(None),
+                    system: Some(false),
+                    profile: (None, None),
+                    resume,
+                    desired_running,
+                    admitting,
+                },
+                None,
+                None,
+                None,
+            )
+            .can_stop
+        };
+        assert!(project_stop(ResumePhase::Paused, true, true));
+        assert!(project_stop(ResumePhase::WaitingNetwork, true, true));
+        assert!(project_stop(ResumePhase::Idle, true, true));
+        assert!(!project_stop(ResumePhase::Idle, false, true));
+        assert!(!project_stop(ResumePhase::Paused, true, false));
     }
 
     #[test]
