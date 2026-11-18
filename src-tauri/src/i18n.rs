@@ -13,6 +13,7 @@ const LEGACY: &str = "zh-Hans";
 struct Language {
     id: &'static str,
     format: &'static str,
+    #[cfg(target_os = "macos")]
     direction: &'static str,
 }
 
