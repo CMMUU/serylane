@@ -1,3 +1,4 @@
+import { formatLocale, setLocalizedText } from "./i18n";
 import type { ApplicationLogSnapshot, RuntimeLog } from "./types";
 
 type Entry = { timestamp: string | number; level: string; source: string; message: string; count?: number };
@@ -16,11 +17,11 @@ export function mountLogs(root: HTMLElement, context: {
   confirm(options: { title: string; message: string; confirmLabel?: string; returnFocus?: HTMLElement | null }): Promise<boolean>;
 }) {
   root.innerHTML = `<article class="panel application-logs-panel">
-    <div class="panel-heading"><div><div class="section-label">LOGS</div><h2>日志</h2></div><div class="toolbar"><button class="button button-quiet" id="logs-refresh">刷新</button><button class="button button-danger" id="logs-clear">清空当前日志</button></div></div>
-    <div class="logs-filters"><label>日志来源<select id="logs-source"><option value="app">应用日志</option><option value="core">Mihomo 日志</option></select></label><label>级别<select id="logs-level"><option value="all">全部级别</option><option value="info">信息</option><option value="warn">警告</option><option value="error">错误</option></select></label><label class="logs-search">查找<input id="logs-search" type="search" placeholder="按事件或关键词筛选" /></label></div>
+    <div class="panel-heading"><div><div class="section-label">LOGS</div><h2><!--i18n:ui-7dbac1c20f237b-->日志</h2></div><div class="toolbar"><button class="button button-quiet" id="logs-refresh"><!--i18n:ui-aee88743413144-->刷新</button><button class="button button-danger" id="logs-clear"><!--i18n:ui-fb235b01fafbe9-->清空当前日志</button></div></div>
+    <div class="logs-filters"><label><!--i18n:ui-f3bf2f426d2e39-->日志来源<select id="logs-source"><option value="app"><!--i18n:ui-a0e16ca7ea6591-->应用日志</option><option value="core"><!--i18n:ui-41b7476dee6143-->Mihomo 日志</option></select></label><label><!--i18n:ui-3d9d02e83d396e-->级别<select id="logs-level"><option value="all"><!--i18n:ui-81f9b5554532b9-->全部级别</option><option value="info"><!--i18n:ui-e7028601e7da79-->信息</option><option value="warn"><!--i18n:ui-a8b7a4480407ac-->警告</option><option value="error"><!--i18n:ui-0bc1fb72ae1be5-->错误</option></select></label><label class="logs-search"><!--i18n:ui-3003318e729a86-->查找<input id="logs-search" type="search" placeholder="按事件或关键词筛选"  data-i18n-placeholder="ui-aa464c8c5a5758"/></label></div>
     <p class="hint" id="logs-help"></p><p id="logs-status" class="hint" role="status" aria-live="polite"></p>
-    <div id="log-list" class="log-list empty-state" tabindex="0" aria-label="日志内容">正在读取日志</div>
-    <button class="button button-quiet is-hidden" id="logs-more">显示更多</button>
+    <div id="log-list" class="log-list empty-state" tabindex="0" aria-label="日志内容" data-i18n-aria-label="ui-b97249cc8c2d1d"><!--i18n:ui-87e0cec6c5edd3-->正在读取日志</div>
+    <button class="button button-quiet is-hidden" id="logs-more"><!--i18n:ui-331af79f34e7a5-->显示更多</button>
   </article>`;
   const get = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
   const source = get<HTMLSelectElement>("#logs-source");
@@ -44,9 +45,9 @@ export function mountLogs(root: HTMLElement, context: {
       const normalized = entry.level.replace("warning", "warn");
       row.className = `log-row level-${["info", "warn", "error"].includes(normalized) ? normalized : "info"}`;
       const time = document.createElement("time");
-      time.textContent = new Date(entry.timestamp).toLocaleString("zh-CN", { hour12: false });
+      time.textContent = new Date(entry.timestamp).toLocaleString(formatLocale(), { hour12: false });
       const area = document.createElement("span");
-      area.textContent = `${entry.source} · ${{ info: "信息", warn: "警告", error: "错误" }[normalized] ?? entry.level}`;
+      setLocalizedText(area, `${entry.source} · ${{ info: "信息", warn: "警告", error: "错误" }[normalized] ?? entry.level}`);
       const message = document.createElement("p");
       message.textContent = entry.message + ((entry.count ?? 1) > 1 ? `（合并 ${entry.count} 次）` : "");
       row.append(time, area, message);
@@ -55,18 +56,18 @@ export function mountLogs(root: HTMLElement, context: {
     const scroll = list.scrollTop;
     list.replaceChildren(fragment);
     list.classList.toggle("empty-state", !filtered.length);
-    if (!filtered.length) list.textContent = entries.length ? "没有匹配的日志" : "暂无日志";
+    if (!filtered.length) setLocalizedText(list, entries.length ? "没有匹配的日志" : "暂无日志");
     list.scrollTop = scroll;
     more.classList.toggle("is-hidden", filtered.length <= limit);
-    status.textContent = warning || `共 ${filtered.length} 条 · 已显示 ${Math.min(limit, filtered.length)} 条 · 最新在前`;
-    get("#logs-help").textContent = source.value === "app"
+    setLocalizedText(status, warning || `共 ${filtered.length} 条 · 已显示 ${Math.min(limit, filtered.length)} 条 · 最新在前`);
+    setLocalizedText(get("#logs-help"), source.value === "app"
       ? retention ? applicationLogHelp(retention.hours, retention.maxBytes) : "正在读取应用日志保留策略…"
-      : "Mihomo 当前会话日志保存在有界内存中；清空不会停止代理，也不会清除应用日志。";
+      : "Mihomo 当前会话日志保存在有界内存中；清空不会停止代理，也不会清除应用日志。");
   };
   const refresh = async () => {
     if (busy) return;
     const refreshButton = get<HTMLButtonElement>('#logs-refresh');
-    refreshButton.disabled = true; refreshButton.textContent = '正在刷新…';
+    refreshButton.disabled = true; setLocalizedText(refreshButton, '正在刷新…');
     const requested = ++revision;
     const selected = source.value;
     busy = true;
@@ -79,7 +80,7 @@ export function mountLogs(root: HTMLElement, context: {
       render();
     } catch {
       if (requested === revision) { warning = "日志读取失败，请点击刷新重试；未更改代理状态。"; render(); }
-    } finally { if (requested === revision) { busy = false; refreshButton.disabled = false; refreshButton.textContent = '刷新'; } }
+    } finally { if (requested === revision) { busy = false; refreshButton.disabled = false; setLocalizedText(refreshButton, '刷新'); } }
   };
   source.addEventListener("change", () => {
     revision++; busy = false; entries = []; limit = 200; warning = ""; render(); void refresh();

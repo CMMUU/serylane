@@ -1,6 +1,6 @@
 [package]
 name = "serylane"
-version = "0.7.43"
+version = "0.7.44"
 license = "GPL-3.0-only"
 description = "Serylane: lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]
@@ -66,6 +66,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["time", "macros", "rt-multi-thread", "net", "io-util", "sync"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sysinfo = "0.39.6"
+fluent-bundle = "0.16"
+unic-langid = "0.9"
+sys-locale = "0.3"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "zip"] }
@@ -87,7 +90,7 @@ fontdue = "0.9.4"
 block2 = "0.6"
 libc = "0.2"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSApplication", "block2", "libc", "NSAttributedString", "NSImage", "NSButton", "NSCell", "NSControl", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSMenu", "NSMenuItem", "NSText", "NSView", "NSAccessibilityProtocols", "NSBitmapImageRep", "NSColor", "NSEvent", "NSGraphics", "NSImageRep", "NSScreen", "NSTextField", "NSVisualEffectView", "objc2-core-foundation", "objc2-quartz-core"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSApplication", "block2", "libc", "NSAttributedString", "NSImage", "NSButton", "NSCell", "NSControl", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSMenu", "NSMenuItem", "NSText", "NSUserInterfaceLayout", "NSView", "NSAccessibilityProtocols", "NSBitmapImageRep", "NSColor", "NSEvent", "NSGraphics", "NSImageRep", "NSScreen", "NSTextField", "NSVisualEffectView", "objc2-core-foundation", "objc2-quartz-core"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSDate", "NSError", "NSFileManager", "NSPropertyList", "NSURL", "NSAttributedString", "NSDictionary", "NSGeometry", "NSNotification", "NSOperation", "NSRange", "NSString", "NSValue", "block2"] }
 
 [dev-dependencies]

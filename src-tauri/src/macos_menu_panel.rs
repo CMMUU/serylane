@@ -1,6 +1,7 @@
 //! AppKit owns the status menu, its appearance, tracking and dismissal.
 //! The same Rust controller owns every operation and verified status.
 
+use crate::i18n;
 use block2::RcBlock;
 use objc2::{
     define_class, msg_send,
@@ -10,7 +11,8 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAccessibility, NSControlStateValueOff, NSControlStateValueOn, NSEventMask, NSImage, NSMenu,
-    NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem, NSTextField, NSVariableStatusItemLength,
+    NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem, NSTextField,
+    NSUserInterfaceLayoutDirection, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSOperationQueue, NSString};
 use std::{
@@ -243,7 +245,7 @@ fn row(menu: &NSMenu, tag: isize) -> Retained<NSMenuItem> {
 }
 
 fn title(row: &NSMenuItem, text: &str) {
-    let text = NSString::from_str(text);
+    let text = NSString::from_str(&i18n::text(text));
     if *row.title() != *text {
         row.setTitle(&text);
     }
@@ -283,7 +285,29 @@ fn render(target: &Target, update_presented: bool) {
         None => view.status,
     };
     let menu = &state.menu;
-    title(&row(menu, STATUS_ROW), &format!("Serylane · {status}"));
+    let direction = if i18n::right_to_left() {
+        NSUserInterfaceLayoutDirection::RightToLeft
+    } else {
+        NSUserInterfaceLayoutDirection::LeftToRight
+    };
+    menu.setUserInterfaceLayoutDirection(direction);
+    state.route_menu.setUserInterfaceLayoutDirection(direction);
+    title(
+        &row(menu, STATUS_ROW),
+        &format!("Serylane · {}", i18n::text(status)),
+    );
+    for (owner, tag, label) in [
+        (menu, SYSTEM, "系统代理"),
+        (menu, TUN, "TUN 模式"),
+        (&state.route_menu, ROUTE_SETTINGS, "打开路由设置…"),
+        (menu, REFRESH, "刷新状态"),
+        (menu, START, "启动代理"),
+        (menu, STOP, "停止代理"),
+        (menu, OPEN, "打开主窗口"),
+        (menu, QUIT, "退出 Serylane"),
+    ] {
+        title(&row(owner, tag), label);
+    }
     refresh_traffic(target);
 
     let system = row(menu, SYSTEM);
@@ -295,7 +319,7 @@ fn render(target: &Target, update_presented: bool) {
     tun.setEnabled(!busy && view.can_switch && view.tun_supported && shown.tun == view.tun);
     tun.setToolTip(
         (!view.tun_hint.is_empty())
-            .then(|| NSString::from_str(&view.tun_hint))
+            .then(|| NSString::from_str(&i18n::text(&view.tun_hint)))
             .as_deref(),
     );
 
@@ -315,10 +339,17 @@ fn render(target: &Target, update_presented: bool) {
     let confirm = row(&state.route_menu, ROUTE_CONFIRM);
     let matching = route.filter(|r| r.can_toggle && Some(r.token) == shown.route);
     let info = match (route, matching) {
-        (Some(r), Some(_)) if r.token.enabled => format!(
-            "将应用已保存的 {} 条域名 → {}，仅影响新连接。",
-            r.domains, r.target
-        ),
+        (Some(r), Some(_)) if r.token.enabled => {
+            let mut args = fluent_bundle::FluentArgs::new();
+            args.set("count", r.domains);
+            args.set("target", r.target.as_str());
+            i18n::message("native-apply-routes", Some(&args)).unwrap_or_else(|| {
+                format!(
+                    "将应用已保存的 {} 条域名 → {}，仅影响新连接。",
+                    r.domains, r.target
+                )
+            })
+        }
         (Some(_), Some(_)) => "将移除域名覆盖，其他规则保持不变。".into(),
         (Some(r), None) if r.can_toggle => "配置有变化，请重新打开菜单确认。".into(),
         (Some(r), None) => r.message.clone(),
@@ -338,7 +369,8 @@ fn render(target: &Target, update_presented: bool) {
     row(menu, START).setEnabled(!busy && view.can_start);
     row(menu, STOP).setEnabled(!busy && view.can_stop);
     let detail = row(menu, DETAIL);
-    let message = view.detail.trim();
+    let localized = i18n::text(&view.detail);
+    let message = localized.trim();
     // Preserve status/error details without opening the main window or making
     // a single long error force an excessively wide system menu.
     let mut shortened = message
@@ -363,7 +395,7 @@ fn refresh_traffic(target: &Target) {
     let current = state.traffic.stringValue();
     let item = row(&state.menu, TRAFFIC);
     if *item.title() != *current {
-        item.setTitle(&current);
+        title(&item, &current.to_string());
     }
 }
 
@@ -417,7 +449,7 @@ pub(super) fn install(
     menu.setDelegate(Some(ProtocolObject::from_ref(&*target)));
     button.setImage(Some(&brand));
     button.setToolTip(Some(&NSString::from_str("Serylane")));
-    button.setAccessibilityLabel(Some(&NSString::from_str("Serylane 快捷菜单")));
+    button.setAccessibilityLabel(Some(&NSString::from_str(&i18n::text("Serylane 快捷菜单"))));
     item.setMenu(Some(menu));
     button.sendActionOn(NSEventMask::LeftMouseDown.union(NSEventMask::RightMouseDown));
     STATUS.with_borrow_mut(|status| {
@@ -429,6 +461,21 @@ pub(super) fn install(
         })
     });
     Ok(())
+}
+
+pub(super) fn refresh_locale(marker: MainThreadMarker) {
+    let entry = STATUS.with_borrow(|owned| {
+        owned
+            .as_ref()
+            .map(|status| (status.item.clone(), status.target.clone()))
+    });
+    if let Some((item, target)) = entry {
+        if let Some(button) = item.button(marker) {
+            button
+                .setAccessibilityLabel(Some(&NSString::from_str(&i18n::text("Serylane 快捷菜单"))));
+        }
+        render(&target, !is_visible());
+    }
 }
 
 pub(super) fn is_visible() -> bool {

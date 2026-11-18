@@ -112,5 +112,8 @@ const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;'
 export function diagnosticRowsMarkup(snapshot: DiagnosticSnapshot): string {
   const labels = { running: '检测中', pass: '通过', warn: '注意', fail: '未通过', skipped: '已跳过' };
   const icons = { running: '', pass: '✓', warn: '!', fail: '×', skipped: '—' };
-  return snapshot.rows.map(row => `<div class="diagnostic-item status-${row.status}" role="listitem" data-render-key="${escape(row.id)}" data-diagnostic-id="${escape(row.id)}"><span class="diagnostic-icon" aria-hidden="true">${icons[row.status]}</span><div><div class="diagnostic-item-heading"><strong>${escape(row.label)}</strong><span class="diagnostic-stage-status">${labels[row.status]}</span></div><p>${escape(row.detail)}</p></div></div>`).join('');
+  return snapshot.rows.map(row => {
+    const profileName = row.id === 'profile' && row.status === 'pass';
+    return `<div class="diagnostic-item status-${row.status}" role="listitem" data-render-key="${escape(row.id)}" data-diagnostic-id="${escape(row.id)}"><span class="diagnostic-icon" aria-hidden="true">${icons[row.status]}</span><div><div class="diagnostic-item-heading"><strong><!--i18n:-->${escape(row.label)}</strong><span class="diagnostic-stage-status"><!--i18n:-->${labels[row.status]}</span></div><p>${profileName ? '' : '<!--i18n:-->'}${escape(row.detail)}</p></div></div>`;
+  }).join('');
 }

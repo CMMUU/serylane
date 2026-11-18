@@ -265,6 +265,14 @@ impl Drop for ConfigurationMutationPermit {
     }
 }
 
+// Presentation preferences share the settings write lock without invalidating
+// snapshots of the active proxy configuration.
+pub(crate) fn acquire_presentation_settings(
+    app: &AppHandle,
+) -> AppResult<ConfigurationMutationPermit> {
+    app.state::<ConfigurationMutationGuard>().acquire_gate()
+}
+
 pub fn acquire_configuration(app: &AppHandle) -> AppResult<ConfigurationMutationPermit> {
     app.state::<ConfigurationMutationGuard>().acquire()
 }

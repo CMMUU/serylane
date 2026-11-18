@@ -101,9 +101,9 @@
 <p>Missing fields are identified. After a failed refresh, the last successful sample may remain visible: check its timestamp and error. Missing information does not mean zero usage, an unlimited plan or an account that never expires.</p>
 </section>
 <section id="download-center">
-<h2>One download and update channel</h2>
-<p>Website installers and the current source update flow use only the download center. Each download click rechecks the current formal release, operating system, architecture and package availability. If the center is unavailable, the matching asset is missing, or verification fails, the result is an error with retry—not another source, architecture or an older version.</p>
-<p>Update signature, file size and SHA-256 checks remain required. An older installed client still uses its own updater until replaced; source changes do not change that binary. If needed, obtain a verified full installer for the same architecture from the website and retain the configuration directory. <a href="/docs/verification">Read verification and update recovery guidance</a>.</p>
+<h2>Downloads and in-app updates</h2>
+<p>Website installers use the download center. Each click checks the current stable release and matching system and architecture. When verification fails, retry from the download section.</p>
+<p>The in-app updater tries GitHub directly, GitHub through the running Serylane proxy, then the download center. A newer version appears in a card that opens Software update in Settings. Serylane checks the version, architecture, signature, size and SHA-256 before installation. Older installed clients use their own updater. <a href="/docs/verification">Read verification and update recovery guidance</a>.</p>
 </section>
 <section id="download-architectures">
 <h2>Choose the matching system and architecture</h2>

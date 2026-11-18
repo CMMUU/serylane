@@ -1,3 +1,4 @@
+import { setLocalizedAttribute, setLocalizedText } from "./i18n";
 import { escapeNode as escape } from './node-selection';
 export type DomainSelection = { tools: string[]; customDomains: string[]; target: string };
 export type DomainPolicy = DomainSelection & { domains: string[] };
@@ -17,17 +18,17 @@ export function parseDomains(text: string): string[] {
   });
 }
 export const domainRoutingMarkup = `<section class="panel domain-route-panel">
-  <div class="panel-heading domain-heading"><div><h2>AI 工具域名路由</h2><p class="hint">名单内流量使用指定出口，其他流量保持原规则。</p></div><div class="domain-actions"><button id="domain-toggle" class="button button-primary" type="button" aria-pressed="false">开启路由</button><button id="domain-refresh" class="button button-quiet" type="button">刷新状态</button></div></div>
-  <div class="domain-state"><p id="domain-status" role="status">正在读取设置…</p><span id="domain-summary" class="hint"></span></div>
+  <div class="panel-heading domain-heading"><div><h2><!--i18n:ui-c3224ea6379bf5-->AI 工具域名路由</h2><p class="hint"><!--i18n:ui-a1b7015a689e1a-->名单内流量使用指定出口，其他流量保持原规则。</p></div><div class="domain-actions"><button id="domain-toggle" class="button button-primary" type="button" aria-pressed="false"><!--i18n:ui-38d436b19e7636-->开启路由</button><button id="domain-refresh" class="button button-quiet" type="button"><!--i18n:ui-802a407c774302-->刷新状态</button></div></div>
+  <div class="domain-state"><p id="domain-status" role="status"><!--i18n:ui-9ee6956371409c-->正在读取设置…</p><span id="domain-summary" class="hint"></span></div>
   <form id="domain-form"><fieldset id="domain-fields">
-    <section class="domain-tools-section"><h3>常见 AI 工具</h3><p class="hint">勾选后自动补齐域名；取消勾选保留自定义地址。</p><div id="domain-tools" class="domain-tools"></div></section>
-    <div class="domain-editor-grid"><section><label for="domain-domains">自定义地址</label><textarea id="domain-domains" rows="4" spellcheck="false" placeholder="openai.com&#10;*.openai.com" aria-describedby="domain-input-help"></textarea><p id="domain-input-help" class="hint">每行一个域名，支持 *.example.com；根域须单独添加。</p></section>
-    <section><label for="domain-target">路由出口策略组</label><select id="domain-target"><option value="">请明确选择出口</option></select><p class="hint">仅处理进入代理核心的流量，在规则模式下生效。不会切换系统代理或 TUN。</p></section></div>
-    <div class="domain-editor-actions"><div class="domain-actions"><button id="domain-save" class="button button-primary" type="submit">保存草稿</button><button id="domain-apply" class="button button-quiet" type="button">应用更改</button></div><div class="domain-actions"><button id="domain-reset" class="button button-quiet" type="button">撤销编辑</button><button id="domain-clear" class="button button-quiet" type="button">清空名单</button></div></div>
+    <section class="domain-tools-section"><h3><!--i18n:ui-720481b33a0474-->常见 AI 工具</h3><p class="hint"><!--i18n:ui-aa68e01694ad16-->勾选后自动补齐域名；取消勾选保留自定义地址。</p><div id="domain-tools" class="domain-tools"></div></section>
+    <div class="domain-editor-grid"><section><label for="domain-domains"><!--i18n:ui-1974d517ac31f9-->自定义地址</label><textarea id="domain-domains" rows="4" spellcheck="false" placeholder="openai.com&#10;*.openai.com" aria-describedby="domain-input-help"></textarea><p id="domain-input-help" class="hint"><!--i18n:ui-3fddda15aed6bb-->每行一个域名，支持 *.example.com；根域须单独添加。</p></section>
+    <section><label for="domain-target"><!--i18n:ui-8a53ecef20589f-->路由出口策略组</label><select id="domain-target"><option value=""><!--i18n:ui-9c03429040e93e-->请明确选择出口</option></select><p class="hint"><!--i18n:ui-e68a0526d50bc2-->仅处理进入代理核心的流量，在规则模式下生效。不会切换系统代理或 TUN。</p></section></div>
+    <div class="domain-editor-actions"><div class="domain-actions"><button id="domain-save" class="button button-primary" type="submit"><!--i18n:ui-5329e3f0ee463d-->保存草稿</button><button id="domain-apply" class="button button-quiet" type="button"><!--i18n:ui-741f0c0de7ebbb-->应用更改</button></div><div class="domain-actions"><button id="domain-reset" class="button button-quiet" type="button"><!--i18n:ui-ff11b3e4c63d29-->撤销编辑</button><button id="domain-clear" class="button button-quiet" type="button"><!--i18n:ui-a91a8fa03922ce-->清空名单</button></div></div>
   </fieldset></form>
   <p id="domain-revision" class="hint"></p><p id="domain-feedback" role="status" class="domain-feedback" hidden></p>
-  <details class="domain-help"><summary>使用说明与匹配规则</summary><p id="domain-warning" class="hint"></p><p class="hint">支持 https://*.openai.com/* 输入，不按 HTTPS 路径筛选、不解密内容。工具预置和自定义地址统一去重；共享第三方服务不默认纳入。切换订阅后出口缺失时，匹配流量会被拒绝，请重选出口或关闭路由。</p></details>
-  <section id="domain-legacy" class="domain-help" hidden><h3>旧接入恢复</h3><p class="hint" id="domain-legacy-note"></p><button id="domain-restore" class="button button-quiet" type="button">恢复旧接入并关闭中转</button></section>
+  <details class="domain-help"><summary><!--i18n:ui-71fd8b7af56e0e-->使用说明与匹配规则</summary><p id="domain-warning" class="hint"></p><p class="hint"><!--i18n:ui-19da50fa99f456-->支持 https://*.openai.com/* 输入，不按 HTTPS 路径筛选、不解密内容。工具预置和自定义地址统一去重；共享第三方服务不默认纳入。切换订阅后出口缺失时，匹配流量会被拒绝，请重选出口或关闭路由。</p></details>
+  <section id="domain-legacy" class="domain-help" hidden><h3><!--i18n:ui-fd82c16b9d53a2-->旧接入恢复</h3><p class="hint" id="domain-legacy-note"></p><button id="domain-restore" class="button button-quiet" type="button"><!--i18n:ui-546845725f77ab-->恢复旧接入并关闭中转</button></section>
 </section>`;
 export function mountDomainRouting(root: HTMLElement, services: {
   api: { domainRouteStatus(): Promise<DomainRouteState>; saveDomainRoute(policy: DomainSelection, expectedRevision: number): Promise<DomainRouteState>; applyDomainRoute(enabled: boolean, state: DomainRouteState): Promise<DomainRouteState>;
@@ -78,7 +79,7 @@ export function mountDomainRouting(root: HTMLElement, services: {
     revoke();
     render();
   }
-  const message = (value: string, error = false) => { $('feedback').textContent = value; $('feedback').hidden = !value; $('feedback').dataset.tone = error ? 'error' : 'info'; };
+  const message = (value: string, error = false) => { setLocalizedText($('feedback'), value); $('feedback').hidden = !value; $('feedback').dataset.tone = error ? 'error' : 'info'; };
   const errorText = (error: unknown) => {
     // Native route errors carry sanitized actionable details; do not hide them behind the generic DTO title.
     const details = error && typeof error === 'object' ? (error as {userMessage?: {details?: string}}).userMessage?.details : undefined;
@@ -112,9 +113,9 @@ export function mountDomainRouting(root: HTMLElement, services: {
     const signature = JSON.stringify([state.document.revision, state.document.draft, state.presets, state.targets]);
     if (signature === filled) return; // Quiet refresh must not collapse details or steal keyboard focus.
     filled = signature;
-    $('tools').innerHTML = state.presets.map(p => `<div class="domain-preset"><label><input type="checkbox" data-tool="${escape(p.id)}" ${state!.document.draft.tools.includes(p.id) ? 'checked' : ''} /><span>${escape(p.name)}</span></label><details><summary>${p.domains.length} 条域名 · 查看范围</summary><p class="hint">${escape(p.note)}</p><code>${p.domains.map(escape).join('<br>')}</code></details></div>`).join('');
+    $('tools').innerHTML = state.presets.map(p => `<div class="domain-preset"><label><input type="checkbox" data-tool="${escape(p.id)}" ${state!.document.draft.tools.includes(p.id) ? 'checked' : ''} /><span>${escape(p.name)}</span></label><details><summary><!--i18n:ui-8da89cb5d2c250-->${p.domains.length} 条域名 · 查看范围</summary><p class="hint">${escape(p.note)}</p><code>${p.domains.map(escape).join('<br>')}</code></details></div>`).join('');
     $<HTMLTextAreaElement>('domains').value = state.document.draft.customDomains.join('\n');
-    $<HTMLSelectElement>('target').innerHTML = '<option value="">请明确选择出口</option>' + [...new Set([...state.targets, state.document.draft.target].filter(Boolean))].map(name => `<option value="${escape(name)}">${escape(name)}${state!.targets.includes(name) ? '' : ' · 当前配置缺失'}</option>`).join('');
+    $<HTMLSelectElement>('target').innerHTML = "<option value=\"\"><!--i18n:ui-9c03429040e93e-->请明确选择出口</option>" + [...new Set([...state.targets, state.document.draft.target].filter(Boolean))].map(name => `<option value="${escape(name)}">${escape(name)}${state!.targets.includes(name) ? '' : ' · 当前配置缺失'}</option>`).join('');
     $<HTMLSelectElement>('target').value = state.document.draft.target; draftRevision = state.document.revision;
     baseline = signatureOf(state.document.draft);
   }
@@ -142,8 +143,8 @@ export function mountDomainRouting(root: HTMLElement, services: {
     const applyButton = $<HTMLButtonElement>('apply');
     applyButton.hidden = !enabled;
     applyButton.disabled = locked || !state || dirty || (!unapplied && !needsReapply());
-    applyButton.textContent = busy === 'apply' ? '正在应用并核对…' : needsReapply() && !unapplied ? '重新应用' : '应用更改';
-    $<HTMLButtonElement>('save').textContent = busy === 'save' ? '正在保存…' : '保存草稿';
+    setLocalizedText(applyButton, busy === 'apply' ? '正在应用并核对…' : needsReapply() && !unapplied ? '重新应用' : '应用更改');
+    setLocalizedText($<HTMLButtonElement>('save'), busy === 'save' ? '正在保存…' : '保存草稿');
     $<HTMLButtonElement>('refresh').disabled = locked || Boolean(readPromise);
     const pending = busy === 'enable' ? '正在开启…' : busy === 'disable' ? '正在关闭…' : busy === 'apply' ? '正在应用…' : '';
     const setup = !enabled ? preparation() : null;
@@ -151,23 +152,23 @@ export function mountDomainRouting(root: HTMLElement, services: {
     for (const button of [$<HTMLButtonElement>('toggle'), services.globalToggle].filter((b): b is HTMLButtonElement => Boolean(b))) {
       const global = button === services.globalToggle;
       const shared = global && !readError && snapshotValid && !dirty ? services.globalControl?.() : null;
-      button.textContent = pending || (global ? shared?.label ?? display.label : enabled ? '关闭路由' : setup ? '设置路由' : '开启路由');
+      setLocalizedText(button, pending || (global ? shared?.label ?? display.label : enabled ? '关闭路由' : setup ? '设置路由' : '开启路由'));
       button.disabled = locked || !state;
       button.setAttribute('aria-pressed', String(enabled));
       button.setAttribute('aria-busy', String(Boolean(pending) || Boolean(state && !snapshotValid && !readError)));
-      button.setAttribute('aria-label', `${enabled ? '关闭' : '开启'}域名路由`);
+      setLocalizedAttribute(button, 'aria-label', `${enabled ? '关闭' : '开启'}域名路由`);
       button.classList.toggle('is-active', (shared?.active ?? display.active) && !locked);
       button.dataset.verification = readError || !snapshotValid ? 'unknown' : state?.verification ?? 'unknown';
       button.dataset.ingress = display.ingress;
       button.title = setup ? `${setup.text} 点击前往设置。` : `${shared?.message || detail}；${enabled ? '点击关闭路由配置' : '点击启用路由配置'}。仅影响名单规则，不启停主代理。`;
     }
-    $('status').textContent = detail;
+    setLocalizedText($('status'), detail);
     $('status').dataset.tone = setup ? 'info' : display.tone;
-    $('summary').textContent = state?.document.applied && enabled ? `${state.document.applied.domains.length} 条域名 → ${state.document.applied.target}` : '配置后开启，仅影响名单内流量';
-    $('warning').textContent = state?.warning ?? '';
-    $('revision').textContent = state ? `${dirty ? '编辑尚未保存' : unapplied ? '草稿尚未应用' : '草稿与已应用设置一致'} · 保存不改变流量，应用需确认。` : '';
+    setLocalizedText($('summary'), state?.document.applied && enabled ? `${state.document.applied.domains.length} 条域名 → ${state.document.applied.target}` : '配置后开启，仅影响名单内流量');
+    setLocalizedText($('warning'), state?.warning);
+    setLocalizedText($('revision'), state ? `${dirty ? '编辑尚未保存' : unapplied ? '草稿尚未应用' : '草稿与已应用设置一致'} · 保存不改变流量，应用需确认。` : '');
     $('legacy').hidden = !legacy?.codex.hasBackup && !legacy?.enabled;
-    $('legacy-note').textContent = [legacy?.codex.warning, legacy?.lastError, '只恢复 Serylane 仍拥有的字段，保留其他程序的修改和原备份；不会新增 Codex 接入。'].filter(Boolean).join(' ');
+    setLocalizedText($('legacy-note'), [legacy?.codex.warning, legacy?.lastError, '只恢复 Serylane 仍拥有的字段，保留其他程序的修改和原备份；不会新增 Codex 接入。'].filter(Boolean).join(' '));
     $<HTMLButtonElement>('restore').disabled = locked || Boolean(legacy?.active);
   }
   function accept(result: DomainRouteState) {

@@ -1,3 +1,4 @@
+import { setLocalizedText } from "./i18n";
 import type { ConnectionFeedback, UserMessage } from "./types";
 
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -45,10 +46,10 @@ export function feedbackPresentation(state: ConnectionFeedback | null, issue: Us
   }
   return { visible: true, title: enabled, description, tone: ["partial", "unavailable"].includes(state.health) ? "warning" : "neutral", busy: false, action: state.mode === "tun" ? "diagnostics" : "recheck", details: state.issue?.details ?? "" };
 }
-export const connectionFeedbackMarkup = `<aside id="connection-feedback" class="connection-feedback is-hidden" aria-label="代理状态与连接检查">
+export const connectionFeedbackMarkup = `<aside id="connection-feedback" class="connection-feedback is-hidden" aria-label="代理状态与连接检查" data-i18n-aria-label="ui-999e156b4e54b7">
   <div class="connection-feedback-summary" role="status" aria-live="polite" aria-atomic="true"><strong id="connection-feedback-title"></strong><p id="connection-feedback-description"></p></div>
   <div class="connection-feedback-controls"><span id="connection-feedback-elapsed" aria-live="off"></span><button id="connection-feedback-action" class="button button-quiet" type="button"></button>
-  <details id="connection-feedback-details"><summary>技术详情</summary><pre id="connection-feedback-detail-text"></pre><button id="connection-feedback-diagnostics" class="button button-quiet" type="button">查看诊断</button></details></div>
+  <details id="connection-feedback-details"><summary><!--i18n:ui-c26fb419db3c86-->技术详情</summary><pre id="connection-feedback-detail-text"></pre><button id="connection-feedback-diagnostics" class="button button-quiet" type="button"><!--i18n:ui-264c30663b41ed-->查看诊断</button></details></div>
 </aside>`;
 export function mountConnectionFeedback(root: HTMLElement, action: (name: string) => Promise<void>) {
   let state: ConnectionFeedback | null = null, issue: UserMessage | null = null, receivedAt = performance.now(), actionBusy = false;
@@ -58,12 +59,12 @@ export function mountConnectionFeedback(root: HTMLElement, action: (name: string
     presentation = feedbackPresentation(state, issue);
     root.classList.toggle("is-hidden", !presentation.visible);
     root.dataset.tone = presentation.tone;
-    find("title").textContent = presentation.title;
-    find("description").textContent = presentation.description;
+    setLocalizedText(find("title"), presentation.title);
+    setLocalizedText(find("description"), presentation.description);
     const button = find<HTMLButtonElement>("action");
     button.hidden = !presentation.action;
     button.disabled = actionBusy;
-    button.textContent = actionNames[presentation.action] ?? "查看详情";
+    setLocalizedText(button, actionNames[presentation.action] ?? "查看详情");
     // Local preflight/rollback issues are not the operation that produced the
     // backend's last checks. Do not present old proxy probes as TUN evidence.
     const checks = issue || state?.phase === "failed" ? [] : state?.checks ?? [];
@@ -72,7 +73,7 @@ export function mountConnectionFeedback(root: HTMLElement, action: (name: string
     tick();
   }
   function tick() {
-    find("elapsed").textContent = presentation.busy && state ? `已等待 ${Math.floor((state.elapsedMs + performance.now() - receivedAt) / 1000)} 秒` : "";
+    setLocalizedText(find("elapsed"), presentation.busy && state ? `已等待 ${Math.floor((state.elapsedMs + performance.now() - receivedAt) / 1000)} 秒` : "");
   }
   const timer = window.setInterval(tick, 500);
   const invoke = async (name: string) => {

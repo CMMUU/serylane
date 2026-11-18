@@ -11,6 +11,11 @@ mod macos_layout;
 mod macos_title;
 
 #[cfg(target_os = "macos")]
+#[path = "../src/i18n.rs"]
+#[allow(dead_code)]
+mod i18n;
+
+#[cfg(target_os = "macos")]
 #[path = "../src/macos_menu_panel.rs"]
 mod macos_menu_panel;
 
@@ -480,6 +485,18 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
             Action::Quit
         ]
     );
+    let previous_locale = i18n::active();
+    i18n::activate(i18n::resolve_preference("en"));
+    refresh_locale(mtm);
+    assert_eq!(row(OPEN).title().to_string(), "Open main window");
+    i18n::activate(i18n::resolve_preference("ar"));
+    refresh_locale(mtm);
+    assert_eq!(
+        menu.userInterfaceLayoutDirection(),
+        objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft
+    );
+    assert_eq!(row(OPEN).title().to_string(), "فتح النافذة الرئيسية");
+    i18n::activate(previous_locale);
     uninstall(mtm);
     assert!(!is_visible());
     assert!(with_item(mtm, |_, _, _| ()).is_none());

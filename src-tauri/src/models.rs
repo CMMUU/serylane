@@ -120,6 +120,7 @@ pub struct AppSettings {
     #[serde(default)]
     pub proxy_mode_revision: Uuid,
     pub schema_version: u32,
+    #[serde(default = "legacy_locale")]
     pub locale: String,
     pub theme: String,
     pub launch_at_login: bool,
@@ -153,6 +154,10 @@ pub struct AppSettings {
     pub domain_routing: crate::domain_routing::Document,
 }
 
+fn legacy_locale() -> String {
+    "zh-CN".to_owned()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         let controller_secret: String = rand::rng()
@@ -165,7 +170,7 @@ impl Default for AppSettings {
             manual_outbound: None,
             proxy_mode: crate::manual_outbound::ProxyMode::Manual,
             proxy_mode_revision: Uuid::nil(),
-            locale: "zh-CN".to_string(),
+            locale: "system".to_string(),
             theme: "system".to_string(),
             launch_at_login: false,
             silent_startup: true,

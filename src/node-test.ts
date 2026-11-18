@@ -1,3 +1,4 @@
+import { setLocalizedText } from "./i18n";
 // Job identity is separate from a node name: late replies must not follow a
 // same-name node into a different subscription, mode or restarted core.
 export type NodeTestScope = { kind?: "manual" | "ai"; profileId: string; revisionId: string; modeRevision: string; runtimePid: number | null; runtimeStartedAt: string | null; routingMode: string };
@@ -46,7 +47,7 @@ export function mountNodeTest(root: HTMLElement, options: {
   const batchBusy = () => Boolean(batch) || nodeTestRunning(current());
   function buttonState(button: HTMLButtonElement, disabled: boolean, pending: boolean, label: string) {
     if (button.disabled !== disabled) button.disabled = disabled;
-    if (button.textContent !== label) button.textContent = label;
+    setLocalizedText(button, label);
     if (button.getAttribute('aria-busy') !== String(pending)) button.setAttribute('aria-busy', String(pending));
   }
   function render() {
@@ -66,7 +67,7 @@ export function mountNodeTest(root: HTMLElement, options: {
       progress.value = s.nodes.filter(n => !['pending', 'testing'].includes(n.state)).length;
     }
     status = notice || (starting ? '正在读取当前配置与节点，准备测速…' : status);
-    if (message.textContent !== status) message.textContent = status;
+    setLocalizedText(message, status);
   }
   function accept(next: NodeTestSnapshot | null) {
     if (next && snapshot?.id === next.id && next.sequence <= snapshot.sequence) return;
@@ -81,7 +82,7 @@ export function mountNodeTest(root: HTMLElement, options: {
     const request = serial, epoch = scopeEpoch; reading = true;
     const matches = () => sameNodeTestScope(scope, context()) && epoch === scopeEpoch && request === serial && !batch;
     try { const next = await options.status(); if (matches() && (!next || sameNodeTestScope(next.scope, scope))) accept(next); }
-    catch { if (matches()) message.textContent = '测试状态暂未读取成功，正在重试；不要重复启动任务。'; }
+    catch { if (matches()) setLocalizedText(message, '测试状态暂未读取成功，正在重试；不要重复启动任务。'); }
     finally { reading = false; }
   }
   async function run(stop = false) {

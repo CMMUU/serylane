@@ -4,14 +4,37 @@ use std::error::Error;
 use std::sync::atomic::AtomicU64;
 use tokio::time::Instant;
 
-// The center serves direct metadata and artifacts. Redirects must not escape
-// to a mirror (or any other host), including through a trusted metadata URL.
-pub(super) fn redirect_policy() -> updater_http::redirect::Policy {
-    updater_http::redirect::Policy::none()
+fn github_redirect_allowed(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && match url.host_str() {
+            Some("github.com") => url.path().starts_with("/CMMUU/serylane/releases/download/"),
+            Some("release-assets.githubusercontent.com" | "objects.githubusercontent.com") => true,
+            _ => false,
+        }
 }
 
-pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-pub(super) const METADATA_TIMEOUT: Duration = Duration::from_secs(25);
+pub(super) fn redirect_policy(source: UpdateSource) -> updater_http::redirect::Policy {
+    if !source.github() {
+        return updater_http::redirect::Policy::none();
+    }
+    updater_http::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() <= 3 && github_redirect_allowed(attempt.url()) {
+            attempt.follow()
+        } else {
+            attempt.error("Update redirect is outside the official asset origins")
+        }
+    })
+}
+
+pub(super) fn permits_fallback(kind: Option<&str>) -> bool {
+    matches!(kind, Some("connection" | "timeout" | "http"))
+}
+
+pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+pub(super) const METADATA_TIMEOUT: Duration = CHECK_BUDGET;
 #[derive(Clone, Copy)]
 pub(super) struct Policy {
     pub idle: Duration,
@@ -256,8 +279,7 @@ fn record(
     Ok(())
 }
 
-/// Retry only the frozen, verified download-center candidate. There is no
-/// discovery callback or alternate-source traversal in the production path.
+/// Retry the validated candidate for one route. The caller owns route selection.
 pub(super) async fn recover<T>(
     state: &AppUpdateManager,
     candidates: Vec<Candidate>,
@@ -268,19 +290,20 @@ where
     T: Fn(&Candidate) -> Update,
 {
     if candidates.len() != 1 {
-        return Err(failure("更新目标不唯一，请重新检查下载中心"));
+        return Err(failure("更新目标不唯一，请重新检查更新"));
     }
     let candidate = candidates.into_iter().next().unwrap();
     let source = candidate.source;
     let task = async {
-        let mut last = "下载中心暂不可用，请稍后重试；当前应用与代理保持运行".to_string();
+        let mut last = "更新来源暂不可用，请稍后重试；当前应用与代理保持运行".to_string();
         for number in 1..=policy.attempts {
             let started = Instant::now();
             {
                 let mut session = state.lock()?;
                 session.status.stage = "download".into();
                 session.status.message = Some(format!(
-                    "正在从下载中心下载（第 {number}/{} 次）",
+                    "正在从 {} 下载（第 {number}/{} 次）",
+                    source.label(),
                     policy.attempts
                 ));
                 session.status.attempt = number;
@@ -323,7 +346,8 @@ where
                     state.lock()?.status.stage = stage.into();
                     record(state, source, number, stage, started, Some(&e), &e.message)?;
                     last = format!(
-                        "下载中心：{}；请稍后重试。尚未开始安装，当前应用与代理保持运行",
+                        "{}：{}；请稍后重试。尚未开始安装，当前应用与代理保持运行",
+                        source.label(),
                         e.message
                     );
                     if e.fatal {
@@ -336,8 +360,9 @@ where
                         let mut session = state.lock()?;
                         session.status.stage = "retrying".into();
                         session.status.message = Some(format!(
-                            "{}，即将重试下载中心（{}/{}）",
+                            "{}，即将重试 {}（{}/{}）",
                             e.message,
+                            source.label(),
                             number + 1,
                             policy.attempts
                         ));
@@ -359,6 +384,52 @@ where
             }
             _ = &mut total => { state.lock()?.status.error_kind = Some("budget".into()); return Err(failure("本次下载等待时间已到，请稍后重试；当前应用与代理保持运行")); }
             result = &mut task => return result,
+        }
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    #[test]
+    fn github_redirects_are_limited_to_repository_and_official_asset_origins() {
+        for accepted in [
+            "https://github.com/CMMUU/serylane/releases/download/v1.2.3/latest-serylane.json",
+            "https://release-assets.githubusercontent.com/github-production-release-asset-2e65be/fixture",
+            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/fixture",
+        ] {
+            assert!(github_redirect_allowed(&Url::parse(accepted).unwrap()), "{accepted}");
+        }
+        for rejected in [
+            "https://github.com/another/repo/releases/download/v1.2.3/i.zip",
+            "http://release-assets.githubusercontent.com/fixture",
+            "https://release-assets.githubusercontent.com.example.net/fixture",
+            "https://release-assets.githubusercontent.com:444/fixture",
+            "https://user@release-assets.githubusercontent.com/fixture",
+        ] {
+            assert!(
+                !github_redirect_allowed(&Url::parse(rejected).unwrap()),
+                "{rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_transport_failure_admits_another_path() {
+        for kind in ["connection", "timeout", "http"] {
+            assert!(permits_fallback(Some(kind)));
+        }
+        for kind in [
+            None,
+            Some("integrity"),
+            Some("signature"),
+            Some("identity"),
+            Some("certificate"),
+            Some("budget"),
+            Some("cancelled"),
+        ] {
+            assert!(!permits_fallback(kind));
         }
     }
 }

@@ -64,6 +64,8 @@ function stopFixture(mode='system_proxy', fail=false) {
     }},
     refreshRuntimeOnly:async allowed=>{assert.equal(allowed,true);assert.equal(environment.runtimeActionInFlight,true);calls.push('readback');},refreshConnectionFeedback:async()=>{},refreshSessionResume:async()=>calls.push('resume-read'),
   };
+  environment.setLocalizedText = (node, text) => { node.textContent = text ?? ""; };
+  environment.setPlainText = (node, text, fallback) => { node.textContent = text ?? fallback; };
   vm.createContext(environment);
   vm.runInContext(compile(main.slice(main.indexOf('async function runProxyControl('),main.indexOf('function toggleGlobalNetworkMode('))),environment);
   return {environment,calls,stop:()=>environment.stopRuntime()};
@@ -123,6 +125,8 @@ function baseReadFixture() {
       },
     },
   };
+  environment.setLocalizedText = (node, text) => { node.textContent = text ?? ""; };
+  environment.setPlainText = (node, text, fallback) => { node.textContent = text ?? fallback; };
   vm.createContext(environment);
   const sources=[
     main.slice(main.indexOf('function currentProxyPresentation()'),main.indexOf('function renderOverview()')),

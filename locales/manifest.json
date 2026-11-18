@@ -1,0 +1,13 @@
+[
+  { "id": "zh-Hans", "name": "简体中文", "direction": "ltr", "format": "zh-CN" },
+  { "id": "zh-Hant", "name": "繁體中文", "direction": "ltr", "format": "zh-TW" },
+  { "id": "en", "name": "English", "direction": "ltr", "format": "en" },
+  { "id": "ja", "name": "日本語", "direction": "ltr", "format": "ja-JP" },
+  { "id": "ko", "name": "한국어", "direction": "ltr", "format": "ko-KR" },
+  { "id": "de", "name": "Deutsch", "direction": "ltr", "format": "de-DE" },
+  { "id": "fr", "name": "Français", "direction": "ltr", "format": "fr-FR" },
+  { "id": "es", "name": "Español", "direction": "ltr", "format": "es" },
+  { "id": "pt-BR", "name": "Português (Brasil)", "direction": "ltr", "format": "pt-BR" },
+  { "id": "ru", "name": "Русский", "direction": "ltr", "format": "ru-RU" },
+  { "id": "ar", "name": "العربية", "direction": "rtl", "format": "ar" }
+]

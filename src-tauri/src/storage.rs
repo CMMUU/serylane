@@ -77,6 +77,15 @@ impl AppStorage {
         write_json_atomic(&self.root.join("settings.json"), settings)
     }
 
+    pub(crate) fn save_locale_preference(&self, locale: String) -> AppResult<AppSettings> {
+        let mut settings = self.settings()?;
+        if settings.locale != locale {
+            settings.locale = locale;
+            self.save_settings(&settings)?;
+        }
+        Ok(settings)
+    }
+
     pub fn programs(&self) -> AppResult<crate::program_proxy::ProgramDocument> {
         let path = self.root.join("proxy-programs.json");
         if !path.exists() {
@@ -830,6 +839,28 @@ fn secure_existing_tree(path: &Path) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changing_language_persists_only_locale_in_the_settings_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let storage = super::AppStorage::from_root(root.clone()).unwrap();
+        let mut settings = storage.settings().unwrap();
+        settings.locale = "zh-CN".to_owned();
+        settings.mixed_port = 18188;
+        settings.theme = "dark".to_owned();
+        settings.controller_secret = "fixture-secret".to_owned();
+        storage.save_settings(&settings).unwrap();
+        let mut expected = serde_json::to_value(&settings).unwrap();
+        expected["locale"] = "ar".into();
+        let saved = storage.save_locale_preference("ar".to_owned()).unwrap();
+        assert_eq!(serde_json::to_value(saved).unwrap(), expected);
+        let reopened = super::AppStorage::from_root(root)
+            .unwrap()
+            .settings()
+            .unwrap();
+        assert_eq!(serde_json::to_value(reopened).unwrap(), expected);
+    }
+
     use super::AppStorage;
     use crate::error::AppError;
     use crate::models::{OpenAiPolicy, ProfileSource, SubscriptionUsage, ValidationReport};

@@ -94,6 +94,8 @@ async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
 }
 
 export const api = {
+  appLocale: () => invoke<import("./types").AppLocale>("app_locale"),
+  setAppLocale: (preference: string) => invoke<import("./types").AppLocale>("set_app_locale", { preference }),
   proxyControlStatus: () => invoke<ProxyControlSnapshot>("proxy_control_status"),
   proxyControlAction: (request: ProxyControlRequest) => invoke<ProxyControlSnapshot>("proxy_control_action", { request }),
   lifecycle: () => nativeInvoke<LifecycleSnapshot>("app_lifecycle_status"),
