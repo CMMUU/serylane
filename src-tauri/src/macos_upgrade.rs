@@ -20,7 +20,14 @@ use tauri::{AppHandle, Manager};
 const IDENTIFIER: &str = "com.cmmuu.mihomodesktop";
 static PENDING: AtomicBool = AtomicBool::new(false);
 static TUN_PENDING: AtomicBool = AtomicBool::new(false);
+static STALE_TUN_REBIND_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 static FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+#[derive(Debug, PartialEq, Eq)]
+enum TransactionPhase {
+    Rollback,
+    Replacement,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -35,23 +42,28 @@ struct Marker {
 }
 
 impl Marker {
-    fn validate(&self, identifier: &str, bundle: &Path, version: &str) -> AppResult<()> {
+    fn validate(
+        &self,
+        identifier: &str,
+        bundle: &Path,
+        version: &str,
+    ) -> AppResult<TransactionPhase> {
+        let invalid = || {
+            AppError::Platform(
+                "待恢复的服务关联与当前应用位置、身份或版本不一致；请安装原位置的正确版本后重试"
+                    .into(),
+            )
+        };
         if self.schema != 1
             || self.identifier != IDENTIFIER
             || identifier != IDENTIFIER
             || self.bundle_path != bundle
-            || !valid_version(&self.source_version)
-            || !valid_version(&self.target_version)
-            // A complete installer can replace a blocked old updater. Preserve
-            // service intent across later releases at the same identity/path.
-            || !transaction_version_allowed(&self.source_version, &self.target_version, version)
         {
-            return Err(AppError::Platform(
-                "待恢复的服务关联与当前应用位置、身份或版本不一致；请安装原位置的正确版本后重试"
-                    .into(),
-            ));
+            return Err(invalid());
         }
-        Ok(())
+        // A complete installer can replace a blocked old updater. Preserve
+        // service intent across later releases at the same identity/path.
+        transaction_phase(&self.source_version, &self.target_version, version).ok_or_else(invalid)
     }
 }
 
@@ -63,7 +75,7 @@ fn valid_version(version: &str) -> bool {
         })
 }
 
-fn transaction_version_allowed(source: &str, target: &str, current: &str) -> bool {
+fn transaction_phase(source: &str, target: &str, current: &str) -> Option<TransactionPhase> {
     fn tuple(value: &str) -> Option<Vec<u64>> {
         valid_version(value)
             .then(|| {
@@ -76,10 +88,13 @@ fn transaction_version_allowed(source: &str, target: &str, current: &str) -> boo
             .flatten()
     }
     match (tuple(source), tuple(target), tuple(current)) {
-        (Some(source), Some(target), Some(current)) => {
-            target > source && (current == source || current >= target)
+        (Some(source), Some(target), Some(current)) if target > source && current >= target => {
+            Some(TransactionPhase::Replacement)
         }
-        _ => false,
+        (Some(source), Some(target), Some(current)) if target > source && current == source => {
+            Some(TransactionPhase::Rollback)
+        }
+        _ => None,
     }
 }
 
@@ -175,6 +190,7 @@ pub fn prepare(app: &AppHandle, target_version: &str) -> AppResult<()> {
         &marker,
         || {
             persist_marker(&path, &marker)?;
+            STALE_TUN_REBIND_ATTEMPTED.store(false, Ordering::Release);
             set_pending(None);
             Ok(())
         },
@@ -225,7 +241,8 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
         let bundle = tun_service::codesign::bundle_root()
             .map_err(AppError::Platform)?
             .canonicalize()?;
-        marker.validate(&app.config().identifier, &bundle, env!("CARGO_PKG_VERSION"))?;
+        let phase =
+            marker.validate(&app.config().identifier, &bundle, env!("CARGO_PKG_VERSION"))?;
         // Validate the app at the exact same installation location; signatures
         // and build-version handshake remain mandatory after replacement.
         tun_service::codesign::validate(&std::env::current_exe()?).map_err(AppError::Platform)?;
@@ -237,7 +254,13 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
         marker.login_was_enabled = false;
         persist_marker(&path, &marker)?;
         if marker.tun_was_enabled {
-            let status = tun_service::admin::register().map_err(AppError::Platform)?;
+            let status = match phase {
+                TransactionPhase::Rollback => tun_service::admin::register(),
+                TransactionPhase::Replacement => {
+                    tun_service::admin::register_after_upgrade(&STALE_TUN_REBIND_ATTEMPTED)
+                }
+            }
+            .map_err(AppError::Platform)?;
             if !status.ready() {
                 return Err(AppError::Platform(status.message));
             }
@@ -284,6 +307,7 @@ fn set_pending(error: Option<String>) {
 fn clear_pending() {
     PENDING.store(false, Ordering::Release);
     TUN_PENDING.store(false, Ordering::Release);
+    STALE_TUN_REBIND_ATTEMPTED.store(false, Ordering::Release);
     if let Ok(mut failure) = FAILURE.lock() {
         *failure = None;
     }
@@ -294,6 +318,12 @@ pub fn status_override() -> Option<TunHelperStatus> {
         return None;
     }
     let failure = FAILURE.lock().ok().and_then(|value| value.clone());
+    if failure.is_some() {
+        let observed = tun_service::admin::status();
+        if show_recovery_diagnosis(observed.state) {
+            return Some(observed);
+        }
+    }
     Some(TunHelperStatus {
         supported: true,
         state: if failure.is_some() {
@@ -311,6 +341,16 @@ pub fn status_override() -> Option<TunHelperStatus> {
         runtime_version: None,
         last_error: failure,
     })
+}
+
+fn show_recovery_diagnosis(state: TunHelperState) -> bool {
+    matches!(
+        state,
+        TunHelperState::RequiresApproval
+            | TunHelperState::NeedsRepair
+            | TunHelperState::Outdated
+            | TunHelperState::InvalidInstallation
+    )
 }
 
 /// Returns true when this function owns deferred session restoration. Read the
@@ -423,10 +463,19 @@ mod tests {
     #[test]
     fn only_same_identity_location_and_transaction_versions_can_restore() {
         let marker = marker();
-        for version in ["0.7.17", "0.7.18", "0.7.24", "0.8.0"] {
-            assert!(marker
-                .validate(IDENTIFIER, &marker.bundle_path, version)
-                .is_ok());
+        assert_eq!(
+            marker
+                .validate(IDENTIFIER, &marker.bundle_path, "0.7.17")
+                .unwrap(),
+            TransactionPhase::Rollback,
+        );
+        for version in ["0.7.18", "0.7.24", "0.8.0"] {
+            assert_eq!(
+                marker
+                    .validate(IDENTIFIER, &marker.bundle_path, version)
+                    .unwrap(),
+                TransactionPhase::Replacement,
+            );
         }
         assert!(marker
             .validate("other", &marker.bundle_path, "0.7.18")
@@ -437,6 +486,20 @@ mod tests {
         assert!(marker
             .validate(IDENTIFIER, &marker.bundle_path, "0.7.16")
             .is_err());
+    }
+    #[test]
+    fn recovery_diagnosis_does_not_hide_approval_signing_or_spawn_failures() {
+        for (state, visible) in [
+            (TunHelperState::RequiresApproval, true),
+            (TunHelperState::InvalidInstallation, true),
+            (TunHelperState::NeedsRepair, true),
+            (TunHelperState::Outdated, true),
+            (TunHelperState::Ready, false),
+            (TunHelperState::Checking, false),
+            (TunHelperState::Unreachable, false),
+        ] {
+            assert_eq!(show_recovery_diagnosis(state), visible);
+        }
     }
     #[test]
     fn invalid_or_symlinked_marker_fails_closed_and_missing_is_idempotent() {

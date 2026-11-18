@@ -20,6 +20,10 @@ pub const ENABLED: isize = 1;
 pub const REQUIRES_APPROVAL: isize = 2;
 pub const NOT_FOUND: isize = 3;
 
+pub(crate) fn registration_absent(status: isize) -> bool {
+    matches!(status, NOT_REGISTERED | NOT_FOUND)
+}
+
 pub struct Service {
     pub name: &'static CStr,
     pub agent: bool,
@@ -82,6 +86,14 @@ impl Service {
     }
 
     pub fn unregister(&'static self) -> Result<(), String> {
+        self.unregister_inner(false)
+    }
+
+    pub(crate) fn unregister_enabled(&'static self) -> Result<(), String> {
+        self.unregister_inner(true)
+    }
+
+    fn unregister_inner(&'static self, require_enabled: bool) -> Result<(), String> {
         if self.pending.swap(true, Ordering::AcqRel) {
             return Err("旧服务退出尚未完成，请稍后重试；未重复执行".into());
         }
@@ -94,7 +106,11 @@ impl Service {
                 }
             };
             let raw: isize = msg_send![service, status];
-            if raw == NOT_REGISTERED || raw == NOT_FOUND {
+            if require_enabled && raw != ENABLED {
+                self.pending.store(false, Ordering::Release);
+                return Err("系统的辅助服务许可状态已变化；未重新关联".into());
+            }
+            if registration_absent(raw) {
                 self.pending.store(false, Ordering::Release);
                 return Ok(());
             }
@@ -152,6 +168,15 @@ unsafe fn error_message(error: *mut AnyObject) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabled_denied_and_unknown_are_not_absence() {
+        assert!(registration_absent(NOT_REGISTERED));
+        assert!(registration_absent(NOT_FOUND));
+        for state in [ENABLED, REQUIRES_APPROVAL, -1, 4] {
+            assert!(!registration_absent(state));
+        }
+    }
 
     #[test]
     fn pending_exit_blocks_registration_before_any_system_call() {
