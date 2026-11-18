@@ -1,3 +1,4 @@
+import { setLocalizedText } from "./i18n";
 import type { UserRule, UserRulesState, UserRulesValidation } from "./types";
 
 export const RULE_KINDS = [
@@ -104,48 +105,48 @@ export class RulesDraft {
 
 export const ruleManagerMarkup = `
 <article class="panel rule-manager-panel">
-  <div class="panel-heading"><div><div class="section-label">RULES</div><h2>规则管理</h2><p class="rule-manager-intro">独立保存的本地规则，不随订阅更新被覆盖。</p></div><button type="button" class="button button-quiet" id="user-rules-refresh">刷新状态</button></div>
-  <div class="rule-priority-note"><strong>我的规则 → AI 托管规则 → 订阅规则</strong><span>按列表从上到下匹配，首个命中生效。DIRECT 是经本机核心直连，不等于绕过系统代理或 TUN。</span></div>
-  <div class="rule-tabs" role="tablist" aria-label="规则视图">
-    <button type="button" role="tab" id="user-rules-tab" aria-controls="user-rules-panel" aria-selected="true" data-rule-tab="visual">我的规则 <span id="user-rules-count">0</span></button>
-    <button type="button" role="tab" id="advanced-rules-tab" aria-controls="advanced-rules-panel" aria-selected="false" tabindex="-1" data-rule-tab="advanced">高级文本</button>
-    <button type="button" role="tab" id="effective-rules-tab" aria-controls="effective-rules-panel" aria-selected="false" tabindex="-1" data-rule-tab="effective">生效规则</button>
+  <div class="panel-heading"><div><div class="section-label">RULES</div><h2><!--i18n:ui-4ae737d1a68728-->规则管理</h2><p class="rule-manager-intro"><!--i18n:ui-39f580b148dab9-->独立保存的本地规则，不随订阅更新被覆盖。</p></div><button type="button" class="button button-quiet" id="user-rules-refresh"><!--i18n:ui-802a407c774302-->刷新状态</button></div>
+  <div class="rule-priority-note"><strong><!--i18n:ui-c3399693263f3c-->我的规则 → AI 托管规则 → 订阅规则</strong><span><!--i18n:ui-453eb028ef9985-->按列表从上到下匹配，首个命中生效。DIRECT 是经本机核心直连，不等于绕过系统代理或 TUN。</span></div>
+  <div class="rule-tabs" role="tablist" aria-label="规则视图" data-i18n-aria-label="ui-8c20a7d3b86d67">
+    <button type="button" role="tab" id="user-rules-tab" aria-controls="user-rules-panel" aria-selected="true" data-rule-tab="visual"><!--i18n:ui-78f684ec385e6e-->我的规则 <span id="user-rules-count">0</span></button>
+    <button type="button" role="tab" id="advanced-rules-tab" aria-controls="advanced-rules-panel" aria-selected="false" tabindex="-1" data-rule-tab="advanced"><!--i18n:ui-fd7e34bf78c893-->高级文本</button>
+    <button type="button" role="tab" id="effective-rules-tab" aria-controls="effective-rules-panel" aria-selected="false" tabindex="-1" data-rule-tab="effective"><!--i18n:ui-a239712b0d05ab-->生效规则</button>
   </div>
-  <p id="user-rules-status" class="rule-manager-status" role="status" aria-live="polite">正在读取本地规则…</p>
+  <p id="user-rules-status" class="rule-manager-status" role="status" aria-live="polite"><!--i18n:ui-418281bdf1c050-->正在读取本地规则…</p>
   <div id="user-rules-notices" class="rule-manager-notices"></div>
   <section id="user-rules-panel" class="rules-tab-panel" role="tabpanel" aria-labelledby="user-rules-tab">
     <form id="user-rule-form" class="user-rule-form">
-      <div class="user-rule-editor-heading"><strong id="user-rule-editor-title">添加规则</strong><span>先加入草稿，再校验并应用</span></div>
-      <label><span>匹配类型</span><select id="user-rule-kind">${RULE_KINDS.map((kind) => `<option value="${kind}">${kind}</option>`).join("")}</select></label>
-      <label class="user-rule-value-field"><span>匹配内容</span><input id="user-rule-value" required autocomplete="off" placeholder="例如 example.com" /></label>
-      <label><span>执行策略</span><input id="user-rule-target" list="user-rule-targets" required autocomplete="off" value="DIRECT" aria-describedby="user-rule-target-hint" /><datalist id="user-rule-targets"></datalist></label>
-      <label class="user-rule-note-field"><span>备注（可选）</span><input id="user-rule-note" maxlength="500" placeholder="例如：开发服务直连" /></label>
-      <div class="user-rule-options"><label class="checkbox-row"><input id="user-rule-enabled" type="checkbox" checked />启用</label><label class="checkbox-row is-hidden" id="user-rule-no-resolve-field"><input id="user-rule-no-resolve" type="checkbox" />不主动解析域名（no-resolve）</label><span id="user-rule-target-hint">DIRECT / REJECT / 当前配置的策略组</span></div>
-      <div class="toolbar user-rule-editor-actions"><button type="submit" class="button button-primary" id="user-rule-submit">加入草稿</button><button type="button" class="button button-quiet is-hidden" id="user-rule-cancel">取消编辑</button></div>
+      <div class="user-rule-editor-heading"><strong id="user-rule-editor-title"><!--i18n:ui-c9f9e18b062339-->添加规则</strong><span><!--i18n:ui-923370e866ef49-->先加入草稿，再校验并应用</span></div>
+      <label><span><!--i18n:ui-0bfdec37b5e03a-->匹配类型</span><select id="user-rule-kind">${RULE_KINDS.map((kind) => `<option value="${kind}">${kind}</option>`).join("")}</select></label>
+      <label class="user-rule-value-field"><span><!--i18n:ui-f56dd05e1d5122-->匹配内容</span><input id="user-rule-value" required autocomplete="off" placeholder="例如 example.com"  data-i18n-placeholder="ui-567074053694f0"/></label>
+      <label><span><!--i18n:ui-cee427c39b2e09-->执行策略</span><input id="user-rule-target" list="user-rule-targets" required autocomplete="off" value="DIRECT" aria-describedby="user-rule-target-hint" /><datalist id="user-rule-targets"></datalist></label>
+      <label class="user-rule-note-field"><span><!--i18n:ui-b405227c7e3f93-->备注（可选）</span><input id="user-rule-note" maxlength="500" placeholder="例如：开发服务直连"  data-i18n-placeholder="ui-1ccc1d074f496c"/></label>
+      <div class="user-rule-options"><label class="checkbox-row"><input id="user-rule-enabled" type="checkbox" checked /><!--i18n:ui-f4f0ead1116b5b-->启用</label><label class="checkbox-row is-hidden" id="user-rule-no-resolve-field"><input id="user-rule-no-resolve" type="checkbox" /><!--i18n:ui-7159c38cf1cf61-->不主动解析域名（no-resolve）</label><span id="user-rule-target-hint"><!--i18n:ui-ea42fd650a8203-->DIRECT / REJECT / 当前配置的策略组</span></div>
+      <div class="toolbar user-rule-editor-actions"><button type="submit" class="button button-primary" id="user-rule-submit"><!--i18n:ui-748f31fb3de35a-->加入草稿</button><button type="button" class="button button-quiet is-hidden" id="user-rule-cancel"><!--i18n:ui-4b29ce8e409331-->取消编辑</button></div>
     </form>
-    <div id="user-rules-list" class="user-rules-list" aria-label="本地规则顺序"></div>
+    <div id="user-rules-list" class="user-rules-list" aria-label="本地规则顺序" data-i18n-aria-label="ui-15e7cf84ca467d"></div>
   </section>
   <section id="advanced-rules-panel" class="rules-tab-panel is-hidden" role="tabpanel" aria-labelledby="advanced-rules-tab" hidden>
-    <label class="rule-text-label" for="user-rules-text">规则文本</label>
-    <p class="hint">支持逐行规则、YAML 规则列表或仅含 rules 的 YAML。元数据注释保留 ID、启停状态及备注；高级规则不会被可视化编辑器改写。</p>
+    <label class="rule-text-label" for="user-rules-text"><!--i18n:ui-d79d0b1d5f52fd-->规则文本</label>
+    <p class="hint"><!--i18n:ui-4f07261a6255f0-->支持逐行规则、YAML 规则列表或仅含 rules 的 YAML。元数据注释保留 ID、启停状态及备注；高级规则不会被可视化编辑器改写。</p>
     <textarea id="user-rules-text" class="user-rules-text" spellcheck="false" autocapitalize="off" aria-describedby="user-rules-text-hint" placeholder="DOMAIN-SUFFIX,example.com,DIRECT"></textarea>
-    <p class="hint" id="user-rules-text-hint">修改文本后，切回可视化或点击校验时解析到同一份草稿。未保存的更改不会影响当前网络。</p>
-    <div class="toolbar rule-text-actions"><label class="button file-button">导入规则文本<input id="user-rules-import" type="file" accept=".txt,.yaml,.yml,text/plain" hidden /></label><button type="button" class="button" id="user-rules-export" aria-controls="user-rules-export-panel" aria-expanded="false">导出文本</button></div>
+    <p class="hint" id="user-rules-text-hint"><!--i18n:ui-4aeb0d5e6c2ffc-->修改文本后，切回可视化或点击校验时解析到同一份草稿。未保存的更改不会影响当前网络。</p>
+    <div class="toolbar rule-text-actions"><label class="button file-button"><!--i18n:ui-4d5ea4a2bee678-->导入规则文本<input id="user-rules-import" type="file" accept=".txt,.yaml,.yml,text/plain" hidden /></label><button type="button" class="button" id="user-rules-export" aria-controls="user-rules-export-panel" aria-expanded="false"><!--i18n:ui-8e1b126e634dca-->导出文本</button></div>
     <section id="user-rules-export-panel" class="rule-export-panel is-hidden" aria-labelledby="user-rules-export-title" hidden>
-      <div class="user-rule-editor-heading"><strong id="user-rules-export-title">当前草稿的导出文本</strong><button type="button" class="button button-quiet" id="user-rules-export-close">关闭</button></div>
-      <p class="hint">下面是完整规则文本，可复制到文本编辑器后自行保存为 .txt 或 .yaml。此面板不会直接写入文件。</p>
-      <textarea id="user-rules-export-text" class="user-rules-text rule-export-text" readonly spellcheck="false" aria-label="只读导出规则文本" aria-describedby="user-rules-export-feedback"></textarea>
-      <div class="toolbar rule-text-actions"><button type="button" class="button button-primary" id="user-rules-copy">复制文本</button><button type="button" class="button" id="user-rules-select-all">全选文本</button></div>
-      <p id="user-rules-export-feedback" class="hint" role="status" aria-live="polite">文本已准备，尚未写入文件。</p>
+      <div class="user-rule-editor-heading"><strong id="user-rules-export-title"><!--i18n:ui-4a53aa17f415ed-->当前草稿的导出文本</strong><button type="button" class="button button-quiet" id="user-rules-export-close"><!--i18n:ui-3fd47edce45b36-->关闭</button></div>
+      <p class="hint"><!--i18n:ui-24582f8cf14557-->下面是完整规则文本，可复制到文本编辑器后自行保存为 .txt 或 .yaml。此面板不会直接写入文件。</p>
+      <textarea id="user-rules-export-text" class="user-rules-text rule-export-text" readonly spellcheck="false" aria-label="只读导出规则文本" aria-describedby="user-rules-export-feedback" data-i18n-aria-label="ui-1f14774c7d0101"></textarea>
+      <div class="toolbar rule-text-actions"><button type="button" class="button button-primary" id="user-rules-copy"><!--i18n:ui-befad318258f8c-->复制文本</button><button type="button" class="button" id="user-rules-select-all"><!--i18n:ui-30c2af96dec18b-->全选文本</button></div>
+      <p id="user-rules-export-feedback" class="hint" role="status" aria-live="polite"><!--i18n:ui-ad8091e991f000-->文本已准备，尚未写入文件。</p>
     </section>
   </section>
   <section id="effective-rules-panel" class="rules-tab-panel is-hidden" role="tabpanel" aria-labelledby="effective-rules-tab" hidden>
-    <div class="rule-effective-toolbar"><p class="hint">这里展示运行核心当前加载的规则；本地草稿需保存后才会进入该列表。</p><div class="toolbar"><input id="rule-search" aria-label="搜索生效规则" placeholder="搜索规则" /><button type="button" class="button button-quiet" id="rules-refresh">刷新生效规则</button></div></div>
-    <div class="table-wrap"><table><thead><tr><th>类型</th><th>内容</th><th>策略</th></tr></thead><tbody id="rules-body"><tr><td colspan="3">启动后加载规则</td></tr></tbody></table></div><button id="rules-more" type="button" class="button button-quiet" hidden>显示更多</button>
+    <div class="rule-effective-toolbar"><p class="hint"><!--i18n:ui-a948d26decdf19-->这里展示运行核心当前加载的规则；本地草稿需保存后才会进入该列表。</p><div class="toolbar"><input id="rule-search" aria-label="搜索生效规则" placeholder="搜索规则"  data-i18n-aria-label="ui-b4b0ad459aea44" data-i18n-placeholder="ui-ff1804ddae6d4c"/><button type="button" class="button button-quiet" id="rules-refresh"><!--i18n:ui-68f684cbccd4fc-->刷新生效规则</button></div></div>
+    <div class="table-wrap"><table><thead><tr><th><!--i18n:ui-ba40014ff496f6-->类型</th><th><!--i18n:ui-7a688306423bec-->内容</th><th><!--i18n:ui-9c8eb75c7e58b4-->策略</th></tr></thead><tbody id="rules-body"><tr><td colspan="3"><!--i18n:ui-2bd86c6b0c575d-->启动后加载规则</td></tr></tbody></table></div><button id="rules-more" type="button" class="button button-quiet" hidden><!--i18n:ui-331af79f34e7a5-->显示更多</button>
   </section>
   <div id="user-rules-validation" class="rule-validation is-hidden" role="status" aria-live="polite"></div>
-  <div class="user-rules-actions"><div class="toolbar"><button type="button" class="button" id="user-rules-validate">校验草稿</button><button type="button" class="button button-primary" id="user-rules-save" disabled>保存并应用</button><button type="button" class="button button-quiet" id="user-rules-undo" disabled>撤销草稿</button></div><span id="user-rules-save-hint">校验通过后可保存</span></div>
-  <details class="user-rules-history" id="user-rules-history-section"><summary>历史版本与回滚</summary><div class="toolbar"><label for="user-rules-history">选择已保存版本</label><select id="user-rules-history" aria-label="历史规则版本"><option value="">暂无历史版本</option></select><button type="button" class="button" id="user-rules-rollback" disabled>回滚到此版本</button></div><p class="hint">回滚会校验并应用历史规则，同时保留新的版本记录。</p></details>
+  <div class="user-rules-actions"><div class="toolbar"><button type="button" class="button" id="user-rules-validate"><!--i18n:ui-6661a8a158dbb4-->校验草稿</button><button type="button" class="button button-primary" id="user-rules-save" disabled><!--i18n:ui-a7ec01a65f094b-->保存并应用</button><button type="button" class="button button-quiet" id="user-rules-undo" disabled><!--i18n:ui-3cb6e6ef962c0a-->撤销草稿</button></div><span id="user-rules-save-hint"><!--i18n:ui-2a800bdb6c01f2-->校验通过后可保存</span></div>
+  <details class="user-rules-history" id="user-rules-history-section"><summary><!--i18n:ui-f445b071c5450e-->历史版本与回滚</summary><div class="toolbar"><label for="user-rules-history"><!--i18n:ui-2907124d0ecfb1-->选择已保存版本</label><select id="user-rules-history" aria-label="历史规则版本" data-i18n-aria-label="ui-82add2b6bbaf38"><option value=""><!--i18n:ui-f0768f7d3c0d57-->暂无历史版本</option></select><button type="button" class="button" id="user-rules-rollback" disabled><!--i18n:ui-fd640d4abd9f3f-->回滚到此版本</button></div><p class="hint"><!--i18n:ui-cc94c2fcf62616-->回滚会校验并应用历史规则，同时保留新的版本记录。</p></details>
 </article>`;
 
 type RuleApi = {
@@ -187,15 +188,15 @@ export function mountRuleManager(root: HTMLElement, options: RuleManagerOptions)
     find<HTMLButtonElement>("#user-rules-undo").disabled = !!busy || (!model.dirty && !editorDirty);
     find<HTMLButtonElement>("#user-rules-rollback").disabled = !!busy || !loaded || !input("#user-rules-history").value;
     root.querySelectorAll<HTMLButtonElement>("[data-boundary='true']").forEach((button) => { button.disabled = true; });
-    find("#user-rules-status").textContent = busy
+    setLocalizedText(find("#user-rules-status"), busy
       ? ({ refresh: "正在读取规则状态…", validate: "正在校验草稿…", save: "正在保存并应用…", rollback: "正在回滚规则…", parse: "正在解析规则文本…", import: "正在导入规则文本…", undo: "等待确认撤销…", delete: "等待确认删除…", copy: "正在复制规则文本…" }[busy] ?? "正在处理…")
-      : feedback || (!loaded ? "尚未加载规则，可点击刷新重试。" : `版本 ${model.base!.revision} · ${model.rules.length} 条规则 · ${model.dirty ? "有未保存更改" : "已与本地保存同步"}`);
-    find("#user-rules-save-hint").textContent = editorDirty ? "先将表单更改加入草稿，或取消编辑" : model.conflict ? "版本已变化，请保留草稿或撤销后重新编辑" : model.canSave ? "校验已通过，等待应用" : model.dirty ? "更改后需重新校验" : "当前没有待保存更改";
+      : feedback || (!loaded ? "尚未加载规则，可点击刷新重试。" : `版本 ${model.base!.revision} · ${model.rules.length} 条规则 · ${model.dirty ? "有未保存更改" : "已与本地保存同步"}`));
+    setLocalizedText(find("#user-rules-save-hint"), editorDirty ? "先将表单更改加入草稿，或取消编辑" : model.conflict ? "版本已变化，请保留草稿或撤销后重新编辑" : model.canSave ? "校验已通过，等待应用" : model.dirty ? "更改后需重新校验" : "当前没有待保存更改");
     find("#user-rules-count").textContent = String(model.rules.length);
     const exportText = find<HTMLTextAreaElement>("#user-rules-export-text");
     if (!find("#user-rules-export-panel").hidden && exportText.value !== model.text) {
       exportText.value = model.text;
-      find("#user-rules-export-feedback").textContent = "导出文本已同步为当前草稿，尚未写入文件。";
+      setLocalizedText(find("#user-rules-export-feedback"), "导出文本已同步为当前草稿，尚未写入文件。");
     }
   }
 
@@ -209,22 +210,22 @@ export function mountRuleManager(root: HTMLElement, options: RuleManagerOptions)
     find("#user-rules-list").innerHTML = model.rules.map((rule, index) => {
       const parsed = parseVisualRule(rule.rule);
       return `<article class="user-rule-row ${rule.enabled ? "" : "is-disabled"}" data-rule-id="${escape(rule.id)}">
-        <div class="user-rule-order"><span>${index + 1}</span><input type="checkbox" data-rule-action="toggle" ${rule.enabled ? "checked" : ""} aria-label="${rule.enabled ? "停用" : "启用"}规则 ${index + 1}" /></div>
+        <div class="user-rule-order"><span>${index + 1}</span><input type="checkbox" data-rule-action="toggle" ${rule.enabled ? "checked" : ""} aria-label="${rule.enabled ? "停用" : "启用"}规则 ${index + 1}"  data-i18n-aria-label="ui-98df796bc82441"/></div>
         <div class="user-rule-row-copy"><div><span class="rule-kind-badge">${escape(parsed?.kind ?? "高级规则")}</span><strong title="${escape(rule.rule)}">${escape(parsed?.value ?? rule.rule)}</strong></div><p>${escape(rule.note || "无备注")}</p></div>
         <span class="rule-target-badge">${escape(parsed?.target ?? "原样保留")}</span>
-        <div class="toolbar user-rule-row-actions"><button type="button" class="button button-quiet" data-rule-action="up" aria-label="上移规则 ${index + 1}" ${index === 0 ? 'data-boundary="true"' : ""}>↑</button><button type="button" class="button button-quiet" data-rule-action="down" aria-label="下移规则 ${index + 1}" ${index === model.rules.length - 1 ? 'data-boundary="true"' : ""}>↓</button><button type="button" class="button" data-rule-action="edit">${parsed ? "编辑" : "高级编辑"}</button><button type="button" class="button button-danger" data-rule-action="delete">删除</button></div>
+        <div class="toolbar user-rule-row-actions"><button type="button" class="button button-quiet" data-rule-action="up" aria-label="上移规则 ${index + 1}" ${index === 0 ? 'data-boundary="true"' : ""} data-i18n-aria-label="ui-5df0643fa451ef">↑</button><button type="button" class="button button-quiet" data-rule-action="down" aria-label="下移规则 ${index + 1}" ${index === model.rules.length - 1 ? 'data-boundary="true"' : ""} data-i18n-aria-label="ui-d7cffacd3f85f6">↓</button><button type="button" class="button" data-rule-action="edit">${parsed ? "编辑" : "高级编辑"}</button><button type="button" class="button button-danger" data-rule-action="delete"><!--i18n:ui-2f9daa828907b9-->删除</button></div>
       </article>`;
-    }).join("") || '<div class="empty-state rule-empty-state"><strong>还没有本地规则</strong><span>添加一个域名直连、拦截或指定策略组规则开始使用。</span></div>';
+    }).join("") || "<div class=\"empty-state rule-empty-state\"><strong><!--i18n:ui-905e3485c077bb-->还没有本地规则</strong><span><!--i18n:ui-80bcbf9e20dcda-->添加一个域名直连、拦截或指定策略组规则开始使用。</span></div>";
     const textarea = find<HTMLTextAreaElement>("#user-rules-text");
     if (textarea.value !== model.text) textarea.value = model.text;
     const history = find<HTMLSelectElement>("#user-rules-history");
     const selected = history.value;
-    history.innerHTML = '<option value="">选择历史版本</option>' + (latest?.history ?? []).map((item) => `<option value="${escape(item.id)}">${escape(new Date(item.createdAt).toLocaleString())} · ${item.count} 条规则</option>`).join("");
+    history.innerHTML = "<option value=\"\"><!--i18n:ui-a45f791edcde2d-->选择历史版本</option>" + (latest?.history ?? []).map((item) => `<option value="${escape(item.id)}"><!--i18n:ui-4a0032fb592321-->${escape(new Date(item.createdAt).toLocaleString())} · ${item.count} 条规则</option>`).join("");
     if ([...history.options].some((item) => item.value === selected)) history.value = selected;
     const result = find("#user-rules-validation");
     result.classList.toggle("is-hidden", !validation || tab === "effective");
     result.classList.toggle("is-invalid", !!validation && !validation.valid);
-    result.innerHTML = validation ? `<strong>${validation.valid ? "✓ 校验通过" : "校验未通过"}</strong>${[...validation.errors, ...validation.warnings].map((message) => `<p>${escape(message)}</p>`).join("")}${validation.valid && validation.preview ? `<details><summary>查看合并预览</summary><pre>${escape(validation.preview)}</pre></details>` : ""}` : "";
+    result.innerHTML = validation ? `<strong>${validation.valid ? "✓ 校验通过" : "校验未通过"}</strong>${[...validation.errors, ...validation.warnings].map((message) => `<p>${escape(message)}</p>`).join("")}${validation.valid && validation.preview ? `<details><summary><!--i18n:ui-da339d25eba14d-->查看合并预览</summary><pre>${escape(validation.preview)}</pre></details>` : ""}` : "";
     updateControls();
   }
 
@@ -255,8 +256,8 @@ export function mountRuleManager(root: HTMLElement, options: RuleManagerOptions)
     editorDirty = false;
     editingForm.reset();
     input("#user-rule-target").value = "DIRECT";
-    find("#user-rule-editor-title").textContent = "添加规则";
-    find("#user-rule-submit").textContent = "加入草稿";
+    setLocalizedText(find("#user-rule-editor-title"), "添加规则");
+    setLocalizedText(find("#user-rule-submit"), "加入草稿");
     find("#user-rule-cancel").classList.add("is-hidden");
     find("#user-rule-no-resolve-field").classList.add("is-hidden");
   }
@@ -356,8 +357,8 @@ export function mountRuleManager(root: HTMLElement, options: RuleManagerOptions)
       input("#user-rule-enabled").checked = rule.enabled;
       input("#user-rule-no-resolve").checked = parsed.noResolve;
       find("#user-rule-no-resolve-field").classList.toggle("is-hidden", !["IP-CIDR", "IP-CIDR6"].includes(parsed.kind));
-      find("#user-rule-editor-title").textContent = "编辑规则";
-      find("#user-rule-submit").textContent = "更新草稿";
+      setLocalizedText(find("#user-rule-editor-title"), "编辑规则");
+      setLocalizedText(find("#user-rule-submit"), "更新草稿");
       find("#user-rule-cancel").classList.remove("is-hidden");
       input("#user-rule-value").focus();
     }
@@ -447,7 +448,7 @@ export function mountRuleManager(root: HTMLElement, options: RuleManagerOptions)
   find("#user-rules-select-all").addEventListener("click", () => {
     if (busy) return;
     selectExportText();
-    find("#user-rules-export-feedback").textContent = `已全选文本，按 ${copyShortcut} 复制；尚未写入文件。`;
+    setLocalizedText(find("#user-rules-export-feedback"), `已全选文本，按 ${copyShortcut} 复制；尚未写入文件。`);
   });
   find("#user-rules-copy").addEventListener("click", () => void run("copy", async () => {
     selectExportText();

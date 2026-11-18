@@ -2,23 +2,23 @@ import type { SubscriptionImportResult } from "./types";
 
 export const subscriptionImportMarkup = `
   <dialog class="subscription-import-card subscription-import-dialog" id="managed-subscription-panel" aria-labelledby="managed-subscription-title">
-    <header class="subscription-import-heading"><h3 id="managed-subscription-title">添加订阅</h3><button class="button button-quiet" id="managed-subscription-cancel" type="button">关闭</button></header>
-    <p class="subscription-import-intro">粘贴地址，验证后保存。收起窗口会保留本次填写。</p>
+    <header class="subscription-import-heading"><h3 id="managed-subscription-title"><!--i18n:ui-fa9d1a2012dc7f-->添加订阅</h3><button class="button button-quiet" id="managed-subscription-cancel" type="button"><!--i18n:ui-3fd47edce45b36-->关闭</button></header>
+    <p class="subscription-import-intro"><!--i18n:ui-c084dfb2a97375-->粘贴地址，验证后保存。收起窗口会保留本次填写。</p>
     <p class="subscription-import-path" id="managed-subscription-download-summary"></p>
     <form id="managed-subscription-form" aria-labelledby="managed-subscription-title">
       <div class="subscription-import-progress">
         <p class="import-status" id="managed-subscription-import-status" role="status" aria-live="polite"></p>
-        <button class="button button-quiet" id="managed-subscription-abort" type="button" hidden disabled>取消添加</button>
+        <button class="button button-quiet" id="managed-subscription-abort" type="button" hidden disabled><!--i18n:ui-cbe76a3a3aae3c-->取消添加</button>
       </div>
       <fieldset id="managed-subscription-fields">
         <div class="subscription-import-fields">
-          <label><span>订阅地址</span><input id="managed-subscription-url" required type="url" placeholder="https://example.com/subscribe?token=…" autocomplete="off" spellcheck="false" /></label>
-          <label><span>订阅名称</span><input id="managed-subscription-name" required value="我的订阅" maxlength="128" autocomplete="off" /></label>
+          <label><span><!--i18n:ui-efde7b18713937-->订阅地址</span><input id="managed-subscription-url" required type="url" placeholder="https://example.com/subscribe?token=…" autocomplete="off" spellcheck="false" /></label>
+          <label><span><!--i18n:ui-dfc55a989495f8-->订阅名称</span><input id="managed-subscription-name" required value="我的订阅" maxlength="128" autocomplete="off" /></label>
         </div>
-        <label class="subscription-import-option"><input id="managed-subscription-activate" type="checkbox" /><span><strong>添加后选用</strong><small id="managed-subscription-activate-hint">未勾选时仅保存，不替换当前配置。</small></span></label>
-        <label class="subscription-import-option"><input id="managed-subscription-openai" type="checkbox" /><span><strong>OpenAI 灾备</strong><small>仅 AI 代理模式可用；生成结果单独提示，不自动切换模式。</small></span></label>
-        <details class="subscription-import-advanced"><summary>高级选项</summary><label><span>User-Agent</span><input id="managed-subscription-ua" value="clash.meta" autocomplete="off" spellcheck="false" /></label><p>通常保持默认即可。下载路径可在上方「订阅下载路径」中选择，不会为下载自动启动核心或切换系统代理。订阅凭据仅在本机存储。</p></details>
-        <div class="subscription-import-actions"><button class="button button-primary" id="managed-subscription-import-button" type="submit" data-node-action-loading aria-busy="false">验证并添加</button></div>
+        <label class="subscription-import-option"><input id="managed-subscription-activate" type="checkbox" /><span><strong><!--i18n:ui-d709a85dfbfed6-->添加后选用</strong><small id="managed-subscription-activate-hint"><!--i18n:ui-cf7559d0137faf-->未勾选时仅保存，不替换当前配置。</small></span></label>
+        <label class="subscription-import-option"><input id="managed-subscription-openai" type="checkbox" /><span><strong><!--i18n:ui-bb6d237a2eee31-->OpenAI 灾备</strong><small><!--i18n:ui-efc8c7862a3a6f-->仅 AI 代理模式可用；生成结果单独提示，不自动切换模式。</small></span></label>
+        <details class="subscription-import-advanced"><summary><!--i18n:ui-91a61fdde856cd-->高级选项</summary><label><span>User-Agent</span><input id="managed-subscription-ua" value="clash.meta" autocomplete="off" spellcheck="false" /></label><p><!--i18n:ui-a08105a4f049ea-->通常保持默认即可。下载路径可在上方「订阅下载路径」中选择，不会为下载自动启动核心或切换系统代理。订阅凭据仅在本机存储。</p></details>
+        <div class="subscription-import-actions"><button class="button button-primary" id="managed-subscription-import-button" type="submit" data-node-action-loading aria-busy="false"><!--i18n:ui-e1d1aa5bb05319-->验证并添加</button></div>
       </fieldset>
     </form>
   </dialog>`;
@@ -37,16 +37,16 @@ export function describeSubscriptionImport(result: SubscriptionImportResult): { 
 
 export const subscriptionNetworkMarkup = `
   <details class="subscription-network-options">
-    <summary>订阅下载路径 <span>仅影响本页手动添加与更新</span></summary>
+    <summary><!--i18n:ui-f81f136b4c119a-->订阅下载路径 <span><!--i18n:ui-de744dca941397-->仅影响本页手动添加与更新</span></summary>
     <div class="subscription-network-fields">
-      <label><span>下载方式</span><select id="subscription-download-path">
-        <option value="follow_core">跟随 Serylane（核心未运行时直连）</option>
-        <option value="direct">直连订阅服务</option>
-        <option value="local_proxy">使用指定本地 HTTP 代理</option>
+      <label><span><!--i18n:ui-6146bc6eb70730-->下载方式</span><select id="subscription-download-path">
+        <option value="follow_core"><!--i18n:ui-6de65df29a4ae6-->跟随 Serylane（核心未运行时直连）</option>
+        <option value="direct"><!--i18n:ui-4508ccfc9f27d8-->直连订阅服务</option>
+        <option value="local_proxy"><!--i18n:ui-d054b5ad61b6da-->使用指定本地 HTTP 代理</option>
       </select></label>
-      <label id="subscription-proxy-port-label" hidden><span>127.0.0.1 的 HTTP 代理端口</span><input id="subscription-proxy-port" type="number" min="1" max="65535" step="1" placeholder="例如 7890" /></label>
+      <label id="subscription-proxy-port-label" hidden><span><!--i18n:ui-f579cfffc6b484-->127.0.0.1 的 HTTP 代理端口</span><input id="subscription-proxy-port" type="number" min="1" max="65535" step="1" placeholder="例如 7890"  data-i18n-placeholder="ui-4a9762fc0ac7cb"/></label>
     </div>
-    <p>只使用你已启动的代理；不自动启动核心、不更改系统代理。代理失败不自动改走直连；首次添加没有可用核心时，可明确选择已存在的本地代理。此选项不改变后台用量检查策略。</p>
+    <p><!--i18n:ui-c1488a85eeb928-->只使用你已启动的代理；不自动启动核心、不更改系统代理。代理失败不自动改走直连；首次添加没有可用核心时，可明确选择已存在的本地代理。此选项不改变后台用量检查策略。</p>
   </details>
   <div id="subscription-task-list" class="subscription-task-list" aria-live="polite" hidden></div>
 `;

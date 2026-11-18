@@ -10,6 +10,7 @@ mod diagnostics;
 mod domain_routing;
 mod effective;
 mod error;
+mod i18n;
 mod lifecycle;
 mod local_routing;
 #[cfg(target_os = "macos")]
@@ -193,9 +194,46 @@ async fn rollback_user_rules(
         .map_err(dto)
 }
 
+struct TrayLanguageItems {
+    show: MenuItem<tauri::Wry>,
+    stop: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+}
+
+#[tauri::command]
+fn app_locale() -> i18n::Locale {
+    i18n::active()
+}
+
+#[tauri::command]
+fn set_app_locale(app: AppHandle, preference: String) -> Result<i18n::Locale, AppErrorDto> {
+    if !i18n::valid_preference(&preference) {
+        return Err(dto(AppError::InvalidInput("无效的界面语言".to_owned())));
+    }
+    let selection = {
+        let _settings = user_rules::acquire_presentation_settings(&app).map_err(dto)?;
+        let storage = AppStorage::from_app(&app).map_err(dto)?;
+        let current = storage.save_locale_preference(preference).map_err(dto)?;
+        i18n::activate(i18n::resolve_preference(&current.locale))
+    };
+    if let Some(items) = app.try_state::<TrayLanguageItems>() {
+        let _ = items.show.set_text(i18n::text("显示主窗口"));
+        let _ = items.stop.set_text(i18n::text("停止 Mihomo"));
+        let _ = items.quit.set_text(i18n::text("退出"));
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app.run_on_main_thread(|| {
+        if let Some(marker) = objc2::MainThreadMarker::new() {
+            macos_menu_panel::refresh_locale(marker);
+        }
+    });
+    Ok(selection)
+}
+
 #[tauri::command]
 fn set_app_theme(app: AppHandle, theme: String) -> Result<PublicAppSettings, AppErrorDto> {
     appearance::native_theme(&theme).map_err(dto)?;
+    let _settings = user_rules::acquire_presentation_settings(&app).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
     let settings = appearance::persist_theme(&storage, &theme).map_err(dto)?;
     appearance::apply_native_theme(&app, &settings.theme).map_err(dto)?;
@@ -245,7 +283,8 @@ fn update_settings(
         )));
     }
     app_log::validate_retention_days(settings.app_log_retention_days).map_err(dto)?;
-    let settings = settings.merge_secret(&current);
+    let mut settings = settings.merge_secret(&current);
+    settings.locale.clone_from(&current.locale);
     startup::save_startup_settings(&app, &storage, &current, &settings).map_err(dto)?;
     app_log::set_retention_days(settings.app_log_retention_days);
     if startup::migrate_login_entry(&app, &settings).is_err() {
@@ -1735,6 +1774,7 @@ pub fn run() {
                 .recover_profile_deletion()
                 .map_err(|error| error.to_string())?;
             let settings = storage.settings().map_err(|error| error.to_string())?;
+            i18n::activate(i18n::resolve_preference(&settings.locale));
             app_log::initialize(storage.app_log_path(), settings.app_log_retention_days);
             app_log::record(
                 0,
@@ -1809,10 +1849,18 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let native_tray = false;
             if !native_tray {
-                let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-                let stop_item = MenuItem::with_id(app, "stop", "停止 Mihomo", true, None::<&str>)?;
-                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let show_item =
+                    MenuItem::with_id(app, "show", i18n::text("显示主窗口"), true, None::<&str>)?;
+                let stop_item =
+                    MenuItem::with_id(app, "stop", i18n::text("停止 Mihomo"), true, None::<&str>)?;
+                let quit_item =
+                    MenuItem::with_id(app, "quit", i18n::text("退出"), true, None::<&str>)?;
                 let menu = Menu::with_items(app, &[&show_item, &stop_item, &quit_item])?;
+                app.manage(TrayLanguageItems {
+                    show: show_item,
+                    stop: stop_item,
+                    quit: quit_item,
+                });
                 let mut tray = TrayIconBuilder::with_id(TRAY_ID).tooltip("Serylane");
                 if let Some(icon) = app.default_window_icon() {
                     tray = tray.icon(icon.clone());
@@ -1919,6 +1967,8 @@ pub fn run() {
             validate_user_rules,
             save_user_rules,
             rollback_user_rules,
+            app_locale,
+            set_app_locale,
             set_app_theme,
             update_settings,
             global_traffic_snapshot,

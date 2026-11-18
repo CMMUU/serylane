@@ -21,25 +21,25 @@ export function icon(name: keyof typeof ICONS): string {
 }
 
 export const NAV_ITEMS = [
-  { id: "overview", label: "概览", icon: "home", color: "blue" },
-  { id: "profiles", label: "配置", icon: "cube", color: "purple" },
-  { id: "subscriptions", label: "订阅", icon: "subscription", color: "green" },
-  { id: "proxies", label: "AI 代理", icon: "globe", color: "orange" },
-  { id: "manual", label: "自选节点", icon: "check", color: "green" },
-  { id: "programs", label: "程序代理", icon: "desktop", color: "blue" },
-  { id: "routing", label: "路由", icon: "arrows", color: "purple" },
-  { id: "rules", label: "规则", icon: "list", color: "purple" },
-  { id: "connections", label: "连接", icon: "network", color: "green" },
-  { id: "logs", label: "日志", icon: "document", color: "yellow" },
-  { id: "diagnostics", label: "诊断", icon: "pulse", color: "red" },
-  { id: "settings", label: "设置", icon: "gear", color: "blue" },
+  { id: "overview", label: "概览", labelKey: "ui-fea405f9b01d14", icon: "home", color: "blue" },
+  { id: "profiles", label: "配置", labelKey: "ui-148d195e21b05d", icon: "cube", color: "purple" },
+  { id: "subscriptions", label: "订阅", labelKey: "ui-cf8efc450f718f", icon: "subscription", color: "green" },
+  { id: "proxies", label: "AI 代理", labelKey: "ui-a451c12fed91d7", icon: "globe", color: "orange" },
+  { id: "manual", label: "自选节点", labelKey: "ui-84f1348d1c5c12", icon: "check", color: "green" },
+  { id: "programs", label: "程序代理", labelKey: "ui-dbd32518d4f71c", icon: "desktop", color: "blue" },
+  { id: "routing", label: "路由", labelKey: "ui-b9670c85a4ab93", icon: "arrows", color: "purple" },
+  { id: "rules", label: "规则", labelKey: "ui-1123245d1bed08", icon: "list", color: "purple" },
+  { id: "connections", label: "连接", labelKey: "ui-a5574109f0208e", icon: "network", color: "green" },
+  { id: "logs", label: "日志", labelKey: "ui-7dbac1c20f237b", icon: "document", color: "yellow" },
+  { id: "diagnostics", label: "诊断", labelKey: "ui-40ff6300f9817d", icon: "pulse", color: "red" },
+  { id: "settings", label: "设置", labelKey: "ui-df3d58c7d84b85", icon: "gear", color: "blue" },
 ] as const;
 
 export type ViewName = typeof NAV_ITEMS[number]["id"];
 
 export const navigationMarkup = NAV_ITEMS.filter((item) => item.id !== "programs").map((item) => `
-  <button class="nav-item${item.id === "overview" ? " is-active" : ""}" data-view="${item.id}" title="${item.label}"${item.id === "overview" ? ' aria-current="page"' : ""}>
-    <span class="nav-icon">${icon(item.icon)}</span>${item.label}
+  <button class="nav-item${item.id === "overview" ? " is-active" : ""}" data-view="${item.id}" title="${item.label}" data-i18n-title="${item.labelKey}"${item.id === "overview" ? ' aria-current="page"' : ""}>
+    <span class="nav-icon">${icon(item.icon)}</span><!--i18n:${item.labelKey}-->${item.label}
   </button>`).join("");
 
 /** The surrounding label supplies the accessible name; native checked state is retained. */

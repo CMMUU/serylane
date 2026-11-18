@@ -81,7 +81,7 @@
 <section id="update-signatures">
 <h2>Project update signatures</h2>
 <p>The client’s updater checks the project signature on an update package. If signature or integrity checks fail, stop installation and retain the error. For manual inspection, use the signature files and update manifest actually supplied for that same version in the download center.</p>
-<p>Independent review can use the <a href="https://github.com/CMMUU/serylane/blob/main/scripts/verify-update-signature.mjs" target="_blank" rel="noopener noreferrer">source update-signature verification script</a> and the configured public key at the matching release tag. Use the script and key corresponding to the release; do not accept a replacement key from an unknown source. GitHub is a source-review link, not an alternate installer source.</p>
+<p>Independent review can use the <a href="https://github.com/CMMUU/serylane/blob/main/scripts/verify-update-signature.mjs" target="_blank" rel="noopener noreferrer">source update-signature verification script</a> and the configured public key at the matching release tag. Use the script and key corresponding to the release; do not accept a replacement key from an unknown source.</p>
 </section>
 <section id="system-signing">
 <h2>Project signatures are not OS trust approval</h2>
@@ -96,8 +96,8 @@
 </section>
 <section id="update-downloads">
 <h2>If an update download is interrupted</h2>
-<p>The current source flow uses bounded retry, a no-progress timeout and limited recovery of the same download-center file. The interface distinguishes the center, actual network path and attempt. Waiting to retry remains cancellable while the current proxy keeps running. Installation is offered only after signature, size and SHA-256 checks all pass.</p>
-<p>A retry keeps the selected version, architecture and content identity; a change in “latest” must not silently select another release. There is no fallback source. Network, certificate, file-verification and installation failures are separate, and old history is not evidence of this attempt’s result.</p>
+<p>The current updater checks GitHub directly, then through the running Serylane proxy, then through the download center. If a download fails in transit, the updater can try a later route for the same signed package. The interface shows the active route and attempt. A download can be cancelled while the proxy keeps running.</p>
+<p>Recovery keeps the selected version, platform, architecture, size, SHA-256 and signature. Certificate or integrity failures stop the download. Installation is available after verification and requires confirmation.</p>
 <p>An old installed version still uses its own updater. If it cannot update, use the official download section for a verified full package of the same architecture, keeping the configuration directory. Source behavior is not a claim that the current installed binary already contains it.</p>
 </section>
 <section id="update-installation">

@@ -100,9 +100,16 @@ const updater = read("src-tauri/src/app_update.rs");
 for (const endpoint of [
   "https://downloads.cmmuu.com/api/releases/serylane/latest",
   "https://downloads.cmmuu.com/projects/serylane",
-]) assert.ok(updater.includes(`"${endpoint}"`), `Only download-center product endpoint: ${endpoint}`);
+  "https://files.cmmuu.com/releases/serylane",
+  `https://github.com/CMMUU/${slug}`,
+  `https://api.github.com/repos/CMMUU/${slug}/releases/latest`,
+]) assert.ok(updater.includes(`"${endpoint}"`), `Official product endpoint: ${endpoint}`);
 assert.ok(updater.includes('format!("RouteDeck_{version}_{suffix}")'));
-assert.doesNotMatch(updater.split("mod tests {")[0], /https:\/\/(?:github|gitee)\.com/);
+const updateEndpoints = updater.split("mod tests {")[0].matchAll(/"(https:\/\/(?:api\.)?(?:github|gitee)\.com[^"]*)"/g);
+assert.deepEqual([...updateEndpoints].map(match => match[1]), [
+  `https://github.com/CMMUU/${slug}`,
+  `https://api.github.com/repos/CMMUU/${slug}/releases/latest`,
+]);
 assert.ok(read(".github/workflows/sync-gitee.yml").includes("--repo serylane"));
 assert.ok(read("scripts/sync_gitee.py").includes('SOURCE_REPOS = {"serylane": "serylane"}'));
 assert.ok(read("scripts/updater_release.py").includes('("latest-serylane.json", "https://github.com/CMMUU/serylane")'));

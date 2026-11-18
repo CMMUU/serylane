@@ -65,7 +65,7 @@ export function openAiRecommendationMarkup(rows: OpenAiRecommendation[], current
     row.connectionSamples > 0 ? `连通性样本 ${row.connectionSamples} 次` : "",
   ].filter(Boolean).join(" · ");
   return `<section class="openai-recommendations" aria-labelledby="openai-recommendation-title">
-    <h4 id="openai-recommendation-title">推荐顺序</h4>
+    <h4 id="openai-recommendation-title"><!--i18n:ui-6bc7b9cd0ef919-->推荐顺序</h4>
     <ul role="list">${rows.map(row => {
       const multiplier = prices?.[row.name]?.trafficMultiplier;
       return `<li>
@@ -106,7 +106,7 @@ export function nodeSelectionMarkup(
   recommendations?: OpenAiRecommendation[],
   { draft, pending }: NodePickerState = {},
 ): string {
-  if (!canSelectNode(node)) return '<p class="node-choice-help">此组由配置决定出口，不支持单节点手动选择。</p>';
+  if (!canSelectNode(node)) return "<p class=\"node-choice-help\"><!--i18n:ui-445ecf48dd5138-->此组由配置决定出口，不支持单节点手动选择。</p>";
   const observed = node.manualNode || (typeof node.fixed === "string" ? node.fixed : null) || node.now;
   const liveNames = new Set(node.all);
   const blockReason = (name: string) => !liveNames.has(name) ? "节点已不在当前策略组" : group === OPENAI_GROUP ? aiNodeBlockReason(prices?.[name]) : null;
@@ -125,8 +125,8 @@ export function nodeSelectionMarkup(
   const choiceHelp = !hasAvailable ? `暂无可手动选用的节点。${selectedReason ?? ""}`
     : !selectedAvailable ? `请先选择一个可用节点。${selectedReason ?? ""}` : "";
   return `<form class="node-choice" data-render-key="node-choice:${escapeNode(group)}" data-node-group="${escapeNode(group)}">
-    <label><span>${escapeNode(mode)}</span><select data-render-key="node-choice-select" aria-label="${escapeNode(group)} · 选择节点" ${locked || !hasAvailable ? "disabled" : ""}>
-    ${!selected ? '<option data-render-key="node-choice-placeholder" value="" selected disabled>请选择节点</option>' : ""}
+    <label><span>${escapeNode(mode)}</span><select data-render-key="node-choice-select" aria-label="${escapeNode(group)} · 选择节点" ${locked || !hasAvailable ? "disabled" : ""} data-i18n-aria-label="ui-97c8e3ca436ee1">
+    ${!selected ? "<option data-render-key=\"node-choice-placeholder\" value=\"\" selected disabled><!--i18n:ui-8e5fd775916605-->请选择节点</option>" : ""}
     ${candidates.map(name => {
       const recommendation = recommendations?.find(row => row.name === name);
       const label = recommendation?.rank != null ? `${recommendation.rank}. ${name}` : name;
@@ -135,7 +135,7 @@ export function nodeSelectionMarkup(
     }).join("")}</select></label>
     <button type="submit" class="button${applied ? "" : " button-primary"}" data-render-key="node-choice-apply" data-node-action-loading ${applied ? "data-ai-choice-applied" : ""} aria-busy="${applying}" ${locked || !selectedAvailable || applied ? "disabled" : ""}>${applying ? phaseLabel ?? "正在应用节点…" : applied ? "已应用" : "应用节点"}</button>
     ${restoring || canRestoreAuto(group, node) ? `<button type="button" class="button button-quiet" data-render-key="node-choice-auto" data-node-auto="${escapeNode(group)}" data-node-action-loading aria-busy="${restoring}" ${locked ? "disabled" : ""}>${restoring ? phaseLabel ?? "正在恢复自动…" : "恢复自动"}</button>` : ""}
-  </form><p class="node-choice-help" data-render-key="node-choice-help:${escapeNode(group)}" role="status" ${choiceHelp ? "" : "hidden"}>${escapeNode(choiceHelp)}</p>${node.manualNode && !candidates.includes(node.manualNode) ? '<p class="node-choice-help">原手动节点已不在候选中，请重新选择或恢复自动；不会静默恢复自动。</p>' : ""}`;
+  </form><p class="node-choice-help" data-render-key="node-choice-help:${escapeNode(group)}" role="status" ${choiceHelp ? "" : "hidden"}>${escapeNode(choiceHelp)}</p>${node.manualNode && !candidates.includes(node.manualNode) ? "<p class=\"node-choice-help\"><!--i18n:ui-4c0bc29de5b066-->原手动节点已不在候选中，请重新选择或恢复自动；不会静默恢复自动。</p>" : ""}`;
 }
 
 export function currentNodeMarkup(label: string, group: string, proxies: ProxyMap, details: CurrentNodeDetails | undefined): string {
@@ -157,5 +157,5 @@ export function currentNodeMarkup(label: string, group: string, proxies: ProxyMa
     <strong class="overview-node-name">${escapeNode(resolved.name ?? "无法确定单一出口")}</strong><p class="node-choice-help">${status}</p>
     <p class="overview-node-chain">${resolved.chain.map(escapeNode).join(" → ")}</p>
     <dl class="overview-node-details">${rows.map(([key, value]) => `<div><dt>${key}</dt><dd>${escapeNode(value)}</dd></div>`).join("")}</dl>
-    <button class="button button-quiet" data-overview-node-details="${escapeNode(group)}" ${resolved.name ? "" : 'disabled title="当前无法确定单一节点，请查看策略组"'}>查看完整详情</button></section>`;
+    <button class="button button-quiet" data-overview-node-details="${escapeNode(group)}" ${resolved.name ? "" : 'disabled title="当前无法确定单一节点，请查看策略组"'}><!--i18n:ui-1ee33cf03dd49c-->查看完整详情</button></section>`;
 }

@@ -15,7 +15,7 @@ test("current product documentation matches actual version, capabilities and nod
 
 const source = readFileSync(new URL("../src/app-update.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } }).outputText;
-const { describeAppUpdate, updateSourceLabel, shouldAcceptUpdatePoll } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const { backgroundUpdateVersion, describeAppUpdate, updateSourceLabel, shouldAcceptUpdatePoll } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 const status = (phase, available = true) => ({ phase, info: { available, source: "hk", latestVersion: "v1.0.0" }, downloadedBytes: 50, totalBytes: 100, error: "HTTP 403" });
 
 test("installation only becomes available after native verification of a newer release", () => {
@@ -28,7 +28,7 @@ test("failure and cancel can retry, but active operations cannot start another d
   for (const phase of ["available", "failed", "cancelled"]) assert.equal(describeAppUpdate(status(phase)).canDownload, true);
   for (const phase of ["checking", "downloading", "installing", "ready"]) assert.equal(describeAppUpdate(status(phase)).canDownload, false);
   assert.match(describeAppUpdate(status("available")).detail, /下载中心/);
-  assert.match(describeAppUpdate(status("ahead", false)).detail, /不会自动降级/);
+  assert.match(describeAppUpdate(status("ahead", false)).detail, /保留当前版本/);
   assert.match(describeAppUpdate(status("failed")).detail, /HTTP 403.*重试/);
 });
 test("download progress is bounded and never NaN", () => {
@@ -36,15 +36,25 @@ test("download progress is bounded and never NaN", () => {
   assert.equal(describeAppUpdate({ ...status("downloading"), downloadedBytes: 500 }).progress, 100);
   assert.equal(describeAppUpdate({ ...status("downloading"), totalBytes: 0 }).progress, 0);
 });
-test("update preferences expose only the download center and retry on failure", () => {
+test("update settings display the automatic order and the actual path label", () => {
   const settings = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(settings + source, /GitHub|Gitee|settings-update-source|备用源/);
-  assert.match(settings, /仅使用下载中心/);
-  assert.match(describeAppUpdate({ ...status("available"), info: { ...status("available").info, source: "hk" } }).detail, /下载中心/);
-  assert.match(settings, /稍后可重新检查或下载/);
-  assert.match(describeAppUpdate(status("idle")).detail, /仅使用下载中心/);
-  assert.match(describeAppUpdate({ ...status("failed"), error: null }).detail, /下载中心暂不可用.*重试/);
+  assert.match(settings, /GitHub 直连 → Serylane 代理 → 下载中心/);
+  assert.equal(updateSourceLabel("github"), "GitHub 直连");
+  assert.equal(updateSourceLabel("github_proxy"), "GitHub（Serylane 代理）");
+  assert.equal(updateSourceLabel("hk"), "下载中心");
+  assert.match(describeAppUpdate({ ...status("failed"), error: null }).detail, /更新来源暂不可用.*重试/);
 });
+
+test("background notification deduplicates newer versions and ignores current or failed checks", () => {
+  assert.equal(backgroundUpdateVersion(status("available"), new Set()), "v1.0.0");
+  assert.equal(backgroundUpdateVersion(status("available"), new Set(["v1.0.0"])), null);
+  assert.equal(backgroundUpdateVersion(status("current", false), new Set()), null);
+  assert.equal(backgroundUpdateVersion(status("failed"), new Set()), null);
+  assert.equal(backgroundUpdateVersion({ ...status("failed"), info: null }, new Set()), null);
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.match(main, /app-update-notice-open[\s\S]*?navigate\("settings"\)[\s\S]*?app-update-panel[\s\S]*?scrollIntoView/);
+});
+
 test("updater uses confirmed native installation and separately saved non-network preferences", () => {
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");

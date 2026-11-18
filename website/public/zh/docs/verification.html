@@ -72,7 +72,7 @@ sha256sum '/下载目录/实际安装包文件名.AppImage'</code></pre><p>上�
 </section>
 <section id="update-signatures">
 <h2>应用内更新签名</h2>
-<p>客户端的更新流程会校验更新包的项目签名；签名或校验失败时，应停止安装并保留错误信息。手动查看更新附件时，以下载中心同一版本实际提供的签名文件和更新清单为准。</p><p>需要独立复核时，可查看仓库内的<a href="https://github.com/CMMUU/serylane/blob/main/scripts/verify-update-signature.mjs" target="_blank" rel="noopener noreferrer">更新签名验证脚本</a>及对应标签的配置公钥。务必使用与发行版一致的脚本和公钥，不接受陌生来源替换的密钥。</p><p>GitHub 验证脚本链接仅用于源码复核，不是安装包下载源。</p>
+<p>客户端的更新流程会校验更新包的项目签名；签名或校验失败时，应停止安装并保留错误信息。手动查看更新附件时，以下载中心同一版本实际提供的签名文件和更新清单为准。</p><p>需要独立复核时，可查看仓库内的<a href="https://github.com/CMMUU/serylane/blob/main/scripts/verify-update-signature.mjs" target="_blank" rel="noopener noreferrer">更新签名验证脚本</a>及对应标签的配置公钥。请使用与发行版一致的脚本和公钥。</p>
 </section>
 <section id="system-signing">
 <h2>项目签名不等于系统信任</h2>
@@ -87,7 +87,7 @@ sha256sum '/下载目录/实际安装包文件名.AppImage'</code></pre><p>上�
 </section>
 <section id="update-downloads">
 <h2>下载更新暂时中断时如何处理</h2>
-<p>当前源码的更新下载保留有限重试、无进度超时和同一下载中心文件的有限恢复。界面分别显示下载中心、实际网络路径及当前尝试；等待重试时仍可取消，当前代理保持运行。只有签名、大小与 SHA-256 全部通过后才显示安装按钮。</p><p>当前源码仅使用下载中心，失败后可重试，不切换到其他下载源。重试保留选定版本、系统架构与内容身份，不能因 latest 更新而悄悄换版。网络、证书、文件校验与安装失败分别说明；历史记录不代表本次结果。旧版首次升级仍使用自身更新逻辑；遇到失败可从官网下载区域获取同架构完整包并保留配置目录。以实际发行版本为准。</p>
+<p>当前更新器依次检查 GitHub 直连、经运行中的 Serylane 代理访问 GitHub、下载中心。传输失败时可以从后续路径获取同一签名更新包。界面显示当前路径与尝试次数，下载可以取消，现有代理继续运行。</p><p>恢复下载时会核对选定版本、平台、架构、大小、SHA-256 和签名。证书或文件校验失败时停止下载，检查通过后由用户确认安装。</p><p>旧版首次升级仍使用自身更新逻辑。内置更新失败时，可在官网下载同架构的完整安装包并保留配置目录。</p>
 </section>
 <section id="update-installation">
 <h2>安装失败时先确认阶段</h2>

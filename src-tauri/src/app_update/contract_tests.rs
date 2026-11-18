@@ -125,7 +125,9 @@ impl Fixture {
             .endpoints(vec![format!("http://{address}/manifest").parse().unwrap()])
             .unwrap()
             .no_proxy()
-            .configure_client(|client| client.redirect(transport::redirect_policy()))
+            .configure_client(|client| {
+                client.redirect(transport::redirect_policy(UpdateSource::Hk))
+            })
             .version_comparator(|_, _| true)
             .timeout(Duration::from_secs(15));
         // A test binary has no MSI bundle marker. Only the MSI scenario selects
@@ -182,7 +184,6 @@ impl Fixture {
 
 pub(super) fn ready_session(candidate: &Candidate, bytes: Vec<u8>) -> Mutex<Session> {
     Mutex::new(Session {
-        source: UpdateSource::Hk,
         status: AppUpdateStatus {
             phase: "ready".into(),
             stage: "verified".into(),
@@ -614,4 +615,95 @@ fn updater_native_windows_installer_child() {
         },
     );
     panic!("installer did not transfer control: {result:?}");
+}
+
+#[test]
+fn updater_checks_direct_then_active_local_proxy_then_center() {
+    assert_eq!(available_sources(true).collect::<Vec<_>>(), SOURCE_ORDER);
+    assert_eq!(
+        available_sources(false).collect::<Vec<_>>(),
+        [UpdateSource::Github, UpdateSource::Hk]
+    );
+    let direct = manifest_location(UpdateSource::Github, Some("v1.2.3")).unwrap();
+    let proxied = manifest_location(UpdateSource::GithubProxy, Some("v1.2.3")).unwrap();
+    assert_eq!(direct.endpoints, proxied.endpoints);
+    assert_eq!(direct.expected_version, Some(StableVersion(1, 2, 3)));
+    assert_eq!(
+        direct.endpoints[0].as_str(),
+        "https://github.com/CMMUU/serylane/releases/download/v1.2.3/latest-serylane.json"
+    );
+    assert!(manifest_location(UpdateSource::Github, Some("v1.2.3-rc.1")).is_err());
+}
+
+#[test]
+fn updater_checks_only_until_the_first_verified_manifest() {
+    use UpdateSource::{Github, GithubProxy, Hk};
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(
+        b"update route fixture".to_vec(),
+        "9.0.1",
+        &test_executable(directory.path()),
+        None,
+    );
+    for (proxy_ready, success, expected) in [
+        (true, Some(Github), &[Github][..]),
+        (true, Some(GithubProxy), &[Github, GithubProxy][..]),
+        (true, Some(Hk), &[Github, GithubProxy, Hk][..]),
+        (false, Some(Hk), &[Github, Hk][..]),
+        (true, None, &[Github, GithubProxy, Hk][..]),
+    ] {
+        let mut attempted = Vec::new();
+        let (candidate, channels) = tauri::async_runtime::block_on(first_update_candidate(
+            proxy_ready,
+            "route-fixture",
+            |source| {
+                attempted.push(source);
+                std::future::ready(if success == Some(source) {
+                    Ok(fixture.candidate.clone())
+                } else {
+                    Err(failure("unavailable"))
+                })
+            },
+        ));
+        assert_eq!(attempted, expected);
+        assert_eq!(
+            channels
+                .iter()
+                .map(|channel| channel.source)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(candidate.is_some(), success.is_some());
+        for channel in channels {
+            assert_eq!(channel.error.is_none(), success == Some(channel.source));
+        }
+    }
+}
+
+#[test]
+fn updater_fallback_requires_the_same_signed_build() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(
+        b"signed build fixture".to_vec(),
+        "9.0.1",
+        &test_executable(directory.path()),
+        None,
+    );
+    let selected = &fixture.candidate;
+    let mut alternate = selected.clone();
+    alternate.source = UpdateSource::GithubProxy;
+    assert!(same_build(selected, &alternate));
+    for field in ["version", "platform", "size", "hash", "signature"] {
+        let mut changed = alternate.clone();
+        match field {
+            "version" => changed.version = StableVersion(9, 0, 2),
+            "platform" => changed.platform_key = "different-architecture".into(),
+            "size" => changed.size += 1,
+            "hash" => changed.sha256 = "0".repeat(64),
+            "signature" => changed.update.signature.push('A'),
+            _ => unreachable!(),
+        }
+        assert!(!same_build(selected, &changed), "{field}");
+    }
 }

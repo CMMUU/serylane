@@ -1,3 +1,4 @@
+import { formatLocale } from "./i18n";
 import { sameNodeTestScope, nodeTestRunning, nodeTestSummary, type NodeTestScope, type NodeTestSnapshot } from './node-test';
 
 // One UI operation at a time; a stale poll or changed subscription cannot adopt a result.
@@ -77,8 +78,8 @@ export function aiHealthMarkup(view: ReturnType<ReturnType<typeof createAiHealth
   const state = {pending: '未测试', testing: '检查中', passed: '可达', timeout: '超时', failed: '检测未通过', unavailable: '暂未测得'};
   return `<section class="ai-health-results" data-render-key="ai-health-results" aria-live="polite" aria-busy="${pending || running}">
     <p role="status">${escape(notice || (s ? nodeTestSummary(s) : ''))}</p>
-    ${s ? `<p class="hint">${s.finishedAt ? '上次检查完成' : '本次开始'}：${escape(new Date(s.finishedAt ?? s.startedAt ?? '').toLocaleTimeString('zh-CN', {hour12: false}))} · 基础连通性检测，不代表账号登录或模型请求已验证。</p>` : ''}
-    ${running ? `<progress data-render-key="ai-health-progress" max="${s?.nodes.length || 1}" value="${completed}" aria-label="健康检查进度"></progress><button type="button" class="button button-quiet" data-render-key="ai-health-cancel" data-openai-action="health-cancel" data-node-action-loading aria-busy="${cancelling}" ${cancelling ? 'disabled' : ''}>${cancelling ? '正在取消…' : '取消检查'}</button>` : ''}
-    ${s ? `<details data-render-key="ai-health-details" ${resultsOpen ? 'open' : ''}><summary>节点检查结果 · ${completed}/${s.nodes.length}</summary><ul>${s.nodes.map(n => `<li><span>${escape(n.name)}</span><strong>${state[n.state]}${n.delayMs !== null ? ` · ${n.delayMs} ms` : ''}</strong></li>`).join('')}</ul></details>` : ''}
+    ${s ? `<p class="hint"><!--i18n:ui-71b8e243a46b70-->${s.finishedAt ? '上次检查完成' : '本次开始'}：${escape(new Date(s.finishedAt ?? s.startedAt ?? '').toLocaleTimeString(formatLocale(), {hour12: false}))} · 基础连通性检测，不代表账号登录或模型请求已验证。</p>` : ''}
+    ${running ? `<progress data-render-key="ai-health-progress" max="${s?.nodes.length || 1}" value="${completed}" aria-label="健康检查进度" data-i18n-aria-label="ui-012637f27b354d"></progress><button type="button" class="button button-quiet" data-render-key="ai-health-cancel" data-openai-action="health-cancel" data-node-action-loading aria-busy="${cancelling}" ${cancelling ? 'disabled' : ''}>${cancelling ? '正在取消…' : '取消检查'}</button>` : ''}
+    ${s ? `<details data-render-key="ai-health-details" ${resultsOpen ? 'open' : ''}><summary><!--i18n:ui-1dd5092c662e29-->节点检查结果 · ${completed}/${s.nodes.length}</summary><ul>${s.nodes.map(n => `<li><span>${escape(n.name)}</span><strong>${state[n.state]}${n.delayMs !== null ? ` · ${n.delayMs} ms` : ''}</strong></li>`).join('')}</ul></details>` : ''}
   </section>`;
 }

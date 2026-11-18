@@ -87,6 +87,12 @@ export type OpenAiPolicyTask = {
   result: OpenAiPolicy | null;
 };
 
+export type AppLocale = {
+  preference: string;
+  language: string;
+  formatLocale: string;
+};
+
 export type AppSettings = {
   schemaVersion: number;
   locale: string;
@@ -406,7 +412,7 @@ export type AppInfo = {
   targetArch: string;
 };
 
-export type UpdateSource = "hk";
+export type UpdateSource = "github" | "github_proxy" | "hk";
 export type AppUpdateInfo = {
   currentVersion: string;
   latestVersion: string;

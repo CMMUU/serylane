@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.44 - 2026-11-19
+
+- Offer 11 interface languages by their native names. Changes apply in the current window and are saved automatically. Arabic uses a right-to-left layout.
+- Check update routes in order from GitHub direct, through the running Serylane proxy, then the download center. Startup checks show a card for a new version with a shortcut to Software Update.
+- Keep the selected signed build fixed during download recovery and verify the signature, size and SHA-256 before offering installation.
+
 ## 0.7.43 - 2026-11-19
 
 - Use a standard macOS AppKit menu with system appearance, keyboard navigation and dismissal. Left and right clicks use the same menu; selecting a command closes it without cancelling the operation.

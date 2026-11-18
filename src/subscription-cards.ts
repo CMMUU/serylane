@@ -1,3 +1,4 @@
+import { formatLocale } from "./i18n";
 import type { OpenAiPolicyTask, SubscriptionOverview, SubscriptionUsage, SubscriptionStatus, ProfileRecord } from "./types";
 
 // A delayed full-page read must not replace a newer background quota event.
@@ -25,13 +26,13 @@ export function subscriptionBytes(value: unknown): string {
   if (bytes === 0) return "0 B";
   const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
   const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: unit > 0 ? 1 : 0 }).format(bytes / 1024 ** unit)} ${units[unit]}`;
+  return `${new Intl.NumberFormat(formatLocale(), { maximumFractionDigits: unit > 0 ? 1 : 0 }).format(bytes / 1024 ** unit)} ${units[unit]}`;
 }
 
 export function subscriptionDate(value: string | null | undefined): string {
   if (!value) return "尚未记录";
   const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date) : "尚未记录";
+  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(formatLocale(), { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date) : "尚未记录";
 }
 
 export function describeSubscriptionUsage(usage: SubscriptionUsage | null | undefined, now = Date.now()) {
@@ -49,7 +50,7 @@ export function describeSubscriptionUsage(usage: SubscriptionUsage | null | unde
   return {
     upload, download, total, used, quota, percent, remaining, expired, exhausted,
     progress: percent === null ? null : Math.max(0, Math.min(100, percent)),
-    expires: validExpiry ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(validExpiry) : "服务商未提供有效时间",
+    expires: validExpiry ? new Intl.DateTimeFormat(formatLocale(), { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(validExpiry) : "服务商未提供有效时间",
     state: exhausted ? "额度已用尽" : percent !== null && percent >= 90 ? "额度即将用尽" : used === null || quota === null ? "用量信息不完整" : "剩余流量",
   };
 }
@@ -71,9 +72,9 @@ function subscriptionNotices(status: SubscriptionStatus | null | undefined, hasU
     return parts.filter(Boolean).join(' · ');
   };
   const configDetail = configFailure && config ? detail(config) : "";
-  const markup = [config?.lastError ? `<p class="subscription-alert is-error">订阅配置更新未完成 · ${escape(config.lastError)}${configDetail ? `<br><small>${escape(configDetail)}</small>` : ""}</p>` : '',
-    quota?.lastError ? `<p class="subscription-alert">用量信息暂未更新${hasUsage ? " · 保留上次记录" : ""}。${escape(quota.lastError)}</p>` : '',
-    legacyError ? `<p class="subscription-alert">上次订阅检查未完成 · ${escape(legacyError)}（旧版记录，未区分配置与用量）</p>` : '',
+  const markup = [config?.lastError ? `<p class="subscription-alert is-error"><!--i18n:ui-a3f4d801b3488f-->订阅配置更新未完成 · ${escape(config.lastError)}${configDetail ? `<br><small>${escape(configDetail)}</small>` : ""}</p>` : '',
+    quota?.lastError ? `<p class="subscription-alert"><!--i18n:ui-a7164c4be2cacb-->用量信息暂未更新${hasUsage ? " · 保留上次记录" : ""}。${escape(quota.lastError)}</p>` : '',
+    legacyError ? `<p class="subscription-alert"><!--i18n:ui-d43ec27ec76fef-->上次订阅检查未完成 · ${escape(legacyError)}（旧版记录，未区分配置与用量）</p>` : '',
   ].join('');
   return { heading, tone: configFailure ? "error" : heading ? "warning" : null, markup };
 }
@@ -125,21 +126,21 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
   const remaining = usageData ? usage.state === "剩余流量" ? `剩余 ${subscriptionBytes(usage.remaining)}` : usage.state : "";
   const progress = usage.progress === null
     ? '<div class="subscription-usage-track is-unknown" aria-hidden="true"></div>'
-    : `<div class="subscription-usage-track" role="progressbar" aria-label="${escape(profile.displayName)} 套餐流量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${usage.progress.toFixed(2)}" aria-valuetext="已用 ${subscriptionBytes(usage.used)}，总额度 ${subscriptionBytes(usage.quota)}${usage.exhausted ? "，额度已用尽" : ""}"><span style="width:${usage.progress.toFixed(2)}%"></span></div>`;
+    : `<div class="subscription-usage-track" role="progressbar" aria-label="${escape(profile.displayName)} 套餐流量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${usage.progress.toFixed(2)}" aria-valuetext="已用 ${subscriptionBytes(usage.used)}，总额度 ${subscriptionBytes(usage.quota)}${usage.exhausted ? "，额度已用尽" : ""}" data-i18n-aria-label="ui-48193e8c0fba75"><span style="width:${usage.progress.toFixed(2)}%"></span></div>`;
   const id = escape(profile.id);
   const button = (action: string, label: string, extra = "") => `<button type="button" class="button button-quiet${action === "delete" ? " button-danger" : ""}" data-subscription-action="${action}" data-profile-id="${id}" ${refreshing ? "disabled" : extra}>${escape(refreshing && action === "refresh" ? "刷新中…" : label)}</button>`;
-  const recommendation = recommendationRank ? `<span class="subscription-recommendation-rank" title="上次筛选 AI 推荐第 ${recommendationRank} 名">${recommendationRank}.</span>` : "";
+  const recommendation = recommendationRank ? `<span class="subscription-recommendation-rank" title="上次筛选 AI 推荐第 ${recommendationRank} 名" data-i18n-title="ui-7ed29ed34f7a1e">${recommendationRank}.</span>` : "";
   return `<article class="subscription-entry subscription-tile${subscription.active ? " is-active" : ""}${warning ? " has-warning" : ""}" data-render-key="${id}" data-subscription-id="${id}" tabindex="0"${subscription.active ? ' aria-current="true"' : ''}>
     <div class="subscription-entry-head">
       <div class="subscription-identity">
         <h3 title="${escape(profile.displayName)}">${recommendation}<span class="subscription-name">${escape(profile.displayName)}</span></h3>
-        <p>${mode}模式${summary ? ` · ${summary.nodeCount} 节点` : ""}${recommendationRank ? " · 上次筛选 AI 推荐" : ""}</p>
+        <p><!--i18n:ui-5e4a8b64aa2328-->${mode}模式${summary ? ` · ${summary.nodeCount} 节点` : ""}${recommendationRank ? " · 上次筛选 AI 推荐" : ""}</p>
       </div>
       <div class="subscription-quick-actions">${button("refresh", "刷新")}${button("activate", subscription.active ? "已选用" : "选用", subscription.active ? "disabled" : "")}</div>
     </div>
-    <section class="subscription-usage" aria-label="套餐流量">
+    <section class="subscription-usage" aria-label="套餐流量" data-i18n-aria-label="ui-53c84c0becd0c1">
       <div class="subscription-usage-label">
-        <span>已用 <strong>${subscriptionBytes(usage.used)}</strong> / ${usage.quota === null ? "额度未提供" : subscriptionBytes(usage.quota)}</span>
+        <span><!--i18n:ui-937683da32c11c-->已用 <strong>${subscriptionBytes(usage.used)}</strong> / ${usage.quota === null ? "额度未提供" : subscriptionBytes(usage.quota)}</span>
         <span>${remaining}</span>
       </div>
       ${progress}
@@ -149,24 +150,24 @@ export function subscriptionCardMarkup(subscription: SubscriptionOverview, task:
         <dt>${usage.expired ? "到期时间 · 已到期" : "到期时间"}</dt>
         <dd>${usage.expires}</dd>
       </div>
-      <div><dt>配置更新</dt><dd>${subscriptionDate(subscription.latestFetchedAt)}</dd></div>
+      <div><dt><!--i18n:ui-3e69a96a31f975-->配置更新</dt><dd>${subscriptionDate(subscription.latestFetchedAt)}</dd></div>
     </dl>
     <details class="subscription-more"${expanded ? " open" : ""}>
-      <summary aria-label="${escape(profile.displayName)}，${escape(observation)}，详情与更多操作">
+      <summary aria-label="${escape(profile.displayName)}，${escape(observation)}，详情与更多操作" data-i18n-aria-label="ui-a72fdf4d5077d9">
         <span class="subscription-observation${observationTone ? ` is-${observationTone}` : ""}">${escape(observation)}</span>
-        <span class="subscription-more-label">详情<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
+        <span class="subscription-more-label"><!--i18n:ui-979a332955c855-->详情<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
       </summary>
       <div class="subscription-more-body">
         ${notices.markup}
         <dl class="subscription-detail-facts">
-          <div><dt>订阅来源</dt><dd>${escape(host)} · 凭据已隐藏</dd></div>
-          <div><dt>配置状态</dt><dd>${configuration}${summary ? ` · ${summary.nodeCount} 节点 · ${summary.proxyProviderCount} 提供器` : ""}</dd></div>
-          <div><dt>上传</dt><dd>${subscriptionBytes(usage.upload)}</dd></div>
-          <div><dt>下载</dt><dd>${subscriptionBytes(usage.download)}</dd></div>
-          <div><dt>用量采样</dt><dd>${sampleAt ? subscriptionDate(sampleAt) : "尚无采样"}</dd></div>
-          <div><dt>最近用量检查</dt><dd>${subscriptionDate(usageCheckedAt)}</dd></div>
-          <div><dt>配置文件</dt><dd>${subscriptionBytes(latestMetadata?.bytes)} · ${subscription.revisionCount} 个版本</dd></div>
-          <div><dt>灾备状态</dt><dd>${policyText}${failed ? ` · ${escape(task?.error ?? "请重试")}` : ""}</dd></div>
+          <div><dt><!--i18n:ui-7c4b9fed3f6961-->订阅来源</dt><dd><!--i18n:ui-3b1456c2f5ba41-->${escape(host)} · 凭据已隐藏</dd></div>
+          <div><dt><!--i18n:ui-5c08da81dc7a89-->配置状态</dt><dd>${configuration}${summary ? ` · ${summary.nodeCount} 节点 · ${summary.proxyProviderCount} 提供器` : ""}</dd></div>
+          <div><dt><!--i18n:ui-9e07e3c0532d49-->上传</dt><dd>${subscriptionBytes(usage.upload)}</dd></div>
+          <div><dt><!--i18n:ui-4673a230616561-->下载</dt><dd>${subscriptionBytes(usage.download)}</dd></div>
+          <div><dt><!--i18n:ui-e8d09f5882fc03-->用量采样</dt><dd>${sampleAt ? subscriptionDate(sampleAt) : "尚无采样"}</dd></div>
+          <div><dt><!--i18n:ui-f705376719935d-->最近用量检查</dt><dd>${subscriptionDate(usageCheckedAt)}</dd></div>
+          <div><dt><!--i18n:ui-1d27f02ed278eb-->配置文件</dt><dd><!--i18n:ui-c1331c9ab08e23-->${subscriptionBytes(latestMetadata?.bytes)} · ${subscription.revisionCount} 个版本</dd></div>
+          <div><dt><!--i18n:ui-7d6a8ae0450f99-->灾备状态</dt><dd>${policyText}${failed ? ` · ${escape(task?.error ?? "请重试")}` : ""}</dd></div>
         </dl>
         <p class="subscription-usage-note">${usageNote}</p>
         <div class="toolbar">${button(generating ? "openai-cancel" : "openai-generate", generating ? `停止生成${taskProgress}` : profile.openaiPolicy.enabled ? "重新生成灾备" : "OpenAI 灾备", task?.running && !taskForProfile ? "disabled" : "")}${button("edit", "编辑信息")}${button("versions", "版本")}${button("delete", "删除")}</div>

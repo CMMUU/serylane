@@ -1,8 +1,8 @@
 export const THEME_OPTIONS = [
-  { id: "light", label: "浅色", description: "清爽浅底，清晰深字" },
-  { id: "dark", label: "深色", description: "中性炭灰，柔和低亮" },
-  { id: "purple", label: "深紫", description: "深紫底色，紫色光晕" },
-  { id: "system", label: "跟随系统", description: "自动切换浅色与深色" },
+  { id: "light", label: "浅色", labelKey: "ui-aa0819dfc4d8d7", description: "清爽浅底，清晰深字", descriptionKey: "ui-9deec466d219f0" },
+  { id: "dark", label: "深色", labelKey: "ui-a6b75d0680322a", description: "中性炭灰，柔和低亮", descriptionKey: "ui-9ceab8507954fa" },
+  { id: "purple", label: "深紫", labelKey: "ui-f48bebbe058511", description: "深紫底色，紫色光晕", descriptionKey: "ui-5bc4a37610dade" },
+  { id: "system", label: "跟随系统", labelKey: "ui-217cfe7db1e3d1", description: "自动切换浅色与深色", descriptionKey: "ui-68450ce0d27dec" },
 ] as const;
 
 export type ThemePreference = (typeof THEME_OPTIONS)[number]["id"];

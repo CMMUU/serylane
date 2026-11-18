@@ -28,7 +28,7 @@ test("subscription AI ranks use comparable quality and a near-tie backup, indepe
   legacy.profile.openaiPolicy.benchmarkVersion = 1;
   assert.deepEqual([...subscriptionRecommendationRanks([primary, weaker, backup, expired, legacy], now)], [["backup", 1], ["primary", 2], ["weaker", 3]]);
   const html = subscriptionCardMarkup(backup, null, now, false, 1);
-  assert.match(html, /AI 推荐第 1 名">1\.<\/span><span class="subscription-name">测试订阅/);
+  assert.match(html, /AI 推荐第 1 名"[^>]*>1\.<\/span><span class="subscription-name">测试订阅/);
   assert.match(html, /上次筛选 AI 推荐<\/p>/);
   assert.match(html, /data-subscription-action="activate"[^>]*>选用/);
   assert.doesNotMatch(html, /aria-current/);
@@ -136,7 +136,7 @@ test("one remote subscription form and one add entry; overview only navigates an
   assert.match(main, /#overview-go-subscriptions.*navigate\("subscriptions"\)/);
   assert.match(main, /id="yaml-file"/); assert.match(main, /id="create-inline"/);
   assert.match(subscriptionImportMarkup, /<dialog[^>]*id="managed-subscription-panel"[^>]*aria-labelledby="managed-subscription-title"/);
-  assert.match(subscriptionImportMarkup, /<details class="subscription-import-advanced"><summary>高级选项/);
+  assert.match(subscriptionImportMarkup, /<details class="subscription-import-advanced"><summary>(?:<!--i18n:[a-z0-9-]+-->)?高级选项/);
   assert.match(subscriptionImportMarkup, /id="managed-subscription-activate" type="checkbox" \/>/);
   assert.match(read("api.ts"), /activateAfterImport = false/);
   assert.match(read("subscription-cards.css"), /#managed-subscription-panel:not\(\[open\]\)[^{]+\{ display: none; \}/);
@@ -162,6 +162,11 @@ test("import messages distinguish saving, explicit selection, duplicates and ind
 
 const apiSource = ts.createSourceFile("api.ts", read("api.ts"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const errorDeclaration = apiSource.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === "errorMessage");
+const localeFixture = {
+  setLocalizedText: (node, text) => { node.textContent = text ?? ""; },
+  setPlainText: (node, text, fallback) => { node.textContent = text ?? fallback; },
+  sourceText: node => node.textContent ?? "",
+};
 const errorContext = vm.createContext({});
 vm.runInContext(ts.transpileModule(errorDeclaration.getText(apiSource).replace("export ", ""), { compilerOptions: {target: ts.ScriptTarget.ES2020} }).outputText, errorContext);
 const realErrorMessage = errorContext.errorMessage;
@@ -182,7 +187,7 @@ function importControllerFixture(options = {}) {
   const listeners = new Map();
   element("#managed-subscription-form").querySelector = () => null;
   element("#managed-subscription-panel").open = options.view !== "overview";
-  const context = vm.createContext({
+  const context = vm.createContext({ ...localeFixture,
     $, console, Array, Error, HTMLElement: FixtureElement, viewNavigationRevision: 0,
     subscriptionImporting: false, subscriptionDraftInitialized: true, subscriptionImportRevision: 0, subscriptionDialogRevision: 1,
     renderSubscriptionImportVisibility() {},
@@ -276,7 +281,7 @@ test("default selection requires an authoritative empty active profile; reopenin
     const panel = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
     const inputs = { "#managed-subscription-activate": checkbox, "#managed-subscription-panel": panel, "#subscription-download-path": { selectedOptions: [] } };
     const focused = [];
-    const context = vm.createContext({ Boolean, subscriptionImporting: false, subscriptionDraftInitialized: false, subscriptionDialogRevision: 0,
+    const context = vm.createContext({ ...localeFixture, Boolean, subscriptionImporting: false, subscriptionDraftInitialized: false, subscriptionDialogRevision: 0,
       subscriptionActivationExplicit: false, subscriptionActivationReconciled: false,
       store: { appInfo, activeProfile, view: "subscriptions" }, renderSubscriptionActivationHint() {},
       syncModalScrollLock() {}, renderSubscriptionImportVisibility() {},
@@ -298,7 +303,7 @@ test("a stale auto-activation default does not replace a newly active profile; e
   const source = ts.createSourceFile("main.ts", read("main.ts"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "renderSubscriptionActivationHint");
   const checkbox = { checked: true }, hint = { textContent: "" };
-  const context = vm.createContext({
+  const context = vm.createContext({ ...localeFixture,
     subscriptionImporting: false, subscriptionActivationExplicit: false, subscriptionActivationReconciled: false,
     store: { activeProfile: { profile: { id: "new-current" } }, runtime: { phase: "running" } },
     $: selector => selector === "#managed-subscription-activate" ? checkbox : hint,
@@ -320,7 +325,7 @@ test("a late cancel outcome cannot change a newer task's shared modal button", a
   for (const rejection of [false, true]) {
     let deliver;
     const notices = [], calls = [];
-    const context = vm.createContext({
+    const context = vm.createContext({ ...localeFixture,
       subscriptionCancellationPending: new Set(), subscriptionImportTaskId: "old",
       subscriptionTasks: new Map([["old", { canCancel: true }], ["new", { canCancel: false }]]),
       toast: (...args) => notices.push(args),

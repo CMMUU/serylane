@@ -1,6 +1,6 @@
 # Serylane — 开源 Mihomo 桌面代理客户端
 
-Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux 提供中文订阅、配置、节点、分流规则及系统代理管理。AI 工具域名路由默认关闭。
+Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux 提供订阅、配置、节点、分流规则及系统代理管理。AI 工具域名路由默认关闭。
 
 **Serylane is an open-source Mihomo desktop proxy client for Windows, macOS and Linux.** Optional AI domain routing runs inside Mihomo and is off by default. TUN availability differs by platform; see the compatibility guide.
 
@@ -9,13 +9,15 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 ## 下载与更新
 
 - [官网](https://serylane.cmmuu.com/) · **[下载中心](https://downloads.cmmuu.com/projects/serylane)** · [源码仓库](https://github.com/CMMUU/serylane)
-- 官网和应用内更新只使用下载中心。中心不可用、目标安装包缺失或校验失败时提示重试，不切换其他下载来源，不提供旧版本或其他架构替代包。
+- 官网安装包由下载中心提供。应用内按 GitHub 直连、经已运行的 Serylane 本地代理访问 GitHub、下载中心的顺序检查正式版。
 - Windows、macOS、Linux 各提供 x64 / ARM64 入口；macOS 请区分 **Intel 芯片（x64）** 与 **Apple 芯片（M 系列，ARM64）**。
-- 每次检查或点击下载查询中心已核验的稳定发行。源码版本不等于已发布版本，是否可下载以中心实时结果为准。
+- 自动检查开启时，应用在启动后检查。发现新版本时，点击右下角卡片进入「设置 → 软件更新」。官网每次点击安装包都会核对下载中心的当前发行。
 - 下载有界重试，可取消；签名和 SHA-256 通过后才允许确认安装。检查与下载不停止代理，确认安装和重启会短暂中断连接。Linux 内置更新适用于 AppImage。
 - **v0.7.24–v0.7.27 内置安装失败的用户**：首次从下载中心获取已正式发布的 v0.7.28 或更高修复版完整安装包，退出旧版后覆盖原位置并保留配置目录。旧更新器不会先执行新版修复代码。
 
 ## 当前功能
+
+- **语言**：设置中可选择 11 种语言。选项显示各自的母语名称，切换在当前窗口生效并自动保存。
 
 - **订阅与配置**使用「订阅 → 添加订阅」在弹窗中填写。点弹窗外或按 Esc 收起，重新打开可继续当前会话的草稿；已提交的导入在后台继续。订阅卡对齐展示选用状态、套餐用量、到期与配置更新，展开可查看用量采样和异常详情。支持配置校验和版本回滚。
 - **选点**：自选节点与 AI 代理互斥。自选模式保留订阅策略组与规则。AI 代理重新筛选后，按连接表现、倍率和延迟推荐候选，显示编号及当前出口。当前节点健康时继续使用，确认故障后按排名选择新连接的出口；仍可手动选点：点击「应用节点」后，只有核心确认所选节点为手动固定的实际出口，按钮才变灰并显示「已应用」。切换只影响命中该组的新连接。订阅推荐编号供手动选用。
@@ -29,8 +31,9 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 <!-- product-contract:start -->
 | 源码事实 | 当前值 |
 | --- | --- |
-| 源码版本 | 0.7.43（不代表已经发行） |
-| 产品下载来源 | 仅下载中心；失败提示重试 |
+| 源码版本 | 0.7.44（不代表已经发行） |
+| 官网安装包 | 下载中心 |
+| 应用内更新 | GitHub 直连 → Serylane 本地代理 → 下载中心 |
 | AI 合格节点范围 | 1–10 个；单节点没有备用 |
 | 程序代理 | 暂时停用 |
 | 增强稳定灾备 | 暂时停用 |

@@ -1,3 +1,4 @@
+import { applyAppLocale, formatLocale, initialLocale, localeOptions, message, observeLocalizedMarkup, setLocalizedDate, setPlainText, setLocalizedText, setMessage, sourceText } from "./i18n";
 import { appLifecycle, type LifecycleSnapshot } from "./app-lifecycle";
 import { PageReads } from "./read-coordinator";
 import { stableMarkup } from "./stable-dom";
@@ -29,13 +30,12 @@ import { canStartRuntime, networkToggleIntent, type RuntimeStartMode } from "./r
 import { proxyPresentation, type ProxyActivity } from "./proxy-state";
 import { prepareTunForStart } from "./tun-preflight";
 import { type ProxyControlRequest, type ProxyControlSnapshot, api, errorMessage, revisionLabel } from "./api";
-import { describeAppUpdate, updateSourceLabel, shouldAcceptUpdatePoll } from "./app-update";
+import { backgroundUpdateVersion, describeAppUpdate, updateSourceLabel, shouldAcceptUpdatePoll } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { mountRuleManager, ruleManagerMarkup } from "./rule-manager";
 import { mountDomainRouting, domainRoutingMarkup, type DomainRouteState } from "./domain-routing";
 import { syncProxyCompatibilityPlatform, proxyCompatibilityMarkup } from "./program-proxy";
 import {
-  THEME_OPTIONS,
   ThemeController,
   isThemePreference,
   themeColorScheme,
@@ -44,6 +44,7 @@ import type { ThemePreference, ThemeSnapshot } from "./theme";
 import type {
   ConnectionFeedback,
   AppInfo,
+  AppLocale,
   AppSettings,
   AppUpdateInfo,
   AppUpdateStatus,
@@ -172,16 +173,17 @@ function pageRead(key: string, selector: string, operation: (current: () => bool
     const current = () => context === pageContext();
     if (!current()) return;
     const button = document.querySelector<HTMLButtonElement>(selector);
-    const label = button?.textContent ?? '';
-    if (button) { button.disabled = true; button.textContent = '正在刷新…'; button.setAttribute('aria-busy', 'true'); }
+    const label = button ? sourceText(button) : "";
+    if (button) { button.disabled = true; setLocalizedText(button, '正在刷新…'); button.setAttribute('aria-busy', 'true'); }
     try { await operation(current); }
     catch (error) { if (current()) toast(errorMessage(error), 'error'); }
-    finally { if (button) { button.disabled = false; button.textContent = label; button.removeAttribute('aria-busy'); } }
+    finally { if (button) { button.disabled = false; setLocalizedText(button, label); button.removeAttribute('aria-busy'); } }
   });
 }
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("#app not found");
+app.hidden = true;
 const appIconUrl = new URL("../assets/brand/app-icon-128.png", import.meta.url).href;
 let subscriptionImporting = false;
 let subscriptionImportTaskId: string | null = null;
@@ -256,36 +258,36 @@ app.innerHTML = `
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark"><img src="${appIconUrl}" alt="" width="40" height="40" /></div>
-        <div><strong>Serylane</strong><span>轻量稳定代理客户端</span></div>
+        <div><strong>Serylane</strong><span><!--i18n:ui-4597b50b7c9a7a-->轻量稳定代理客户端</span></div>
       </div>
-      <nav class="nav-list" aria-label="主导航">${navigationMarkup}</nav>
+      <nav class="nav-list" aria-label="主导航" data-i18n-aria-label="ui-9bae680405099f">${navigationMarkup}</nav>
       <div class="sidebar-footer">
         <div class="sidebar-runtime-status">
           <span class="status-dot" id="sidebar-status-dot"></span>
-          <span id="sidebar-status">代理核心 · 未读取</span>
+          <span id="sidebar-status"><!--i18n:ui-de6eb56d1004c2-->代理核心 · 未读取</span>
         </div>
-        <div class="global-traffic-compact" id="global-traffic-compact" aria-label="全局实时流量">
-          <span class="traffic-upload"><b>上传</b><strong id="global-upload-rate">—</strong></span>
-          <span class="traffic-download"><b>下载</b><strong id="global-download-rate">—</strong></span>
+        <div class="global-traffic-compact" id="global-traffic-compact" aria-label="全局实时流量" data-i18n-aria-label="ui-4d283fbd492ab8">
+          <span class="traffic-upload"><b><!--i18n:ui-9e07e3c0532d49-->上传</b><strong id="global-upload-rate">—</strong></span>
+          <span class="traffic-download"><b><!--i18n:ui-4673a230616561-->下载</b><strong id="global-download-rate">—</strong></span>
         </div>
       </div>
       <span class="sidebar-version" id="sidebar-version"></span>
     </aside>
     <main class="main-content">
-      <header class="topbar" aria-label="应用状态与全局控制">
-        <div class="page-heading"><h1 id="page-title">概览</h1><p class="page-subtitle">AI 工具与自定义域名的独立出口</p><div class="application-status-meta"><span id="application-profile-state">未选择订阅</span><span id="application-mode-state">Manual</span></div></div>
+      <header class="topbar" aria-label="应用状态与全局控制" data-i18n-aria-label="ui-28f29edbfaa3f4">
+        <div class="page-heading"><h1 id="page-title"><!--i18n:ui-fea405f9b01d14-->概览</h1><p class="page-subtitle"><!--i18n:ui-9434c6acda888d-->AI 工具与自定义域名的独立出口</p><div class="application-status-meta"><span id="application-profile-state"><!--i18n:ui-99b5e36f4c7406-->未选择订阅</span><span id="application-mode-state"><!--i18n:ui-3e719c15585310-->本地端口</span></div></div>
         <div class="topbar-actions">
-          <span class="core-toolbar-label">代理核心</span>
+          <span class="core-toolbar-label"><!--i18n:ui-eb67cd43436ddc-->代理核心</span>
           <div class="global-secondary-actions">
-            <span class="platform-chip" id="platform-chip">检测平台中</span>
-            <button class="button status-mode-button" id="global-system-proxy" type="button" aria-pressed="false">系统代理</button>
-            <button class="button status-mode-button" id="global-tun" type="button" aria-pressed="false">TUN 模式</button>
-            <button class="button status-mode-button global-route-button" id="global-domain-route" type="button" aria-pressed="false" disabled>路由</button>
-            <button class="button button-quiet" id="global-refresh">刷新</button>
+            <span class="platform-chip" id="platform-chip"><!--i18n:ui-0324908b2f302e-->检测平台中</span>
+            <button class="button status-mode-button" id="global-system-proxy" type="button" aria-pressed="false"><!--i18n:ui-24bbc60c5fb3b1-->系统代理</button>
+            <button class="button status-mode-button" id="global-tun" type="button" aria-pressed="false"><!--i18n:ui-ba32107029d76d-->TUN 模式</button>
+            <button class="button status-mode-button global-route-button" id="global-domain-route" type="button" aria-pressed="false" disabled><!--i18n:ui-b9670c85a4ab93-->路由</button>
+            <button class="button button-quiet" id="global-refresh"><!--i18n:ui-aee88743413144-->刷新</button>
           </div>
-          <div class="header-runtime" aria-live="polite"><span class="application-status-dot" id="application-status-dot"></span><strong id="application-runtime-state">正在读取</strong></div>
-          <button class="button button-primary" id="global-start" title="使用上次保存的网络模式与选用配置启动" aria-label="按上次方案启动" disabled>启动</button>
-          <button class="button button-danger" id="global-stop" disabled>停止</button>
+          <div class="header-runtime" aria-live="polite"><span class="application-status-dot" id="application-status-dot"></span><strong id="application-runtime-state"><!--i18n:ui-2d1341db7717c6-->正在读取</strong></div>
+          <button class="button button-primary" id="global-start" title="使用上次保存的网络模式与选用配置启动" aria-label="按上次方案启动" disabled data-i18n-title="ui-834eaef3b9185f" data-i18n-aria-label="ui-2480f2e8514d0a"><!--i18n:ui-56410fc65314df-->启动</button>
+          <button class="button button-danger" id="global-stop" disabled><!--i18n:ui-ca4d973c0b006b-->停止</button>
         </div>
       </header>
 
@@ -295,40 +297,40 @@ app.innerHTML = `
       <section class="view-stack" id="overview-view">
         <div class="hero-grid">
           <article class="connection-card">
-            <div class="section-label">运行状态</div>
+            <div class="section-label"><!--i18n:ui-e46b0272bd6410-->运行状态</div>
             <div class="connection-main">
               <span class="large-status-dot" id="connection-dot"></span>
-              <div><h2 id="connection-state">读取中</h2><p id="connection-message">正在检查内核和配置。</p></div>
+              <div><h2 id="connection-state"><!--i18n:ui-465c03b272eafb-->读取中</h2><p id="connection-message"><!--i18n:ui-512bf7cd1c1acf-->正在检查内核和配置。</p></div>
             </div>
             <div class="connection-meta">
-              <span>核心</span><strong id="runtime-version">—</strong>
+              <span><!--i18n:ui-a8a88ddbea1594-->核心</span><strong id="runtime-version">—</strong>
               <span>PID</span><strong id="runtime-pid">—</strong>
-              <span>配置</span><strong id="runtime-config">—</strong>
+              <span><!--i18n:ui-148d195e21b05d-->配置</span><strong id="runtime-config">—</strong>
             </div>
           </article>
           <article class="health-card">
-            <div class="section-label">网络接管</div>
-            <div class="health-row"><span>模式</span><strong id="overview-mode">—</strong></div>
-            <div class="health-row"><span>本地代理</span><strong id="overview-endpoint">—</strong></div>
-            <div class="health-row"><span>系统代理</span><strong id="overview-system-proxy">—</strong></div>
-            <div class="health-row"><span>当前档案</span><strong id="overview-profile">—</strong></div>
+            <div class="section-label"><!--i18n:ui-0b5b0c70f8fecb-->网络接管</div>
+            <div class="health-row"><span><!--i18n:ui-47a270081ab289-->模式</span><strong id="overview-mode">—</strong></div>
+            <div class="health-row"><span><!--i18n:ui-1cf11a4d597ccf-->本地代理</span><strong id="overview-endpoint">—</strong></div>
+            <div class="health-row"><span><!--i18n:ui-24bbc60c5fb3b1-->系统代理</span><strong id="overview-system-proxy">—</strong></div>
+            <div class="health-row"><span><!--i18n:ui-fa4a65266f9b10-->当前档案</span><strong id="overview-profile">—</strong></div>
           </article>
         </div>
         <article class="panel control-center-panel">
           <div class="control-center-heading">
             <div>
-              <div class="section-label">网络控制中心</div>
-              <h2>接管方式与路由策略</h2>
-              <p id="control-profile-caption">当前订阅：未选择</p>
+              <div class="section-label"><!--i18n:ui-32814c7894d97f-->网络控制中心</div>
+              <h2><!--i18n:ui-c28d2095f8c821-->接管方式与路由策略</h2>
+              <p id="control-profile-caption"><!--i18n:ui-97d6a567c2d7e8-->当前订阅：未选择</p>
             </div>
-            <span class="control-state-pill" id="control-runtime-pill">已停止</span>
+            <span class="control-state-pill" id="control-runtime-pill"><!--i18n:ui-f006455e3baf2b-->已停止</span>
           </div>
           <div class="control-grid">
             <label class="control-tile" for="home-system-proxy">
               <span class="control-icon proxy-icon">S</span>
               <span class="control-copy">
-                <strong>系统代理</strong>
-                <small>让遵循系统代理的应用接入 Mihomo</small>
+                <strong><!--i18n:ui-24bbc60c5fb3b1-->系统代理</strong>
+                <small><!--i18n:ui-7bea73c9e01c75-->让遵循系统代理的应用接入 Mihomo</small>
               </span>
               <span class="toggle-switch">
                 <input id="home-system-proxy" type="checkbox" />
@@ -338,8 +340,8 @@ app.innerHTML = `
             <label class="control-tile" for="home-tun">
               <span class="control-icon tun-icon">T</span>
               <span class="control-copy">
-                <strong>TUN 模式</strong>
-                <small>接管更完整的系统 IP 流量</small>
+                <strong><!--i18n:ui-ba32107029d76d-->TUN 模式</strong>
+                <small><!--i18n:ui-7d1cee2df92bed-->接管更完整的系统 IP 流量</small>
               </span>
               <span class="toggle-switch">
                 <input id="home-tun" type="checkbox" />
@@ -349,31 +351,31 @@ app.innerHTML = `
             <div class="control-tile routing-tile">
               <span class="control-icon routing-icon">R</span>
               <span class="control-copy">
-                <strong>订阅路由</strong>
-                <small>决定当前订阅如何处理全部连接</small>
+                <strong><!--i18n:ui-dc7f480a173137-->订阅路由</strong>
+                <small><!--i18n:ui-36fa1459df4a89-->决定当前订阅如何处理全部连接</small>
               </span>
-              <div class="routing-segments" id="home-routing-mode" role="group" aria-label="订阅路由模式">
-                <button type="button" data-routing-mode="global">全局</button>
-                <button type="button" data-routing-mode="rule">规则</button>
-                <button type="button" data-routing-mode="direct">直连</button>
+              <div class="routing-segments" id="home-routing-mode" role="group" aria-label="订阅路由模式" data-i18n-aria-label="ui-e7763ff87de015">
+                <button type="button" data-routing-mode="global"><!--i18n:ui-63d6b47116de36-->全局</button>
+                <button type="button" data-routing-mode="rule"><!--i18n:ui-1123245d1bed08-->规则</button>
+                <button type="button" data-routing-mode="direct"><!--i18n:ui-b06325c5660f0c-->直连</button>
               </div>
             </div>
           </div>
-          <p class="control-hint" id="control-hint">系统代理和 TUN 互斥；切换时应用会自动停止、应用设置并恢复运行。</p>
+          <p class="control-hint" id="control-hint"><!--i18n:ui-e3f6a98399bce6-->系统代理和 TUN 互斥；切换时应用会自动停止、应用设置并恢复运行。</p>
         </article>
         <article class="panel" id="overview-nodes-panel">
-          <div class="panel-heading"><div><h2>当前选用节点</h2><p class="node-choice-help">按策略组展示所选出口；规则模式下，不同请求可能使用不同节点。</p></div><button class="button button-quiet" id="overview-nodes-refresh">刷新节点</button></div>
-          <div id="overview-nodes-content"><p class="node-choice-help">启动核心后读取节点信息。</p></div>
+          <div class="panel-heading"><div><h2><!--i18n:ui-6e43056758a0bb-->当前选用节点</h2><p class="node-choice-help"><!--i18n:ui-fccae38db170cd-->按策略组展示所选出口；规则模式下，不同请求可能使用不同节点。</p></div><button class="button button-quiet" id="overview-nodes-refresh"><!--i18n:ui-778b04988d4f68-->刷新节点</button></div>
+          <div id="overview-nodes-content"><p class="node-choice-help"><!--i18n:ui-6f621fb64490c7-->启动核心后读取节点信息。</p></div>
         </article>
         <div class="metrics-grid">
-          <article class="metric-card"><span>配置档案</span><strong id="metric-profiles">0</strong><small>profiles</small></article>
-          <article class="metric-card"><span>节点</span><strong id="metric-nodes">—</strong><small>active profile</small></article>
-          <article class="metric-card"><span>规则</span><strong id="metric-rules">—</strong><small>active profile</small></article>
-          <article class="metric-card"><span>运行阶段</span><strong id="metric-phase">—</strong><small>runtime state</small></article>
+          <article class="metric-card"><span><!--i18n:ui-1bc96e670a8e29-->配置档案</span><strong id="metric-profiles">0</strong><small>profiles</small></article>
+          <article class="metric-card"><span><!--i18n:ui-2410d860f093b7-->节点</span><strong id="metric-nodes">—</strong><small>active profile</small></article>
+          <article class="metric-card"><span><!--i18n:ui-1123245d1bed08-->规则</span><strong id="metric-rules">—</strong><small>active profile</small></article>
+          <article class="metric-card"><span><!--i18n:ui-4916957fa8a5b2-->运行阶段</span><strong id="metric-phase">—</strong><small>runtime state</small></article>
         </div>
         <article class="panel subscription-onboarding" id="overview-subscription-guide" hidden>
-          <div><h2>先选用一个配置</h2><p>在「订阅」统一添加和选用订阅，本地 YAML 仍在「配置」管理。</p></div>
-          <button class="button button-quiet" id="overview-go-subscriptions" type="button">前往订阅</button>
+          <div><h2><!--i18n:ui-9481ddcf8e3165-->先选用一个配置</h2><p><!--i18n:ui-3fcfe6912e3ae6-->在「订阅」统一添加和选用订阅，本地 YAML 仍在「配置」管理。</p></div>
+          <button class="button button-quiet" id="overview-go-subscriptions" type="button"><!--i18n:ui-7aab1c05526797-->前往订阅</button>
         </article>
       </section>
 
@@ -382,12 +384,12 @@ app.innerHTML = `
           <div class="panel-heading subscription-panel-heading">
             <div>
               <div class="section-label">SUBSCRIPTIONS</div>
-              <h2>订阅源与更新状态</h2>
+              <h2><!--i18n:ui-ae326aeaea3521-->订阅源与更新状态</h2>
             </div>
             <div class="toolbar">
-              <button class="button button-quiet" id="subscriptions-run-safety">安全检查</button>
-              <button class="button button-quiet" id="subscriptions-refresh-all">刷新全部</button>
-              <button class="button button-primary" id="subscriptions-add" type="button" aria-haspopup="dialog" aria-controls="managed-subscription-panel" aria-expanded="false">＋ 添加订阅</button>
+              <button class="button button-quiet" id="subscriptions-run-safety"><!--i18n:ui-b16cf917405dd4-->安全检查</button>
+              <button class="button button-quiet" id="subscriptions-refresh-all"><!--i18n:ui-c6fae70942a27c-->刷新全部</button>
+              <button class="button button-primary" id="subscriptions-add" type="button" aria-haspopup="dialog" aria-controls="managed-subscription-panel" aria-expanded="false"><!--i18n:ui-812173433fa365-->＋ 添加订阅</button>
             </div>
           </div>
           <div class="subscription-workspace">
@@ -395,17 +397,17 @@ app.innerHTML = `
             <p id="subscription-import-background" class="subscription-feedback" role="status" aria-live="polite" hidden></p>
             <p id="subscriptions-feedback" class="subscription-feedback" role="status" aria-live="polite" hidden></p>
             <div class="subscription-summary-grid">
-              <div><span>活动订阅</span><strong id="subscription-summary-active">—</strong></div>
-              <div><span>配置规模</span><strong id="subscription-summary-nodes">尚未读取</strong></div>
-              <div><span>最近更新</span><strong id="subscription-summary-updated">—</strong></div>
-              <div><span>网络安全</span><strong id="subscription-summary-safety">等待检查</strong></div>
+              <div><span><!--i18n:ui-4f049417ce1df8-->活动订阅</span><strong id="subscription-summary-active">—</strong></div>
+              <div><span><!--i18n:ui-351631a2ad63e5-->配置规模</span><strong id="subscription-summary-nodes"><!--i18n:ui-c4cf69f358b6c4-->尚未读取</strong></div>
+              <div><span><!--i18n:ui-b067526e73e5b8-->最近更新</span><strong id="subscription-summary-updated">—</strong></div>
+              <div><span><!--i18n:ui-d4443b35a83276-->网络安全</span><strong id="subscription-summary-safety"><!--i18n:ui-8f31a776d53b82-->等待检查</strong></div>
             </div>
             <section class="subscription-list-card" aria-labelledby="subscription-list-title">
               <div class="subscription-card-heading">
-                <div><h3 id="subscription-list-title">订阅列表</h3><p id="subscription-list-caption">读取中</p></div>
-                <button class="button button-quiet" id="subscriptions-refresh-list">刷新列表</button>
+                <div><h3 id="subscription-list-title"><!--i18n:ui-1951793fa708f4-->订阅列表</h3><p id="subscription-list-caption"><!--i18n:ui-465c03b272eafb-->读取中</p></div>
+                <button class="button button-quiet" id="subscriptions-refresh-list"><!--i18n:ui-e28be7098db113-->刷新列表</button>
               </div>
-              <div id="subscription-manager-list" class="subscription-manager-list empty-state">还没有远程订阅</div>
+              <div id="subscription-manager-list" class="subscription-manager-list empty-state"><!--i18n:ui-984b27f10d317e-->还没有远程订阅</div>
             </section>
           </div>
         </article>
@@ -414,34 +416,34 @@ app.innerHTML = `
       <section class="view-stack is-hidden" id="profiles-view">
         <div class="split-grid">
           <article class="panel">
-            <div class="panel-heading"><div><div class="section-label">PROFILES</div><h2>配置档案</h2></div><button class="button button-quiet" id="profiles-refresh">刷新列表</button></div>
-            <div id="profile-list" class="profile-list empty-state">还没有配置档案</div>
+            <div class="panel-heading"><div><div class="section-label">PROFILES</div><h2><!--i18n:ui-1bc96e670a8e29-->配置档案</h2></div><button class="button button-quiet" id="profiles-refresh"><!--i18n:ui-e28be7098db113-->刷新列表</button></div>
+            <div id="profile-list" class="profile-list empty-state"><!--i18n:ui-05c0a49d7a954e-->还没有配置档案</div>
           </article>
           <article class="panel" id="profile-detail-panel">
-            <div class="panel-heading"><div><div class="section-label">DETAIL</div><h2 id="profile-detail-title">选择一个配置</h2></div></div>
-            <div id="profile-detail" class="empty-state">在左侧选择配置后查看版本和校验结果。</div>
+            <div class="panel-heading"><div><div class="section-label">DETAIL</div><h2 id="profile-detail-title"><!--i18n:ui-48969d3b3eba30-->选择一个配置</h2></div></div>
+            <div id="profile-detail" class="empty-state"><!--i18n:ui-0d149c8c6f8cb9-->在左侧选择配置后查看版本和校验结果。</div>
           </article>
         </div>
         <article class="panel">
-          <div class="panel-heading"><div><div class="section-label">LOCAL YAML</div><h2>本地 YAML 配置</h2></div><label class="button button-quiet file-button" for="yaml-file">打开 YAML</label></div>
+          <div class="panel-heading"><div><div class="section-label">LOCAL YAML</div><h2><!--i18n:ui-a1a0024c56b636-->本地 YAML 配置</h2></div><label class="button button-quiet file-button" for="yaml-file"><!--i18n:ui-2a36e4c42ca7d4-->打开 YAML</label></div>
           <input id="yaml-file" type="file" accept=".yaml,.yml,text/plain" hidden />
           <div class="editor-toolbar">
-            <input id="inline-name" class="profile-name" value="本地配置" aria-label="配置名称" />
-            <button class="button button-quiet" id="load-sample">载入示例</button>
-            <button class="button button-quiet" id="inspect-yaml">只检查</button>
+            <input id="inline-name" class="profile-name" value="本地配置" aria-label="配置名称"  data-i18n-aria-label="ui-9919db867bd43b"/>
+            <button class="button button-quiet" id="load-sample"><!--i18n:ui-a146f0457cab9b-->载入示例</button>
+            <button class="button button-quiet" id="inspect-yaml"><!--i18n:ui-2170ca3405db0e-->只检查</button>
             <span class="editor-spacer"></span>
-            <span id="yaml-summary" class="hint">等待配置</span>
-            <button class="button button-primary" id="create-inline">创建并激活</button>
+            <span id="yaml-summary" class="hint"><!--i18n:ui-d64a0b1f2602c4-->等待配置</span>
+            <button class="button button-primary" id="create-inline"><!--i18n:ui-9e1d1a2c6710b2-->创建并激活</button>
           </div>
-          <textarea id="yaml-source" class="config-editor" placeholder="粘贴 Clash Meta / Mihomo YAML…" spellcheck="false"></textarea>
+          <textarea id="yaml-source" class="config-editor" placeholder="粘贴 Clash Meta / Mihomo YAML…" spellcheck="false" data-i18n-placeholder="ui-c135bef7fe069a"></textarea>
         </article>
       </section>
 
       <section class="view-stack is-hidden" id="proxies-view">
         <article class="panel proxy-groups-panel">
-          <div class="panel-heading"><div><div class="section-label">AI PROXY</div><h2>AI 代理</h2></div><div class="toolbar"><button class="button button-quiet" id="proxies-current-node">当前 AI 节点</button><button class="button button-quiet" id="proxies-refresh">刷新</button></div></div>
-          <div id="proxy-mode-notice" class="warning-box" hidden><p>自选节点正在生效，AI 策略已暂停。二者只能启用一个；Codex 路由接入保持独立。</p><button class="button button-quiet" id="proxy-mode-restore">使用 AI 代理</button></div>
-          <fieldset id="proxy-mode-controls"><legend class="sr-only">代理策略控制</legend>
+          <div class="panel-heading"><div><div class="section-label">AI PROXY</div><h2><!--i18n:ui-a451c12fed91d7-->AI 代理</h2></div><div class="toolbar"><button class="button button-quiet" data-i18n-text="ui-181216110de151" id="proxies-current-node">当前 AI 节点</button><button class="button button-quiet" id="proxies-refresh"><!--i18n:ui-aee88743413144-->刷新</button></div></div>
+          <div id="proxy-mode-notice" class="warning-box" hidden><p><!--i18n:ui-fccb0dfb69f588-->自选节点正在生效，AI 策略已暂停。二者只能启用一个；Codex 路由接入保持独立。</p><button class="button button-quiet" id="proxy-mode-restore"><!--i18n:ui-c8611fddf448df-->使用 AI 代理</button></div>
+          <fieldset id="proxy-mode-controls"><legend class="sr-only"><!--i18n:ui-892022231ef8e8-->代理策略控制</legend>
           <div id="openai-policy-card" class="openai-policy-card"></div>
           ${openAiCostsMarkup}
           </fieldset>
@@ -453,7 +455,7 @@ app.innerHTML = `
         ${domainRoutingMarkup}
       </section>
       <section class="view-stack is-hidden" id="programs-view">
-        <p>程序代理暂时停用；已保存的条目保持不变。</p>
+        <p><!--i18n:ui-37f39a2fffae2b-->程序代理暂时停用；已保存的条目保持不变。</p>
       </section>
 
       <section class="view-stack is-hidden" id="rules-view">
@@ -462,24 +464,24 @@ app.innerHTML = `
 
       <section class="view-stack is-hidden" id="connections-view">
         <article class="panel">
-          <div class="panel-heading"><div><div class="section-label">CONNECTIONS</div><h2>活动连接</h2></div><button class="button button-quiet" id="connections-refresh">刷新</button></div>
+          <div class="panel-heading"><div><div class="section-label">CONNECTIONS</div><h2><!--i18n:ui-3726bcb6903fa0-->活动连接</h2></div><button class="button button-quiet" id="connections-refresh"><!--i18n:ui-aee88743413144-->刷新</button></div>
           <div id="connection-totals" class="summary-strip"></div>
-          <div class="table-wrap"><table><thead><tr><th>目标</th><th>网络</th><th>规则</th><th>代理链</th><th>流量</th><th></th></tr></thead><tbody id="connections-body"><tr><td colspan="6">启动后加载连接</td></tr></tbody></table></div><button id="connections-more" class="button button-quiet" hidden>显示更多</button>
+          <div class="table-wrap"><table><thead><tr><th><!--i18n:ui-57060c88a36bf3-->目标</th><th><!--i18n:ui-97b31b5d63f57e-->网络</th><th><!--i18n:ui-1123245d1bed08-->规则</th><th><!--i18n:ui-575059b934f61b-->代理链</th><th><!--i18n:ui-81a9d0b5a2a24f-->流量</th><th></th></tr></thead><tbody id="connections-body"><tr><td colspan="6"><!--i18n:ui-e972ce15d4fbc7-->启动后加载连接</td></tr></tbody></table></div><button id="connections-more" class="button button-quiet" hidden><!--i18n:ui-331af79f34e7a5-->显示更多</button>
         </article>
       </section>
 
       <section class="view-stack is-hidden" id="logs-view">
         <article class="panel">
-          <div class="panel-heading"><div><div class="section-label">LOGS</div><h2>应用与 Mihomo 日志</h2></div><div class="toolbar"><button class="button button-quiet" id="logs-refresh">刷新</button><button class="button button-danger" id="logs-clear">清空</button></div></div>
-          <div id="log-list" class="log-list empty-state">暂无日志</div>
+          <div class="panel-heading"><div><div class="section-label">LOGS</div><h2><!--i18n:ui-d6a9e3ed2d28c1-->应用与 Mihomo 日志</h2></div><div class="toolbar"><button class="button button-quiet" id="logs-refresh"><!--i18n:ui-aee88743413144-->刷新</button><button class="button button-danger" id="logs-clear"><!--i18n:ui-1ef3de06b32e52-->清空</button></div></div>
+          <div id="log-list" class="log-list empty-state"><!--i18n:ui-10fafbeaa7fddd-->暂无日志</div>
         </article>
       </section>
 
       <section class="view-stack is-hidden" id="diagnostics-view">
         <article class="panel">
-          <div class="panel-heading"><div><div class="section-label">DIAGNOSTICS</div><h2>分层诊断</h2></div><button class="button button-primary" id="run-diagnostics">立即诊断</button></div>
-          <p id="diagnostic-status" class="hint diagnostic-status" role="status" aria-live="polite" aria-atomic="true">按顺序检查核心、配置、端口与实际代理请求。</p>
-          <div id="diagnostic-list" class="diagnostic-list" role="list" aria-label="诊断结果" aria-busy="false"></div>
+          <div class="panel-heading"><div><div class="section-label">DIAGNOSTICS</div><h2><!--i18n:ui-a45785d0a2a0d4-->分层诊断</h2></div><button class="button button-primary" id="run-diagnostics"><!--i18n:ui-06c9c731e4510a-->立即诊断</button></div>
+          <p id="diagnostic-status" class="hint diagnostic-status" role="status" aria-live="polite" aria-atomic="true"><!--i18n:ui-2852e173c036d3-->按顺序检查核心、配置、端口与实际代理请求。</p>
+          <div id="diagnostic-list" class="diagnostic-list" role="list" aria-label="诊断结果" aria-busy="false" data-i18n-aria-label="ui-7feaebd0b48c79"></div>
         </article>
       </section>
 
@@ -488,27 +490,27 @@ app.innerHTML = `
         ${proxyCompatibilityMarkup}
         <article class="panel tun-helper-panel">
           <div class="panel-heading">
-            <div><div class="section-label">PRIVILEGED TUN</div><h2 id="tun-panel-heading">TUN 权限</h2></div>
-            <span class="control-state-pill" id="tun-helper-state">正在检查</span>
+            <div><div class="section-label">PRIVILEGED TUN</div><h2 id="tun-panel-heading" data-i18n-live><!--i18n:ui-9fa47c3f398b8f-->TUN 权限</h2></div>
+            <span class="control-state-pill" id="tun-helper-state" data-i18n-live><!--i18n:ui-d85ff08f914184-->正在检查</span>
           </div>
           <div class="tun-helper-summary">
             <div class="tun-helper-mark">T</div>
-            <div><strong id="tun-helper-title">正在检查 TUN 权限</strong><p id="tun-helper-message">正在读取当前系统的 TUN 运行方式。</p></div>
+            <div><strong id="tun-helper-title" data-i18n-live><!--i18n:ui-06711aa9e70c02-->正在检查 TUN 权限</strong><p id="tun-helper-message" data-i18n-live><!--i18n:ui-0c978fc44e72e6-->正在读取当前系统的 TUN 运行方式。</p></div>
           </div>
           <div class="about-grid tun-helper-details">
-              <span id="tun-helper-protocol-label">协议版本</span><strong id="tun-helper-protocol">—</strong>
-            <span>特权内核</span><strong id="tun-helper-runtime">未运行</strong>
+              <span id="tun-helper-protocol-label" data-i18n-live><!--i18n:ui-acbb40673c951d-->协议版本</span><strong id="tun-helper-protocol" data-i18n-live>—</strong>
+            <span><!--i18n:ui-e9addb491cb874-->特权内核</span><strong id="tun-helper-runtime" data-i18n-live><!--i18n:ui-62cdc8713bcf76-->未运行</strong>
           </div>
           <div class="toolbar tun-helper-actions">
-            <button class="button button-primary" id="tun-helper-install" type="button">安装辅助服务</button>
-            <button class="button button-quiet" id="tun-helper-repair" type="button">重新关联辅助服务</button>
-            <button class="button button-quiet" id="tun-helper-open-settings" type="button">打开系统设置</button>
-            <button class="button button-danger" id="tun-helper-uninstall" type="button">卸载辅助服务</button>
+            <button class="button button-primary" id="tun-helper-install" type="button"><!--i18n:ui-688f5b5a3eb607-->安装辅助服务</button>
+            <button class="button button-quiet" id="tun-helper-repair" data-i18n-live type="button"><!--i18n:ui-2364dd9ac641de-->重新关联辅助服务</button>
+            <button class="button button-quiet" id="tun-helper-open-settings" type="button"><!--i18n:ui-0407dbdaf0dd84-->打开系统设置</button>
+            <button class="button button-danger" id="tun-helper-uninstall" type="button"><!--i18n:ui-97f2adea4b603a-->卸载辅助服务</button>
           </div>
         </article>
         <article class="panel">
           <div class="section-label">VERSIONS</div>
-          <div class="about-grid"><span>应用</span><strong id="about-app">—</strong><span>Mihomo</span><strong id="about-core">—</strong><span>平台</span><strong id="about-platform">—</strong></div>
+          <div class="about-grid"><span><!--i18n:ui-63c73c4730f447-->应用</span><strong id="about-app">—</strong><span>Mihomo</span><strong id="about-core">—</strong><span><!--i18n:ui-910887705c7a66-->平台</span><strong id="about-platform">—</strong></div>
         </article>
       </section>
       </div>
@@ -516,15 +518,24 @@ app.innerHTML = `
     </main>
       ${subscriptionImportMarkup}
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
+      <div class="app-update-notice" id="app-update-notice" hidden>
+        <button class="app-update-notice-open" id="app-update-notice-open" type="button">
+          <strong id="app-update-notice-version"></strong>
+          <span><!--i18n:update-card-open-->查看更新</span>
+        </button>
+        <button class="button button-quiet app-update-notice-dismiss" id="app-update-notice-dismiss" type="button"
+          aria-label="关闭更新提醒" data-i18n-aria-label="update-card-dismiss">×</button>
+      </div>
+      <div class="visually-hidden" id="app-update-announcement" role="status" aria-live="polite"></div>
       <div class="confirmation-modal-backdrop is-hidden" id="confirmation-modal" role="presentation" aria-hidden="true">
         <section class="confirmation-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-message">
           <div class="confirmation-modal-copy">
-            <h2 id="confirmation-title">确认操作</h2>
+            <h2 id="confirmation-title"><!--i18n:ui-f8347f9a9dccb2-->确认操作</h2>
             <p id="confirmation-message"></p>
           </div>
           <div class="confirmation-modal-actions">
-            <button class="button button-quiet" type="button" data-confirmation-action="cancel">取消</button>
-            <button class="button button-danger" type="button" data-confirmation-action="confirm">确认</button>
+            <button class="button button-quiet" type="button" data-confirmation-action="cancel"><!--i18n:ui-2cd0f3be8738a8-->取消</button>
+            <button class="button button-danger" type="button" data-confirmation-action="confirm"><!--i18n:ui-36f33adaf09426-->确认</button>
           </div>
         </section>
       </div>
@@ -538,6 +549,42 @@ app.innerHTML = `
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector);
 const $$ = <T extends HTMLElement>(selector: string) => [...document.querySelectorAll<T>(selector)];
+const languageInput = $<HTMLSelectElement>("#settings-language")!;
+const languageStatus = $("#language-status")!;
+languageInput.innerHTML = localeOptions() + '<option value="system"><!--i18n:language-system-->跟随系统</option>';
+window.addEventListener("pagehide", observeLocalizedMarkup(app), { once: true });
+let appLocale = initialLocale;
+
+function selectLocale(locale: AppLocale) {
+  applyAppLocale(locale);
+  appLocale = locale;
+  languageInput.value = locale.preference;
+  languageStatus.textContent = message("language-description") ?? "选择后立即切换并自动保存。";
+  if (store.settings) store.settings = { ...store.settings, locale: locale.preference };
+}
+
+languageInput.addEventListener("change", async () => {
+  const preference = languageInput.value;
+  const hadFocus = document.activeElement === languageInput;
+  languageInput.disabled = true;
+  languageInput.setAttribute("aria-busy", "true");
+  try {
+    selectLocale(await api.setAppLocale(preference));
+  } catch {
+    languageInput.value = appLocale.preference;
+    languageStatus.textContent = message("language-save-error") ?? "未能保存语言，请重试。";
+  } finally {
+    languageInput.disabled = false;
+    languageInput.removeAttribute("aria-busy");
+    if (hadFocus && document.activeElement === document.body) languageInput.focus({ preventScroll: true });
+  }
+});
+
+void api.appLocale().then(selectLocale).catch(() => selectLocale(initialLocale)).finally(() => {
+  languageInput.disabled = false;
+  app.hidden = false;
+  showPendingUpdateNotice();
+});
 let confirmationResolver: ((confirmed: boolean) => void) | null = null;
 let confirmationReturnFocus: HTMLElement | null = null;
 const viewScrollPositions: Partial<Record<ViewName, number>> = {};
@@ -583,7 +630,7 @@ function toast(
 ) {
   const element = $("#toast");
   if (!element) return;
-  element.textContent = message;
+  setLocalizedText(element, message);
   element.dataset.kind = kind;
   element.dataset.placement = placement;
   element.classList.add("is-visible");
@@ -622,7 +669,7 @@ function confirmAction(options: {
 
   title.textContent = options.title;
   message.textContent = options.message;
-  confirmButton.textContent = options.confirmLabel ?? "确认";
+  setLocalizedText(confirmButton, options.confirmLabel ?? "确认");
   const destructive = /删除|清空|恢复|停止|关闭|卸载/.test(options.title);
   confirmButton.classList.toggle("button-danger", destructive);
   confirmButton.classList.toggle("button-primary", !destructive);
@@ -688,7 +735,7 @@ function renderGlobalTraffic() {
 }
 
 function formatDate(value: string | null | undefined): string {
-  return value ? new Date(value).toLocaleString() : "—";
+  return value ? new Date(value).toLocaleString(formatLocale()) : "—";
 }
 
 function formatPolicyDate(value: string | null | undefined): string {
@@ -700,8 +747,8 @@ function formatPolicyDate(value: string | null | undefined): string {
     date.getMonth() === now.getMonth() &&
     date.getDate() === now.getDate();
   return sameDay
-    ? `今天 ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-    : date.toLocaleString([], {
+    ? `今天 ${date.toLocaleTimeString(formatLocale(), { hour: "2-digit", minute: "2-digit" })}`
+    : date.toLocaleString(formatLocale(), {
         month: "numeric",
         day: "numeric",
         hour: "2-digit",
@@ -710,7 +757,7 @@ function formatPolicyDate(value: string | null | undefined): string {
 }
 
 function modeLabel(mode: NetworkMode | undefined): string {
-  return mode === "system_proxy" ? "System Proxy" : mode === "tun" ? "TUN" : "Manual";
+  return mode === "system_proxy" ? "系统代理" : mode === "tun" ? "TUN" : "本地端口";
 }
 
 function phaseLabel(phase: string | undefined): string {
@@ -853,20 +900,20 @@ async function performBaseRead() {
 function renderSessionResume() {
   const presentation = sessionResumePresentation(sessionResumeStatus);
   $("#session-resume-notice")!.classList.toggle("is-hidden", !presentation.visible);
-  $("#session-resume-title")!.textContent = presentation.title;
-  $("#session-resume-message")!.textContent = presentation.message;
-  $("#session-resume-status")!.textContent = sessionResumeStatus?.message ?? "";
+  setLocalizedText($("#session-resume-title")!, presentation.title);
+  setLocalizedText($("#session-resume-message")!, presentation.message);
+  setLocalizedText($("#session-resume-status")!, sessionResumeStatus?.message);
   if (store.settings) {
     const mode = startupModeDraft ?? startupModeFromSettings(store.settings);
-    $("#session-resume-help")!.textContent = (startupModeDraft ? "待保存：" : "") + startupModeHelp(store.settings, mode);
+    setLocalizedText($("#session-resume-help")!, (startupModeDraft ? "待保存：" : "") + startupModeHelp(store.settings, mode));
   }
   const registration = startupRegistrationPresentation(startupStatus);
-  $("#startup-registration-status")!.textContent = registration.text;
+  setLocalizedText($("#startup-registration-status")!, registration.text);
   $("#startup-registration-status")!.classList.toggle("startup-registration-issue", registration.issue);
   const repair = $("#settings-startup-repair") as HTMLButtonElement;
   repair.classList.toggle("is-hidden", startupStatus?.repairAvailable !== true);
   repair.disabled = startupRepairBusy || settingsSaving || startupModeDraft !== null;
-  repair.textContent = startupRepairBusy ? "正在关联…" : "修复登录启动";
+  setLocalizedText(repair, startupRepairBusy ? "正在关联…" : "修复登录启动");
   $("#settings-startup-open")!.classList.toggle("is-hidden", store.appInfo?.targetOs !== "macos" || startupStatus?.state !== "requires_approval");
 }
 
@@ -892,7 +939,7 @@ async function refreshSessionResume(force = false) {
     if (wasBusy && !sessionResumePresentation(status).busy) void refreshBase();
   } catch {
     // Status reads never start a core or guess whether restoration succeeded.
-    if (revision === sessionResumeRevision) $("#session-resume-status")!.textContent = "恢复状态暂时无法读取，可点击刷新重试。";
+    if (revision === sessionResumeRevision) setLocalizedText($("#session-resume-status")!, "恢复状态暂时无法读取，可点击刷新重试。");
   } finally {
     sessionResumeReadBusy = false;
     if (sessionResumeReadAgain) {
@@ -946,23 +993,22 @@ function renderHeader() {
   localRouting.render();
   const presentation = currentProxyPresentation();
   ($("#global-refresh") as HTMLButtonElement).disabled = controlsBusy || baseLoading;
-  $("#global-refresh")!.textContent = baseLoading ? "正在刷新…" : "刷新";
+  setLocalizedText($("#global-refresh")!, baseLoading ? "正在刷新…" : "刷新");
   const systemProxyActive = presentation.systemProxyActive;
   const tunActive = presentation.tunActive;
   $("#platform-chip")!.textContent = store.appInfo
     ? `${store.appInfo.targetOs} · ${store.appInfo.targetArch}`
     : "—";
-  $("#application-runtime-state")!.textContent = presentation.label;
+  setLocalizedText($("#application-runtime-state")!, presentation.label);
   $("#application-runtime-state")!.title = presentation.message;
-  $("#application-profile-state")!.textContent =
-    store.activeProfile?.profile.displayName ?? "未选择订阅";
-  $("#application-mode-state")!.textContent = modeLabel(mode);
+  setPlainText($("#application-profile-state")!, store.activeProfile?.profile.displayName, "未选择订阅");
+  setLocalizedText($("#application-mode-state")!, modeLabel(mode));
   $("#application-status-dot")!.classList.toggle("is-running", presentation.active);
   $("#application-status-dot")!.classList.toggle("is-busy", controlsBusy);
   $("#sidebar-version")!.textContent = store.appInfo ? `v${store.appInfo.version}` : "";
-  $("#page-title")!.textContent = NAV_ITEMS.find((item) => item.id === store.view)!.label;
+  setLocalizedText($("#page-title")!, NAV_ITEMS.find((item) => item.id === store.view)!.label);
   document.documentElement.dataset.runtimeRunning = String(running);
-  $("#sidebar-status")!.textContent = presentation.label;
+  setLocalizedText($("#sidebar-status")!, presentation.label);
   $("#sidebar-status")!.title = presentation.message;
   $("#sidebar-status-dot")!.classList.toggle("is-running", presentation.active);
   renderGlobalTraffic();
@@ -978,7 +1024,7 @@ function renderHeader() {
   ($("#global-start") as HTMLButtonElement).disabled = !(proxyControlSnapshot?.canStart ?? (canStartRuntime(store.runtime) && Boolean(store.settings && store.activeProfile) && !proxyReadIssue)) || controlsBusy || restoring;
   ($("#global-stop") as HTMLButtonElement).disabled = !(proxyControlSnapshot?.canStop ?? Boolean(canStopSession(store.runtime?.phase, sessionResumeStatus, startupStatus) || store.systemProxy?.active || proxyStopIssue)) || controlsBusy;
   $("#about-app")!.textContent = store.appInfo?.version ?? "—";
-  $("#about-core")!.textContent = store.binary?.version ?? "未找到";
+  setLocalizedText($("#about-core")!, store.binary?.version ?? "未找到");
   $("#about-platform")!.textContent = store.appInfo
     ? `${store.appInfo.targetOs} ${store.appInfo.targetArch}`
     : "—";
@@ -989,22 +1035,22 @@ function renderOverview() {
   $("#overview-subscription-guide")!.hidden = !store.appInfo || Boolean(store.activeProfile);
   const runtime = store.runtime;
   const presentation = currentProxyPresentation();
-  $("#connection-state")!.textContent = presentation.label;
-  $("#connection-message")!.textContent = presentation.message || runtime?.message || "等待运行时状态";
+  setLocalizedText($("#connection-state")!, presentation.label);
+  setLocalizedText($("#connection-message")!, presentation.message || runtime?.message || "等待运行时状态");
   $("#connection-dot")!.classList.toggle("is-running", presentation.active);
-  $("#runtime-version")!.textContent = runtime?.version ?? store.binary?.version ?? "未找到";
+  setLocalizedText($("#runtime-version")!, runtime?.version ?? store.binary?.version ?? "未找到");
   $("#runtime-pid")!.textContent = runtime?.pid ? String(runtime.pid) : "—";
   $("#runtime-config")!.textContent = runtime?.configPath ?? "—";
-  $("#overview-mode")!.textContent = modeLabel(store.settings?.networkMode);
+  setLocalizedText($("#overview-mode")!, modeLabel(store.settings?.networkMode));
   $("#overview-endpoint")!.textContent = store.settings
     ? `127.0.0.1:${store.settings.mixedPort}`
     : "—";
-  $("#overview-system-proxy")!.textContent = store.systemProxy?.active ? "已接管" : "未接管";
-  $("#overview-profile")!.textContent = store.activeProfile?.profile.displayName ?? "未选择";
-  $("#control-profile-caption")!.textContent = store.activeProfile
+  setLocalizedText($("#overview-system-proxy")!, store.systemProxy?.active ? "已接管" : "未接管");
+  setPlainText($("#overview-profile")!, store.activeProfile?.profile.displayName, "未选择");
+  setLocalizedText($("#control-profile-caption")!, store.activeProfile
     ? `当前订阅：${store.activeProfile.profile.displayName}`
-    : "当前订阅：未选择";
-  $("#control-runtime-pill")!.textContent = presentation.label;
+    : "当前订阅：未选择");
+  setLocalizedText($("#control-runtime-pill")!, presentation.label);
   $("#control-runtime-pill")!.classList.toggle("is-running", presentation.active);
   const systemProxySwitch = $("#home-system-proxy") as HTMLInputElement;
   const tunSwitch = $("#home-tun") as HTMLInputElement;
@@ -1020,9 +1066,9 @@ function renderOverview() {
     button.classList.toggle("is-active", button.dataset.routingMode === routingMode);
     (button as HTMLButtonElement).disabled = !store.activeProfile || store.manualOutbound?.mode !== "manual" || Boolean(store.manualOutbound?.legacySelection);
   });
-  $("#control-hint")!.textContent = store.activeProfile
+  setLocalizedText($("#control-hint")!, store.activeProfile
     ? `${store.activeProfile.profile.displayName} · ${modeLabel(store.settings?.networkMode)} · ${routingMode === "global" ? "全局" : routingMode === "direct" ? "直连" : "规则"}`
-    : "先创建并激活一个订阅，再使用网络控制中心。";
+    : "先创建并激活一个订阅，再使用网络控制中心。");
   $("#metric-profiles")!.textContent = String(store.profiles.length);
   $("#metric-nodes")!.textContent = store.activeProfile?.summary
     ? String(store.activeProfile.summary.nodeCount + store.activeProfile.summary.proxyProviderCount)
@@ -1030,7 +1076,7 @@ function renderOverview() {
   $("#metric-rules")!.textContent = store.activeProfile?.summary
     ? String(store.activeProfile.summary.ruleCount + store.activeProfile.summary.ruleProviderCount)
     : "—";
-  $("#metric-phase")!.textContent = phaseLabel(runtime?.phase);
+  setLocalizedText($("#metric-phase")!, phaseLabel(runtime?.phase));
   renderOverviewNodes();
 }
 
@@ -1061,22 +1107,22 @@ function renderSubscriptions() {
     .filter((value): value is string => Boolean(value))
     .sort();
   const latest = updatedTimes[updatedTimes.length - 1];
-  $("#subscription-summary-active")!.textContent = active?.profile.displayName ?? "未选择";
+  setPlainText($("#subscription-summary-active")!, active?.profile.displayName, "未选择");
   const providerCount = subscriptions.reduce((total, subscription) => total + (subscription.summary?.proxyProviderCount ?? 0), 0);
-  $("#subscription-summary-nodes")!.textContent = `${totalNodes} 节点 · ${providerCount} 提供器`;
+  setLocalizedText($("#subscription-summary-nodes")!, `${totalNodes} 节点 · ${providerCount} 提供器`);
   $("#subscription-summary-updated")!.textContent = formatPolicyDate(latest);
-  $("#subscription-summary-safety")!.textContent = store.networkSafety
+  setLocalizedText($("#subscription-summary-safety")!, store.networkSafety
     ? store.networkSafety.success
       ? store.networkSafety.warnings?.length ? "联网正常 · 部分检测未通过" : "代理预检通过"
       : "代理预检失败"
     : store.runtime?.phase === "running"
       ? "等待检查"
-      : "内核未运行";
-  $("#subscription-list-caption")!.textContent = `${subscriptions.length} 个订阅 · ${subscriptions.filter((subscription) => subscription.profile.openaiPolicy.autoMaintain).length} 个自动维护`;
+      : "内核未运行");
+  setLocalizedText($("#subscription-list-caption")!, `${subscriptions.length} 个订阅 · ${subscriptions.filter((subscription) => subscription.profile.openaiPolicy.autoMaintain).length} 个自动维护`);
 
   if (!subscriptions.length) {
     list.className = "subscription-manager-list empty-state";
-    list.textContent = "还没有远程订阅，可在顶部添加。";
+    setLocalizedText(list, "还没有远程订阅，可在顶部添加。");
     return;
   }
   list.className = "subscription-manager-list";
@@ -1099,13 +1145,13 @@ function renderSubscriptionActivationHint() {
     checkbox.checked = false;
     subscriptionActivationReconciled = true;
   }
-  $("#managed-subscription-activate-hint")!.textContent = !checkbox.checked
+  setLocalizedText($("#managed-subscription-activate-hint")!, !checkbox.checked
     ? subscriptionActivationReconciled
       ? "已有当前配置，未自动选用新订阅；如需替换，请勾选「添加后选用」。"
       : "仅保存，不替换当前配置；需要时再点击卡片上的「选用」。"
     : store.runtime?.phase === "running"
       ? "校验成功后切换运行中的配置，可能影响现有连接；不会改变系统代理或 TUN 模式。"
-      : "校验成功后设为当前配置，不会自动启动核心或开启系统代理。";
+      : "校验成功后设为当前配置，不会自动启动核心或开启系统代理。");
 }
 
 function renderSubscriptionImportVisibility() {
@@ -1115,7 +1161,7 @@ function renderSubscriptionImportVisibility() {
   const showProgress = subscriptionImporting && !open;
   add.setAttribute("aria-expanded", String(open));
   const label = showProgress ? "正在添加 · 查看进度" : "＋ 添加订阅";
-  if (add.textContent !== label) add.textContent = label;
+  setLocalizedText(add, label);
   background.hidden = !showProgress;
   const status = showProgress ? $("#managed-subscription-import-status")!.textContent || "正在添加订阅…" : "";
   if (background.textContent !== status) background.textContent = status;
@@ -1132,7 +1178,7 @@ function openSubscriptionForm() {
   }
   if (!subscriptionImporting) {
     const path = $<HTMLSelectElement>("#subscription-download-path")!;
-    $("#managed-subscription-download-summary")!.textContent = `下载路径：${path.selectedOptions[0]?.textContent ?? "跟随 Serylane"}。如需更改，请先收起窗口。`;
+    setLocalizedText($("#managed-subscription-download-summary")!, `下载路径：${path.selectedOptions[0]?.textContent ?? "跟随 Serylane"}。如需更改，请先收起窗口。`);
   }
   renderSubscriptionActivationHint();
   subscriptionDialogRevision++;
@@ -1158,7 +1204,7 @@ function renderProfiles() {
   if (!list) return;
   if (!store.profiles.length) {
     list.className = "profile-list empty-state";
-    list.textContent = "还没有配置档案";
+    setLocalizedText(list, "还没有配置档案");
   } else {
     list.className = "profile-list";
     const rows = (profiles: ProfileRecord[]) => profiles.map((profile) => {
@@ -1175,7 +1221,7 @@ function renderProfiles() {
       .join("");
     const remote = store.profiles.filter(profile => profile.source.type === "remote_subscription");
     const local = store.profiles.filter(profile => profile.source.type !== "remote_subscription");
-    list.innerHTML = `<h3 class="profile-source-heading">订阅配置 · 与订阅同步</h3>${rows(remote) || '<p class="hint">尚未添加订阅</p>'}<h3 class="profile-source-heading">本地 YAML</h3>${rows(local) || '<p class="hint">尚无本地配置</p>'}`;
+    list.innerHTML = `<h3 class="profile-source-heading"><!--i18n:ui-9e46e009e1192f-->订阅配置 · 与订阅同步</h3>${rows(remote) || "<p class=\"hint\"><!--i18n:ui-3c38970312cc1c-->尚未添加订阅</p>"}<h3 class="profile-source-heading"><!--i18n:ui-66be2e543e89b9-->本地 YAML</h3>${rows(local) || "<p class=\"hint\"><!--i18n:ui-95337169b21762-->尚无本地配置</p>"}`;
   }
   renderProfileDetails();
 }
@@ -1186,9 +1232,9 @@ function renderProfileDetails() {
   const container = $("#profile-detail");
   if (!title || !container) return;
   if (!details) {
-    title.textContent = "选择一个配置";
+    setLocalizedText(title, "选择一个配置");
     container.className = "empty-state";
-    container.textContent = "在左侧选择配置后查看版本和校验结果。";
+    setLocalizedText(container, "在左侧选择配置后查看版本和校验结果。");
     return;
   }
   const { profile, summary, revisions } = details;
@@ -1196,27 +1242,27 @@ function renderProfileDetails() {
   container.className = "profile-detail";
   container.innerHTML = `
     <div class="detail-grid">
-      <span>来源</span><strong>${escapeHtml(profileSourceLabel(profile))}</strong>
-      <span>路由模式</span><strong>${profile.routingMode === "global" ? "全局" : profile.routingMode === "direct" ? "直连" : "规则"}</strong>
-      <span>节点</span><strong>${summary ? summary.nodeCount + summary.proxyProviderCount : "—"}</strong>
-      <span>代理组</span><strong>${summary?.proxyGroupCount ?? "—"}</strong>
-      <span>规则</span><strong>${summary ? summary.ruleCount + summary.ruleProviderCount : "—"}</strong>
-      <span>OpenAI 灾备</span><strong>${profile.openaiPolicy.enabled ? `${profile.openaiPolicy.selectedNodes.length} 个节点 · 自动维护${profile.openaiPolicy.autoMaintain ? "开启" : "关闭"}` : "未启用"}</strong>
+      <span><!--i18n:ui-a488e93d69cc12-->来源</span><strong>${escapeHtml(profileSourceLabel(profile))}</strong>
+      <span><!--i18n:ui-90fa45059700d6-->路由模式</span><strong>${profile.routingMode === "global" ? "全局" : profile.routingMode === "direct" ? "直连" : "规则"}</strong>
+      <span><!--i18n:ui-2410d860f093b7-->节点</span><strong>${summary ? summary.nodeCount + summary.proxyProviderCount : "—"}</strong>
+      <span><!--i18n:ui-d2fb017efc9792-->代理组</span><strong>${summary?.proxyGroupCount ?? "—"}</strong>
+      <span><!--i18n:ui-1123245d1bed08-->规则</span><strong>${summary ? summary.ruleCount + summary.ruleProviderCount : "—"}</strong>
+      <span><!--i18n:ui-bb6d237a2eee31-->OpenAI 灾备</span><strong>${profile.openaiPolicy.enabled ? `${profile.openaiPolicy.selectedNodes.length} 个节点 · 自动维护${profile.openaiPolicy.autoMaintain ? "开启" : "关闭"}` : "未启用"}</strong>
     </div>
     <div class="profile-actions">
-      <button class="button button-primary" data-profile-action="activate" data-profile-id="${profile.id}">激活</button>
-      <button class="button button-quiet" data-profile-action="refresh" data-profile-id="${profile.id}" ${profile.source.type !== "remote_subscription" ? "disabled" : ""}>更新</button>
-      <button class="button button-quiet" data-profile-action="rollback" data-profile-id="${profile.id}" ${!profile.lastKnownGoodRevisionId ? "disabled" : ""}>回滚</button>
-      <button class="button button-danger" data-profile-action="delete" data-profile-id="${profile.id}" >删除</button>
+      <button class="button button-primary" data-profile-action="activate" data-profile-id="${profile.id}"><!--i18n:ui-dd1286c29e9b15-->激活</button>
+      <button class="button button-quiet" data-profile-action="refresh" data-profile-id="${profile.id}" ${profile.source.type !== "remote_subscription" ? "disabled" : ""}><!--i18n:ui-3055a035f0eb7a-->更新</button>
+      <button class="button button-quiet" data-profile-action="rollback" data-profile-id="${profile.id}" ${!profile.lastKnownGoodRevisionId ? "disabled" : ""}><!--i18n:ui-6518e21a8e5ff2-->回滚</button>
+      <button class="button button-danger" data-profile-action="delete" data-profile-id="${profile.id}" ><!--i18n:ui-2f9daa828907b9-->删除</button>
     </div>
-    <h3>版本记录</h3>
+    <h3><!--i18n:ui-77426c9420083d-->版本记录</h3>
     <div class="revision-list">
       ${revisions.map((revision) => `
         <button class="revision-row ${revision.id === profile.activeRevisionId ? "is-active" : ""}" data-profile-action="revision" data-profile-id="${profile.id}" data-revision-id="${revision.id}">
           <span>${escapeHtml(revisionLabel(revision))}</span>
           <small>${revision.validation.nativeCoreValidated ? "core validated" : "not validated"} · ${escapeHtml(revision.effectiveSha256.slice(0, 12))}</small>
         </button>
-      `).join("") || '<div class="empty-state">暂无版本</div>'}
+      `).join("") || "<div class=\"empty-state\"><!--i18n:ui-486816d5751fba-->暂无版本</div>"}
     </div>
     ${summary?.warnings.length ? `<div class="warning-box">${summary.warnings.map(escapeHtml).join("<br>")}</div>` : ""}
   `;
@@ -1254,35 +1300,35 @@ function renderSettings() {
 
 function renderAppUpdate() {
   const presentation = describeAppUpdate(appUpdateStatus);
-  $("#app-update-network-path")!.textContent = appUpdateStatus.networkPath && appUpdateStatus.networkPath !== "待确定" ? `网络路径：${appUpdateStatus.networkPath}` : "";
+  setLocalizedText($("#app-update-network-path")!, appUpdateStatus.networkPath && appUpdateStatus.networkPath !== "待确定" ? `网络路径：${appUpdateStatus.networkPath}` : "");
   const lastInstall = $("#app-update-last-install")!;
   lastInstall.textContent = appUpdateStatus.lastInstall ?? "";
   $("#app-update-history")!.hidden = !lastInstall.textContent;
   const attempts = $("#app-update-attempts")!;
   attempts.replaceChildren(...(appUpdateStatus.attempts ?? []).map(attempt => {
-    const item = document.createElement("li"); item.textContent = `${updateSourceLabel(attempt.source)}${attempt.number ? ` · 第 ${attempt.number} 次` : ""}：${attempt.result}${attempt.elapsedMs != null ? ` · ${(attempt.elapsedMs / 1000).toFixed(1)} 秒` : ""}`; return item;
+    const item = document.createElement("li"); setLocalizedText(item, `${updateSourceLabel(attempt.source)}${attempt.number ? ` · 第 ${attempt.number} 次` : ""}：${attempt.result}${attempt.elapsedMs != null ? ` · ${(attempt.elapsedMs / 1000).toFixed(1)} 秒` : ""}`); return item;
   }));
   attempts.hidden = !attempts.childElementCount;
-  $("#app-update-install")!.textContent = presentation.installLabel;
+  setLocalizedText($("#app-update-install")!, presentation.installLabel);
   const state = $("#app-update-state")!;
-  state.textContent = presentation.badge;
+  setLocalizedText(state, presentation.badge);
   state.classList.toggle("is-hidden", appUpdateStatus.phase === "idle");
   $("#app-update-feedback")!.classList.toggle("is-hidden", appUpdateStatus.phase === "idle");
   state.classList.toggle("is-running", ["current", "ready"].includes(presentation.state));
   state.classList.toggle("is-warning", presentation.state === "available");
   state.classList.toggle("is-error", presentation.state === "failed");
-  $("#app-update-title")!.textContent = presentation.label;
-  $("#app-update-message")!.textContent = presentation.detail;
+  setLocalizedText($("#app-update-title")!, presentation.label);
+  setLocalizedText($("#app-update-message")!, presentation.detail);
   $("#app-update-current")!.textContent =
     store.appInfo?.version ?? store.appUpdate?.currentVersion ?? "—";
-  $("#app-update-latest")!.textContent = store.appUpdate?.latestVersion ?? "尚未检查";
-  $("#app-update-date")!.textContent = formatDate(store.appUpdate?.publishedAt);
-  $("#app-update-source")!.textContent = updateSourceLabel(store.appUpdate?.source);
+  setLocalizedText($("#app-update-latest")!, store.appUpdate?.latestVersion ?? "尚未检查");
+  setLocalizedDate($("#app-update-date")!, () => formatDate(store.appUpdate?.publishedAt));
+  setLocalizedText($("#app-update-source")!, updateSourceLabel(store.appUpdate?.source));
   const channels = $("#app-update-channels")!;
   channels.replaceChildren(...(store.appUpdate?.channels ?? []).map((channel) => {
     const item = document.createElement("li");
     item.classList.toggle("is-warning", Boolean(channel.error));
-    item.textContent = `${updateSourceLabel(channel.source)} · ${channel.error ?? channel.version ?? "尚未检查"}`;
+    setLocalizedText(item, `${updateSourceLabel(channel.source)} · ${channel.error ?? channel.version ?? "尚未检查"}`);
     return item;
   }));
   channels.classList.toggle("is-hidden", !channels.childElementCount);
@@ -1292,7 +1338,7 @@ function renderAppUpdate() {
 
   const checkButton = $("#app-update-check") as HTMLButtonElement;
   checkButton.disabled = busy;
-  checkButton.textContent = appUpdateChecking ? "正在检查…" : "检查更新";
+  setLocalizedText(checkButton, appUpdateChecking ? "正在检查…" : "检查更新");
   const openButton = $("#app-update-open") as HTMLButtonElement;
   openButton.classList.toggle("is-hidden", !presentation.canOpen);
   openButton.disabled = !presentation.canOpen || busy;
@@ -1320,6 +1366,37 @@ function acceptAppUpdate(status: AppUpdateStatus) {
   renderAppUpdate();
 }
 
+const shownUpdateVersions = new Set<string>();
+let pendingUpdateNotice: string | null = null;
+
+function showPendingUpdateNotice() {
+  if (!pendingUpdateNotice || document.hidden || app?.hidden) return;
+  const version = pendingUpdateNotice;
+  pendingUpdateNotice = null;
+  if (shownUpdateVersions.has(version)) return;
+  shownUpdateVersions.add(version);
+  const title = `Serylane ${version} 可用`;
+  setMessage($("#app-update-notice-version")!, "update-card-title", title, { version });
+  setMessage($("#app-update-announcement")!, "update-card-title", title, { version });
+  $("#app-update-notice")!.hidden = false;
+}
+
+$("#app-update-notice-open")!.addEventListener("click", () => {
+  $("#app-update-notice")!.hidden = true;
+  setLocalizedText($("#app-update-announcement")!, "");
+  navigate("settings");
+  const heading = $("#update-heading")!;
+  heading.tabIndex = -1;
+  requestAnimationFrame(() => {
+    heading.focus({ preventScroll: true });
+    $("#app-update-panel")!.scrollIntoView({ block: "start", behavior: "instant" });
+  });
+});
+$("#app-update-notice-dismiss")!.addEventListener("click", () => {
+  $("#app-update-notice")!.hidden = true;
+  setLocalizedText($("#app-update-announcement")!, "");
+});
+
 async function checkForAppUpdate(silent: boolean) {
   if (appUpdateChecking || appUpdateActionBusy || describeAppUpdate(appUpdateStatus).busy || (appUpdateStatus.phase === "ready" || appUpdateStatus.retryInstall) && silent) return;
   updateCheckAttemptedThisSession = true;
@@ -1330,15 +1407,17 @@ async function checkForAppUpdate(silent: boolean) {
   try {
     const result = await api.checkAppUpdate();
     acceptAppUpdate(result);
-    if (result.info?.available) {
-      toast(`发现 Serylane 新版本 ${result.info.latestVersion}`, "info");
-    } else if (!silent) {
+    if (silent) {
+      pendingUpdateNotice = backgroundUpdateVersion(result, shownUpdateVersions);
+      showPendingUpdateNotice();
+    } else {
       toast(describeAppUpdate(result).label, "info");
     }
   } catch (error) {
     appUpdateError = errorMessage(error);
     appUpdateStatus = { ...appUpdateStatus, phase: "failed", info: null, error: appUpdateError };
     store.appUpdate = null;
+    pendingUpdateNotice = null;
     if (!silent) toast(appUpdateError, "error");
   } finally {
     appUpdateChecking = false;
@@ -1497,11 +1576,9 @@ function renderAppearance(snapshot: ThemeSnapshot) {
   $(".appearance-grid")!.setAttribute("aria-busy", String(snapshot.saving));
   const submit = document.querySelector<HTMLButtonElement>('#settings-form button[type="submit"]');
   if (submit) submit.disabled = busy || runtimeActionInFlight || networkModeSwitching;
-  $("#appearance-status")!.textContent = snapshot.saving
+  setLocalizedText($("#appearance-status")!, snapshot.saving
     ? "正在保存外观…"
-    : appearanceFeedback || (snapshot.selected === "system"
-      ? `正在跟随系统 · 当前为${snapshot.resolved === "dark" ? "深色" : "浅色"}`
-      : `${THEME_OPTIONS.find((option) => option.id === snapshot.selected)!.label}主题 · 自动保存，不影响代理状态`);
+    : appearanceFeedback || (snapshot.selected === "system" ? "外观跟随系统" : "外观已自动保存"));
 }
 
 async function selectTheme(preference: ThemePreference) {
@@ -1764,10 +1841,10 @@ function renderSubscriptionTasks() {
     }
     const text = row.querySelector("span")!;
     const name = store.subscriptions.find(s => s.profile.id === task.profileId)?.profile.displayName ?? "订阅";
-    text.textContent = name + "：" + taskDescription(task);
+    setLocalizedText(text, name + "：" + taskDescription(task));
     const cancel = row.querySelector("button")!;
     cancel.hidden = ["completed", "failed", "cancelled"].includes(task.phase);
-    cancel.textContent = subscriptionCancellationPending.has(task.id) ? "正在结束…" : "取消更新";
+    setLocalizedText(cancel, subscriptionCancellationPending.has(task.id) ? "正在结束…" : "取消更新");
     cancel.disabled = !task.canCancel || subscriptionCancellationPending.has(task.id);
   }
 }
@@ -1781,7 +1858,7 @@ async function cancelSubscriptionTask(id: string, button: HTMLButtonElement) {
     : button.isConnected && button.closest<HTMLElement>("[data-task-id]")?.dataset.taskId === id;
   try {
     const accepted = await api.cancelSubscriptionTask(id);
-    if (current()) button.textContent = accepted ? "正在取消…" : "正在完成保存…";
+    if (current()) setLocalizedText(button, accepted ? "正在取消…" : "正在完成保存…");
   } catch {
     subscriptionCancellationPending.delete(id);
     if (!current()) return;
@@ -1801,11 +1878,11 @@ async function runSubscriptionTask<T>(
   const stop = observeSubscriptionTask(id, api.subscriptionTask, task => {
     subscriptionTasks.set(id, task);
     if (operation === "import" && subscriptionImportTaskId === id) {
-      $("#managed-subscription-import-status")!.textContent = taskDescription(task);
+      setLocalizedText($("#managed-subscription-import-status")!, taskDescription(task));
       const abort = $("#managed-subscription-abort") as HTMLButtonElement;
       abort.hidden = false;
       abort.disabled = !task.canCancel || subscriptionCancellationPending.has(id);
-      if (!abort.textContent?.includes("正在取消")) abort.textContent = task.canCancel ? "取消添加" : "正在完成…";
+      if (!sourceText(abort).includes("正在取消")) setLocalizedText(abort, task.canCancel ? "取消添加" : "正在完成…");
       renderSubscriptionImportVisibility();
     }
     renderSubscriptionTasks();
@@ -1828,7 +1905,7 @@ async function runSubscriptionTask<T>(
     if (subscriptionImportTaskId === id) {
       subscriptionImportTaskId = null;
       const abort = $("#managed-subscription-abort") as HTMLButtonElement;
-      abort.hidden = true; abort.disabled = true; abort.textContent = "取消添加";
+      abort.hidden = true; abort.disabled = true; setLocalizedText(abort, "取消添加");
     }
     renderSubscriptionTasks();
   }
@@ -1863,10 +1940,10 @@ async function createSubscription(
   fields.disabled = true;
   form.setAttribute("aria-busy", "true");
   button.setAttribute("aria-busy", "true");
-  button.textContent = "正在处理…";
+  setLocalizedText(button, "正在处理…");
   feedback.hidden = true;
   status.className = "import-status is-loading";
-  status.textContent = "正在准备订阅下载；连接、校验和保存进度会在这里显示。";
+  setLocalizedText(status, "正在准备订阅下载；连接、校验和保存进度会在这里显示。");
   renderSubscriptionImportVisibility();
   let result: Awaited<ReturnType<typeof api.createSubscriptionProfile>>;
   try {
@@ -1880,7 +1957,7 @@ async function createSubscription(
     if (!dialog.open) {
       feedback.hidden = false;
       feedback.className = "subscription-feedback is-warning";
-      feedback.textContent = `${message} 已保留草稿，打开「添加订阅」可重试。`;
+      setLocalizedText(feedback, `${message} 已保留草稿，打开「添加订阅」可重试。`);
     }
     toast(message, "error");
     return;
@@ -1889,7 +1966,7 @@ async function createSubscription(
     fields.disabled = false;
     form.setAttribute("aria-busy", "false");
     button.setAttribute("aria-busy", "false");
-    button.textContent = "验证并添加";
+    setLocalizedText(button, "验证并添加");
     renderSubscriptionImportVisibility();
   }
 
@@ -2014,7 +2091,7 @@ async function refreshAllSubscriptions() {
   }
   const button = $("#subscriptions-refresh-all") as HTMLButtonElement;
   button.disabled = true;
-  button.textContent = "正在刷新…";
+  setLocalizedText(button, "正在刷新…");
   let updated = 0;
   let failed = 0;
   const subscriptionIds = store.subscriptions.map(({ profile }) => profile.id);
@@ -2035,7 +2112,7 @@ async function refreshAllSubscriptions() {
   } finally {
     for (const id of subscriptionIds) subscriptionRefreshing.delete(id);
     button.disabled = false;
-    button.textContent = "刷新全部";
+    setLocalizedText(button, "刷新全部");
     await refreshBase();
   }
 }
@@ -2103,7 +2180,7 @@ function renderOpenAiPolicy() {
     const empty = `
       <div class="openai-policy-empty" data-render-key="policy-empty">
         <span class="openai-mark">AI</span>
-        <div><h3>OpenAI 自动灾备</h3><p>激活一个包含显式节点的订阅后即可生成。</p></div>
+        <div><h3><!--i18n:ui-7a4d4aceddd19e-->OpenAI 自动灾备</h3><p><!--i18n:ui-46d2efa9ad2552-->激活一个包含显式节点的订阅后即可生成。</p></div>
       </div>`;
     if (openAiPolicyMarkup !== empty) stableMarkup(container, empty);
     openAiPolicyMarkup = empty;
@@ -2151,17 +2228,17 @@ function renderOpenAiPolicy() {
       <div class="openai-policy-title">
         <span class="openai-mark">AI</span>
         <div>
-          <div class="openai-title-line"><h3>OpenAI 自动灾备</h3><span class="managed-badge">托管策略</span></div>
+          <div class="openai-title-line"><h3><!--i18n:ui-7a4d4aceddd19e-->OpenAI 自动灾备</h3><span class="managed-badge"><!--i18n:ui-3360178d20462b-->托管策略</span></div>
           <p>${escapeHtml(statusText)}</p>
         </div>
       </div>
       <div class="openai-policy-actions">
         ${running
-          ? '<button class="button button-danger" data-render-key="policy-generation" data-openai-action="cancel">停止检测</button>'
+          ? "<button class=\"button button-danger\" data-render-key=\"policy-generation\" data-openai-action=\"cancel\"><!--i18n:ui-605fca0de84789-->停止检测</button>"
           : `<button class="button button-primary" data-render-key="policy-generation" data-openai-action="generate" ${anotherTaskRunning ? "disabled" : ""}>${anotherTaskRunning ? "其他订阅生成中" : policy.enabled ? "重新筛选节点" : "生成 AI 策略"}</button>`}
         <button type="button" class="button button-quiet" data-render-key="policy-health" data-openai-action="health" ${nodeSelectionButtonAttributes(healthLoading, !health.enabled || health.pending || health.running)}>${health.cancelling ? "正在取消检查…" : health.starting ? "正在启动检查…" : health.running ? "健康检查中…" : "立即健康检查"}</button>
-        <button class="button button-quiet" data-render-key="policy-details" data-openai-action="details" ${!policy.enabled || store.runtime?.phase !== "running" ? "disabled" : ""}>节点详情</button>
-        ${policy.enabled && !task?.running ? '<button class="button button-danger" data-render-key="policy-disable" data-openai-action="disable">停用</button>' : ""}
+        <button class="button button-quiet" data-render-key="policy-details" data-openai-action="details" ${!policy.enabled || store.runtime?.phase !== "running" ? "disabled" : ""}><!--i18n:ui-396fc72d71dc09-->节点详情</button>
+        ${policy.enabled && !task?.running ? "<button class=\"button button-danger\" data-render-key=\"policy-disable\" data-openai-action=\"disable\"><!--i18n:ui-4e6fd0e28c5586-->停用</button>" : ""}
       </div>
     </div>
     ${running ? `
@@ -2170,23 +2247,23 @@ function renderOpenAiPolicy() {
       </div>
       <p class="openai-progress-copy">${escapeHtml(task!.message)}</p>
     ` : ""}
-    <p class="hint">至少 1 个合格节点即可使用，最多保留 10 个优选节点。单节点时无备用出口，2 个及以上支持自动故障切换。</p>
+    <p class="hint"><!--i18n:ui-98fb0351f362e3-->至少 1 个合格节点即可使用，最多保留 10 个优选节点。单节点时无备用出口，2 个及以上支持自动故障切换。</p>
     ${aiHealthMarkup(health, resultsOpen)}
-    ${taskForActive && task?.diagnostics ? `<p class="hint openai-selection-report">可提取 ${task.diagnostics.extracted} · 地区排除 ${task.diagnostics.excludedRegion} · 成本排除 ${task.diagnostics.excludedCost} · 符合条件 ${task.diagnostics.eligible} · 本轮检测 ${task.diagnostics.tested} · 初检通过 ${task.diagnostics.reachable ?? '待检测'} · 质量通过 ${task.diagnostics.qualityPassed ?? '待检测'} · 入选 ${task.diagnostics.selected ?? '待确定'}</p>` : ''}
-    ${active.profile.routingMode !== "rule" ? '<p class="warning-box">当前为全局或直连模式，AI 专用分流规则暂不参与。需要 AI 分流时，请先在「自选节点」选择规则模式，再切回 AI 代理。</p>' : ""}
+    ${taskForActive && task?.diagnostics ? `<p class="hint openai-selection-report"><!--i18n:ui-057cee97334cd9-->可提取 ${task.diagnostics.extracted} · 地区排除 ${task.diagnostics.excludedRegion} · 成本排除 ${task.diagnostics.excludedCost} · 符合条件 ${task.diagnostics.eligible} · 本轮检测 ${task.diagnostics.tested} · 初检通过 ${task.diagnostics.reachable ?? '待检测'} · 质量通过 ${task.diagnostics.qualityPassed ?? '待检测'} · 入选 ${task.diagnostics.selected ?? '待确定'}</p>` : ''}
+    ${active.profile.routingMode !== "rule" ? "<p class=\"warning-box\"><!--i18n:ui-55972c6ea8e538-->当前为全局或直连模式，AI 专用分流规则暂不参与。需要 AI 分流时，请先在「自选节点」选择规则模式，再切回 AI 代理。</p>" : ""}
     ${taskForActive && task?.phase === "failed" && task.error ? `<div class="openai-error">${escapeHtml(task.error)}</div>` : ""}
-    ${rankingSnapshot?.profileId === active.profile.id && rankingSnapshot.revisionId === active.profile.activeRevisionId && rankingSnapshot.running && rankingSnapshot.commonFailure ? '<p class="hint">多个出口同时探测失败，等待复查。</p>' : ""}
-    ${ranking ? openAiRecommendationMarkup(recommendations, runtimeGroup?.now, runtimeGroup ? proxyMap : undefined) : policy.enabled ? '<p class="hint">重新筛选节点后可查看推荐顺序。</p>' : ""}
+    ${rankingSnapshot?.profileId === active.profile.id && rankingSnapshot.revisionId === active.profile.activeRevisionId && rankingSnapshot.running && rankingSnapshot.commonFailure ? "<p class=\"hint\"><!--i18n:ui-aa92a6c69d426d-->多个出口同时探测失败，等待复查。</p>" : ""}
+    ${ranking ? openAiRecommendationMarkup(recommendations, runtimeGroup?.now, runtimeGroup ? proxyMap : undefined) : policy.enabled ? "<p class=\"hint\"><!--i18n:ui-4233f2dfd46209-->重新筛选节点后可查看推荐顺序。</p>" : ""}
     ${runtimeGroup && policy.enabled ? nodeSelectionMarkup(OPENAI_GROUP_NAME, runtimeGroup, Boolean(pending) || Boolean(task?.running), candidates, proxyMap, recommendations, {
       draft: aiNodeDraft?.node, pending: pending?.group === OPENAI_GROUP_NAME ? pending : undefined,
-    }) : '<p class="node-choice-help">生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，请在「自选节点」页切换为普通策略组选点。</p>'}
+    }) : "<p class=\"node-choice-help\"><!--i18n:ui-d3bc2ee2fcc02d-->生成灾备并启动核心后，可手动选择候选节点。不需要 OpenAI 灾备时，请在「自选节点」页切换为普通策略组选点。</p>"}
     <div class="openai-policy-stats">
       <div><span>${runtimeGroup?.now ? "当前节点" : "候选首选"}</span><strong>${escapeHtml(currentNode)}</strong></div>
-      <div><span>自动维护</span><strong>${policy.autoMaintain ? "订阅更新后执行" : "仅手动执行"}</strong></div>
-      <div><span>上次筛选</span><strong>${formatPolicyDate(policy.lastBenchmarkedAt)}</strong></div>
-      <div><span>故障策略</span><strong>${runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : policy.selectedNodes.length === 1 ? "单节点 · 暂无备用" : ranking ? "按推荐顺序接替 · 健康节点保持" : "基础 Fallback · 可能自动回切"}</strong></div>
+      <div><span><!--i18n:ui-c9a310c6e49920-->自动维护</span><strong>${policy.autoMaintain ? "订阅更新后执行" : "仅手动执行"}</strong></div>
+      <div><span><!--i18n:ui-8e7d9d3679ab43-->上次筛选</span><strong>${formatPolicyDate(policy.lastBenchmarkedAt)}</strong></div>
+      <div><span><!--i18n:ui-3761bcb9b0074c-->故障策略</span><strong>${runtimeGroup?.manualNode ? "手动固定 · 暂停自动切换" : runtimeGroup?.fixed ? "手动优先 · 失效后由核心回退" : policy.selectedNodes.length === 1 ? "单节点 · 暂无备用" : ranking ? "按推荐顺序接替 · 健康节点保持" : "基础 Fallback · 可能自动回切"}</strong></div>
     </div>
-    <p class="hint">${ranking ? "评分权重为模型流完成率 45%、连通性 25%、流量倍率 20%、延迟与波动 10%。缺少可归因的模型流样本时，按现有证据暂定推荐。" : "基础探测仅验证接口可达。"} AI 自动选点通过当前订阅的规则模式生效。切换只影响后续命中此组的新连接，不会断开已有会话。域名路由或本地规则可能优先。</p>
+    <p class="hint"><!--i18n:ui-630730e4bb05d1-->${ranking ? "评分权重为模型流完成率 45%、连通性 25%、流量倍率 20%、延迟与波动 10%。缺少可归因的模型流样本时，按现有证据暂定推荐。" : "基础探测仅验证接口可达。"} AI 自动选点通过当前订阅的规则模式生效。切换只影响后续命中此组的新连接，不会断开已有会话。域名路由或本地规则可能优先。</p>
   `;
   // Patch stable controls without disturbing focus or a deliberately chosen draft.
   if (openAiPolicyMarkup === markup) return;
@@ -2336,16 +2413,16 @@ function renderOverviewNodes() {
   if (overviewProfile !== profile?.id) { overviewProfile = profile?.id ?? ""; overviewGroup = ""; overviewNodeDetails = {}; }
   const running = store.runtime?.phase === "running";
   if (!running || !profile || !store.proxies || profile.routingMode === "direct") {
-    container.innerHTML = `<p class="node-choice-help">${escapeHtml(!running ? "核心未运行，没有当前生效的代理节点。" : !profile ? "请先选用配置。" : profile.routingMode === "direct" ? "当前为直连模式，不使用代理节点。切回规则或全局模式后可选点。" : proxyReadError || "正在读取节点信息…")}</p>`;
+    container.innerHTML = `<p class="node-choice-help"><!--i18n:-->${escapeHtml(!running ? "核心未运行，没有当前生效的代理节点。" : !profile ? "请先选用配置。" : profile.routingMode === "direct" ? "当前为直连模式，不使用代理节点。切回规则或全局模式后可选点。" : proxyReadError || "正在读取节点信息…")}</p>`;
     return;
   }
   const map = (store.proxies.proxies ?? {}) as ProxyMap;
   const groups = generalGroups(map, profile.routingMode);
   if (!groups.includes(overviewGroup)) overviewGroup = groups[0] ?? "";
-  const html = `${groups.length > 1 ? `<label class="overview-node-selector">查看普通策略组（仅切换展示）<select id="overview-node-group">${groups.map(name => `<option value="${escapeHtml(name)}" ${overviewGroup === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>` : ""}
-    <div class="overview-node-grid">${overviewGroup ? currentNodeMarkup(profile.routingMode === "global" ? "全局代理" : "普通代理", overviewGroup, map, overviewNodeDetails[overviewGroup]) : '<p class="node-choice-help">当前配置没有可展示的普通代理组，请在「配置」检查节点与分流规则。</p>'}
+  const html = `${groups.length > 1 ? `<label class="overview-node-selector"><!--i18n:ui-324f578cb63b92-->查看普通策略组（仅切换展示）<select id="overview-node-group">${groups.map(name => `<option value="${escapeHtml(name)}" ${overviewGroup === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>` : ""}
+    <div class="overview-node-grid">${overviewGroup ? currentNodeMarkup(profile.routingMode === "global" ? "全局代理" : "普通代理", overviewGroup, map, overviewNodeDetails[overviewGroup]) : "<p class=\"node-choice-help\"><!--i18n:ui-20e27f9c31c25f-->当前配置没有可展示的普通代理组，请在「配置」检查节点与分流规则。</p>"}
     ${profile.routingMode === "rule" && store.manualOutbound?.mode === "ai" && profile.openaiPolicy.enabled && map[OPENAI_GROUP_NAME] ? currentNodeMarkup("OpenAI 专用出口", OPENAI_GROUP_NAME, map, overviewNodeDetails[OPENAI_GROUP_NAME]) : ""}</div>
-    <p class="node-choice-help">${profile.routingMode === "global" ? "全局模式按 GLOBAL 组路由，不使用 OpenAI 专用分流规则。" : store.manualOutbound?.mode === "ai" && profile.openaiPolicy.enabled ? "OpenAI 专用出口仅用于命中对应规则的请求；用户自定义规则可能优先。" : "OpenAI 灾备未启用，普通代理选点可独立使用。"} 切换只影响后续新连接，不主动断开已有连接。</p>`;
+    <p class="node-choice-help"><!--i18n:ui-43f2a91421a7e9-->${profile.routingMode === "global" ? "全局模式按 GLOBAL 组路由，不使用 OpenAI 专用分流规则。" : store.manualOutbound?.mode === "ai" && profile.openaiPolicy.enabled ? "OpenAI 专用出口仅用于命中对应规则的请求；用户自定义规则可能优先。" : "OpenAI 灾备未启用，普通代理选点可独立使用。"} 切换只影响后续新连接，不主动断开已有连接。</p>`;
   stableMarkup(container, html);
 }
 
@@ -2473,7 +2550,7 @@ function renderProxies() {
   const groups = generalGroups(map, mode);
   if (!groups.length) {
     container.className = "card-list empty-state";
-    container.textContent = !store.activeProfile ? "还没有选用配置。请添加订阅或导入本地 YAML 后选用。" : mode === "direct" ? "直连模式不使用代理节点，切回规则或全局模式后选择。" : proxyReadError || "启动核心后查看订阅策略组及提供器节点。";
+    setLocalizedText(container, !store.activeProfile ? "还没有选用配置。请添加订阅或导入本地 YAML 后选用。" : mode === "direct" ? "直连模式不使用代理节点，切回规则或全局模式后选择。" : proxyReadError || "启动核心后查看订阅策略组及提供器节点。");
     return;
   }
   const open = new Set(Array.from(container.querySelectorAll<HTMLDetailsElement>('details[open]')).map(el => el.dataset.group));
@@ -2491,8 +2568,8 @@ function renderProxies() {
     const value = map[name];
     const autoPending = pending?.group === name && pending.node === null;
     return `<details class="proxy-card manual-group" data-render-key="${escapeHtml(name)}" data-group="${escapeHtml(name)}" ${open.has(name) || firstRender && index === 0 || query ? 'open' : ''}>
-      <summary><strong>${escapeHtml(name)}</strong><span>${escapeHtml(value.now ?? '按组策略')} · ${value.all?.length ?? 0} 节点</span><small>${escapeHtml(value.type ?? '')}</small></summary>
-      <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}">当前出口详情</button>${autoPending || value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-render-key="manual-restore-auto" data-node-auto="${escapeHtml(name)}" ${nodeSelectionButtonAttributes(autoPending, busy || Boolean(pending))}>${autoPending ? pending.phase === 'verify' ? '正在核实出口…' : '正在恢复…' : '恢复自动'}</button>` : ''}</div>
+      <summary><strong>${escapeHtml(name)}</strong><span><!--i18n:ui-d40d81d38c61ec-->${escapeHtml(value.now ?? '按组策略')} · ${value.all?.length ?? 0} 节点</span><small>${escapeHtml(value.type ?? '')}</small></summary>
+      <div class="manual-group-actions"><button class="button button-quiet proxy-details" data-group="${escapeHtml(name)}"><!--i18n:ui-a036d77c0a31b5-->当前出口详情</button>${autoPending || value.fixed && ['Fallback','URLTest'].includes(value.type ?? '') ? `<button class="button button-quiet" data-render-key="manual-restore-auto" data-node-auto="${escapeHtml(name)}" ${nodeSelectionButtonAttributes(autoPending, busy || Boolean(pending))}>${autoPending ? pending.phase === 'verify' ? '正在核实出口…' : '正在恢复…' : '恢复自动'}</button>` : ''}</div>
       ${open.has(name) || firstRender && index === 0 || query ? nodeGridMarkup(name, map, query, sort, busy, testResults, batchTesting, nodeLimits.get(name) ?? 200, singleTests, pending) : ""}</details>`;
   }).join(''));
 }
@@ -2523,7 +2600,7 @@ function renderNodeDetails() {
           return `<span title="${sample.delayMs} ms" style="height:${Math.round(18 + ratio * 16)}px;opacity:${0.65 + index * 0.07}"></span>`;
         })
         .join("")
-    : '<em>暂无历史</em>';
+    : "<em><!--i18n:ui-c84999752d52e9-->暂无历史</em>";
   const average = delays.length
     ? Math.round(delays.reduce((sum, delay) => sum + delay, 0) / delays.length)
     : null;
@@ -2540,28 +2617,28 @@ function renderNodeDetails() {
   ];
   container.innerHTML = `
     <header class="node-modal-header">
-      <div class="node-modal-identity"><span class="node-modal-mark">${escapeHtml(Array.from(details.nodeName).slice(0, 2).join("").toUpperCase())}</span><div><h2 id="node-details-title">当前节点信息</h2><p>${escapeHtml(details.group)} · 当前生效链路</p></div></div>
-      <button class="button button-quiet" data-node-modal-action="close">关闭</button>
+      <div class="node-modal-identity"><span class="node-modal-mark">${escapeHtml(Array.from(details.nodeName).slice(0, 2).join("").toUpperCase())}</span><div><h2 id="node-details-title"><!--i18n:ui-99b4dab29fa187-->当前节点信息</h2><p><!--i18n:ui-6a9e4e0846e84b-->${escapeHtml(details.group)} · 当前生效链路</p></div></div>
+      <button class="button button-quiet" data-node-modal-action="close"><!--i18n:ui-3fd47edce45b36-->关闭</button>
     </header>
     <div class="node-health-summary">
-      <div><span>状态</span><strong>${details.alive == null ? "尚未验证" : details.alive ? "最近探测可达" : "最近探测失败"}</strong></div>
-      <div><span>延迟</span><strong>${details.lastDelayMs == null ? "—" : `${details.lastDelayMs} ms`}</strong></div>
-      <div><span>协议</span><strong>${escapeHtml(details.nodeType)} · ${escapeHtml(details.tls ?? "无 TLS")}</strong></div>
-      <div><span>最近检测</span><strong>${latestTime ? formatPolicyDate(latestTime) : "暂无"}</strong></div>
+      <div><span><!--i18n:ui-6320b4a8722a85-->状态</span><strong>${details.alive == null ? "尚未验证" : details.alive ? "最近探测可达" : "最近探测失败"}</strong></div>
+      <div><span><!--i18n:ui-18045b8c40f135-->延迟</span><strong>${details.lastDelayMs == null ? "—" : `${details.lastDelayMs} ms`}</strong></div>
+      <div><span><!--i18n:ui-ab2f31f30acf7f-->协议</span><strong>${escapeHtml(details.nodeType)} · ${escapeHtml(details.tls ?? "无 TLS")}</strong></div>
+      <div><span><!--i18n:ui-85c449ce83ea6f-->最近检测</span><strong>${latestTime ? formatPolicyDate(latestTime) : "暂无"}</strong></div>
     </div>
-    <section class="node-route-card"><span>当前代理链路</span><strong>${details.routeChain.map(escapeHtml).join(" <i>›</i> ")}</strong></section>
+    <section class="node-route-card"><span><!--i18n:ui-8664449facaf0e-->当前代理链路</span><strong>${details.routeChain.map(escapeHtml).join(" <i>›</i> ")}</strong></section>
     <div class="node-detail-grid">
       ${detailsRows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}
     </div>
     <section class="node-history-card">
-      <div><strong>最近 ${history.length || 0} 次检测</strong><span>${average == null ? "暂无有效延迟记录" : `平均 ${average} ms · ${details.alive === false ? "等待故障切换" : "未触发切换"}`}</span></div>
+      <div><strong><!--i18n:ui-e668998bbd035b-->最近 ${history.length || 0} 次检测</strong><span>${average == null ? "暂无有效延迟记录" : `平均 ${average} ms · ${details.alive === false ? "等待故障切换" : "未触发切换"}`}</span></div>
       <div class="node-latency-bars">${bars}</div>
     </section>
     <footer class="node-modal-footer">
-      <span>敏感凭据已隐藏，仅展示诊断所需信息</span>
+      <span><!--i18n:ui-d31593cca4ed0e-->敏感凭据已隐藏，仅展示诊断所需信息</span>
       <div class="toolbar">
-        <button class="button button-quiet" data-node-modal-action="retest">重新测速</button>
-        <button class="button button-primary" data-node-modal-action="switch">切换节点</button>
+        <button class="button button-quiet" data-node-modal-action="retest"><!--i18n:ui-0c755e7bd771d3-->重新测速</button>
+        <button class="button button-primary" data-node-modal-action="switch"><!--i18n:ui-2b5d61e80433a8-->切换节点</button>
       </div>
     </footer>`;
 }
@@ -2637,9 +2714,9 @@ function renderRules() {
       .map(
         (rule) => `<tr><td>${escapeHtml(rule.type)}</td><td>${escapeHtml(rule.payload)}</td><td>${escapeHtml(rule.proxy)}</td></tr>`,
       )
-      .join("") || '<tr><td colspan="3">没有匹配规则</td></tr>';
+      .join("") || "<tr><td colspan=\"3\"><!--i18n:ui-ae8dd3b2073b39-->没有匹配规则</td></tr>";
   $("#rules-more")!.hidden = rules.length <= ruleDisplayLimit;
-  $("#rules-more")!.textContent = `显示更多（${Math.min(ruleDisplayLimit, rules.length)}/${rules.length}）`;
+  setLocalizedText($("#rules-more")!, `显示更多（${Math.min(ruleDisplayLimit, rules.length)}/${rules.length}）`);
 }
 
 function refreshConnections() {
@@ -2655,7 +2732,7 @@ function renderConnections() {
   if (store.view !== "connections") return;
   const payload = store.connections ?? {};
   const connections = (payload.connections ?? []) as any[];
-  $("#connection-totals")!.innerHTML = `<span>上传 <strong>${formatBytes(payload.uploadTotal)}</strong></span><span>下载 <strong>${formatBytes(payload.downloadTotal)}</strong></span><span>连接 <strong>${connections.length}</strong></span>`;
+  $("#connection-totals")!.innerHTML = `<span><!--i18n:ui-9e07e3c0532d49-->上传 <strong>${formatBytes(payload.uploadTotal)}</strong></span><span><!--i18n:ui-4673a230616561-->下载 <strong>${formatBytes(payload.downloadTotal)}</strong></span><span><!--i18n:ui-a5574109f0208e-->连接 <strong>${connections.length}</strong></span>`;
   stableMarkup($("#connections-body")!,
     connections.slice(0, connectionDisplayLimit)
       .map((connection) => {
@@ -2673,9 +2750,9 @@ function renderConnections() {
           </tr>
         `;
       })
-      .join("") || '<tr><td colspan="6">暂无活动连接</td></tr>');
+      .join("") || "<tr><td colspan=\"6\"><!--i18n:ui-dec4a91cf484af-->暂无活动连接</td></tr>");
   $("#connections-more")!.hidden = connections.length <= connectionDisplayLimit;
-  $("#connections-more")!.textContent = `显示更多（${Math.min(connectionDisplayLimit, connections.length)}/${connections.length}）`;
+  setLocalizedText($("#connections-more")!, `显示更多（${Math.min(connectionDisplayLimit, connections.length)}/${connections.length}）`);
 }
 
 async function refreshLogs() {
@@ -2694,10 +2771,10 @@ const diagnosticsView = createDiagnostics({
   changed: snapshot => {
     stableMarkup($("#diagnostic-list")!, diagnosticRowsMarkup(snapshot));
     $("#diagnostic-list")!.setAttribute('aria-busy', String(snapshot.phase === 'running'));
-    $("#diagnostic-status")!.textContent = snapshot.message;
+    setLocalizedText($("#diagnostic-status")!, snapshot.message);
     const button = $("#run-diagnostics") as HTMLButtonElement;
     button.disabled = snapshot.pending;
-    button.textContent = snapshot.pending ? snapshot.phase === 'interrupted' ? '正在结束…' : '正在诊断…' : snapshot.phase === 'idle' ? '立即诊断' : '重新诊断';
+    setLocalizedText(button, snapshot.pending ? snapshot.phase === 'interrupted' ? '正在结束…' : '正在诊断…' : snapshot.phase === 'idle' ? '立即诊断' : '重新诊断');
     button.setAttribute('aria-busy', String(snapshot.pending));
   },
 });
@@ -2794,7 +2871,7 @@ function renderManualMode() {
   if (store.manualOutbound) manualOutbound.accept(store.manualOutbound);
   const select = $("#manual-profile") as HTMLSelectElement;
   if (document.activeElement !== select) {
-    select.innerHTML = '<option value="">请选择配置</option>' + store.profiles.map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.displayName)}${profile.source.type === 'remote_subscription' ? '' : ' · 本地 YAML'}</option>`).join('');
+    select.innerHTML = "<option value=\"\"><!--i18n:ui-7671e6caf98971-->请选择配置</option>" + store.profiles.map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.displayName)}${profile.source.type === 'remote_subscription' ? '' : ' · 本地 YAML'}</option>`).join('');
     select.value = store.activeProfile?.profile.id ?? '';
   }
   for (const id of ["home-routing-mode", "manual-routing-mode"]) document.querySelectorAll<HTMLButtonElement>(`#${id} button`).forEach(button => {
@@ -2817,7 +2894,7 @@ function navigate(view: ViewName) {
   }
   store.view = view;
   document.documentElement.dataset.view = view;
-  $("#page-title")!.textContent = NAV_ITEMS.find((item) => item.id === view)!.label;
+  setLocalizedText($("#page-title")!, NAV_ITEMS.find((item) => item.id === view)!.label);
   $$(".nav-item").forEach((button) => {
     const active = button.dataset.view === view;
     button.classList.toggle("is-active", active);
@@ -2964,7 +3041,7 @@ $("#managed-subscription-form")!.addEventListener("submit", (event) => {
 
 $("#load-sample")!.addEventListener("click", () => {
   ($("#yaml-source") as HTMLTextAreaElement).value = sampleProfile;
-  $("#yaml-summary")!.textContent = "已载入示例";
+  setLocalizedText($("#yaml-summary")!, "已载入示例");
 });
 $("#yaml-file")!.addEventListener("change", (event) => {
   const file = (event.target as HTMLInputElement).files?.[0];
@@ -2973,7 +3050,7 @@ $("#yaml-file")!.addEventListener("change", (event) => {
   reader.onload = () => {
     ($("#yaml-source") as HTMLTextAreaElement).value = String(reader.result ?? "");
     ($("#inline-name") as HTMLInputElement).value = file.name.replace(/\.(ya?ml)$/i, "");
-    $("#yaml-summary")!.textContent = `${file.size.toLocaleString()} 字节`;
+    setLocalizedText($("#yaml-summary")!, `${file.size.toLocaleString(formatLocale())} 字节`);
   };
   reader.readAsText(file);
 });
@@ -2981,7 +3058,7 @@ $("#inspect-yaml")!.addEventListener("click", async () => {
   const source = ($("#yaml-source") as HTMLTextAreaElement).value;
   const summary = await action("", () => api.inspect(source));
   if (summary) {
-    $("#yaml-summary")!.textContent = `${summary.nodeCount} 节点 · ${summary.proxyGroupCount} 组 · ${summary.ruleCount} 规则`;
+    setLocalizedText($("#yaml-summary")!, `${summary.nodeCount} 节点 · ${summary.proxyGroupCount} 组 · ${summary.ruleCount} 规则`);
     toast(summary.warnings[0] ?? "配置结构检查通过", summary.warnings.length ? "info" : "success");
   }
 });
@@ -3196,9 +3273,9 @@ $("#connections-body")!.addEventListener("click", async (event) => {
   if (!(store.connections?.connections as {id: string}[] | undefined)?.some(c => c.id === id)) return;
   if (closingConnections.has(id)) return;
   closingConnections.add(id);
-  button.disabled = true; button.textContent = '正在关闭…';
+  button.disabled = true; setLocalizedText(button, '正在关闭…');
   try { await action("连接已关闭", () => api.closeConnection(id)); }
-  finally { closingConnections.delete(id); button.disabled = false; button.textContent = '关闭'; }
+  finally { closingConnections.delete(id); button.disabled = false; setLocalizedText(button, '关闭'); }
   await refreshConnections();
 });
 
@@ -3443,7 +3520,7 @@ void listen<string>("navigate-view", (event) => {
 void refreshBase();
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { void refreshBase(); if (store.view === 'connections') void refreshConnections(); }
+  if (!document.hidden) { showPendingUpdateNotice(); void refreshBase(); if (store.view === 'connections') void refreshConnections(); }
 });
 
 // Subscribe before the snapshot read; generation ordering handles their race.
