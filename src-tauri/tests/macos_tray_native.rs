@@ -1,5 +1,5 @@
 // AppKit must run on the process main thread, not a Rust test worker. This
-// harness tests the production title and quick panel with disposable status items;
+// harness tests the production title and NSMenu with disposable status items;
 // it never opens Serylane, reads user configuration or starts networking.
 #[cfg(target_os = "macos")]
 #[path = "../src/traffic_monitor/macos_layout.rs"]
@@ -273,21 +273,17 @@ fn main() {
     );
     bar.removeStatusItem(&item);
     println!("native tray: fixed-width two-row title, unit changes, clear and re-enable passed");
-    check_panel(&app, mtm);
+    check_menu(mtm);
 }
 
 #[cfg(target_os = "macos")]
-fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker) {
+fn check_menu(mtm: objc2::MainThreadMarker) {
     use block2::RcBlock;
-    use macos_menu_panel::Action;
-    use objc2::{rc::Retained, sel};
+    use macos_menu_panel::*;
     use objc2_app_kit::{
-        NSButton, NSEventMask, NSPopUpMenuWindowLevel, NSStandardKeyBindingResponding,
-        NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+        NSControlStateValueOff, NSControlStateValueOn, NSMenu, NSMenuDelegate, NSMenuItem,
     };
-    use objc2_foundation::{
-        NSDate, NSDefaultRunLoopMode, NSOperationQueue, NSPoint, NSRect, NSRunLoop, NSSize,
-    };
+    use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSOperationQueue, NSRunLoop, NSString};
     use std::{
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -296,358 +292,211 @@ fn check_panel(app: &objc2_app_kit::NSApplication, mtm: objc2::MainThreadMarker)
         time::{Duration, Instant},
     };
 
-    fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
-        NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
-    }
-    let reference = rect(-1440.0, 138.0, 1440.0, 850.0);
-    let panel_size = macos_menu_panel::SIZE;
-    assert_eq!(
-        macos_menu_panel::panel_origin(panel_size, rect(-280.0, 985.0, 64.0, 24.0), reference),
-        NSPoint::new(-400.0, 607.0)
-    );
-    assert_eq!(
-        macos_menu_panel::panel_origin(panel_size, rect(-1440.0, 1080.0, 40.0, 24.0), reference),
-        NSPoint::new(-1432.0, 610.0)
-    );
-    assert_eq!(
-        macos_menu_panel::panel_origin(panel_size, rect(-27.0, 140.0, 25.0, 24.0), reference),
-        NSPoint::new(-312.0, 146.0)
-    );
-    let square = rect(-300.0, 20.0, 30.0, 30.0);
-    let icon_frame = rect(-285.0, 70.0, 20.0, 15.0);
-    assert!(macos_menu_panel::outside_frames(
-        NSPoint::new(-299.0, 21.0),
-        square,
-        Some(icon_frame)
-    ));
-    assert!(!macos_menu_panel::outside_frames(
-        NSPoint::new(-285.0, 35.0),
-        square,
-        Some(icon_frame)
-    ));
-    assert!(!macos_menu_panel::outside_frames(
-        NSPoint::new(-280.0, 71.0),
-        square,
-        Some(icon_frame)
-    ));
-    assert!(macos_menu_panel::outside_frames(
-        NSPoint::new(-280.0, 63.0),
-        square,
-        Some(icon_frame)
-    ));
-
-    app.finishLaunching();
     let actions = Arc::new(Mutex::new(Vec::new()));
-    let observed = Arc::clone(&actions);
-    let brand = || macos_title::status_image(macos_layout::brand_icon(), true).unwrap();
-    macos_menu_panel::install(mtm, brand(), false, move |action| {
-        observed.lock().unwrap().push(action);
+    let recorded = Arc::clone(&actions);
+    install(
+        mtm,
+        image_from_rgba(macos_layout::brand_icon()),
+        true,
+        move |action| recorded.lock().unwrap().push(action),
+    )
+    .unwrap();
+    assert!(install(
+        mtm,
+        image_from_rgba(macos_layout::brand_icon()),
+        true,
+        |_| {}
+    )
+    .is_err());
+
+    let menu = with_item(mtm, |item, _, traffic| {
+        traffic.setStringValue(&NSString::from_str("↑ 8.0 KiB/s    ↓ 16.0 KiB/s"));
+        let menu = item.menu(mtm).expect("actual AppKit status menu");
+        macos_title::apply_to_item(item, 1200, 6500, mtm).unwrap();
+        assert!(std::ptr::eq(&*item.menu(mtm).unwrap(), &*menu));
+        menu
     })
     .unwrap();
-    assert!(macos_menu_panel::install(mtm, brand(), true, |_| {}).is_err());
+    let row = |tag| menu.itemWithTag(tag).unwrap();
+    let route = row(ROUTE).submenu().unwrap();
+    let confirm = route.itemWithTag(ROUTE_CONFIRM).unwrap();
+    let delegate = menu.delegate().unwrap();
+    assert!(!menu.autoenablesItems());
+    assert!(!route.autoenablesItems());
+    assert!(row(SYSTEM).view().is_none(), "use a real AppKit menu row");
+    assert_eq!(
+        menu.itemArray()
+            .iter()
+            .filter(|r| r.isSeparatorItem())
+            .count(),
+        3
+    );
+    assert!(row(TRAFFIC).title().to_string().contains("8.0 KiB/s"));
+    assert!(!row(TUN).isEnabled());
 
-    let status = macos_menu_panel::with_item(mtm, |item, brand, traffic| {
-        let button = item.button(mtm).unwrap();
-        assert!(
-            item.menu(mtm).is_none(),
-            "native panel and old menu cannot coexist"
-        );
-        assert!(button.image().unwrap().isTemplate());
-        assert_eq!(button.image().unwrap().size(), brand.size());
-        assert_eq!(traffic.stringValue().to_string(), "流量显示已关闭");
-        assert_eq!(
-            button.sendActionOn(NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown),
-            (NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown).bits() as isize
-        );
-        // Rendering a new sample does not replace the AppKit target or action.
-        macos_title::apply_to_item(item, 8_192, 16_384, mtm).unwrap();
-        assert_eq!(button.action(), Some(sel!(toggleSerylanePanel:)));
-        macos_title::clear_item(item, mtm).unwrap();
-        assert_eq!(button.action(), Some(sel!(toggleSerylanePanel:)));
-        button
-    })
-    .expect("status registered");
-    let panel = app
-        .windows()
-        .iter()
-        .find(|window| window.title().to_string() == "Serylane 快捷面板")
-        .expect("panel window registered");
-    assert!(panel
-        .styleMask()
-        .contains(NSWindowStyleMask::NonactivatingPanel));
-    assert!(panel.collectionBehavior().contains(
-        NSWindowCollectionBehavior::FullScreenAuxiliary
-            | NSWindowCollectionBehavior::CanJoinAllApplications
-            | NSWindowCollectionBehavior::CanJoinAllSpaces
-    ));
-    assert_eq!(panel.level(), NSPopUpMenuWindowLevel);
-    assert!(panel.canBecomeKeyWindow() && !panel.canBecomeMainWindow());
-    assert!(!panel.isVisible());
-    let click_status = || {
-        // Dispatch through the real button and target; this is not a physical click.
-        assert!(unsafe { status.sendAction_to(status.action(), status.target().as_deref()) });
-    };
-    let foreground = || {
-        NSWorkspace::sharedWorkspace()
-            .frontmostApplication()
-            .map(|app| app.processIdentifier())
-    };
-    use macos_menu_panel::{update_controls, Controls, RouteRow, RouteToken};
     let token = RouteToken {
         enabled: true,
-        revision: 11,
+        revision: 7,
         profile: None,
         profile_revision: None,
     };
-    let system_on = Controls {
+    let view = Controls {
         serial: 1,
+        action_serial: 0,
         status: "系统代理运行中",
-        can_switch: true,
+        system_proxy: true,
         can_start: false,
         can_stop: true,
+        can_switch: true,
         tun_supported: true,
-        system_proxy: true,
         route: Some(RouteRow {
             token,
-            label: "路由",
-            message: "已关闭".into(),
+            label: "路由 · 待启动",
+            message: "已开启".into(),
             can_toggle: true,
             active: false,
-            domains: 4,
+            domains: 2,
             target: "QA".into(),
         }),
         ..Controls::default()
     };
-    update_controls(mtm, system_on.clone());
+    update_controls(mtm, view.clone());
+    assert!(row(STATUS_ROW)
+        .title()
+        .to_string()
+        .contains("系统代理运行中"));
+    assert_eq!(row(SYSTEM).state(), NSControlStateValueOn);
+    assert_eq!(row(TUN).state(), NSControlStateValueOff);
+    assert_eq!(row(ROUTE).state(), NSControlStateValueOff);
+    assert!(!row(START).isEnabled());
+    assert!(row(STOP).isEnabled());
+    assert!(confirm.isEnabled());
 
-    let drain_scheduled_actions = || {
-        let drained = Arc::new(AtomicBool::new(false));
-        let barrier = Arc::clone(&drained);
-        let block = RcBlock::new(move || barrier.store(true, Ordering::Release));
-        // SAFETY: this callback only stores into a shared atomic. The native
-        // queue barrier runs after all action blocks enqueued by the click.
-        unsafe { NSOperationQueue::mainQueue().addBarrierBlock(&block) };
-        let now = Instant::now();
-        let deadline = now + Duration::from_secs(3);
-        // Programmatic status actions can follow one another much faster
-        // than mouse clicks. Give AppKit a window-order/event cycle between
-        // assertions; actual action completion is the barrier, not time.
-        let settle = now + Duration::from_millis(120);
-        while !drained.load(Ordering::Acquire) || Instant::now() < settle {
-            assert!(
-                Instant::now() < deadline,
-                "native action queue did not drain before the deadline"
+    // Drain in the same mode as AppKit dispatch. A fixed sleep is insufficient
+    // on the Intel runner and clicking a disabled row must emit no action.
+    let take = |expected| {
+        let fence = Arc::new(AtomicBool::new(false));
+        let fence_block = Arc::clone(&fence);
+        let block = RcBlock::new(move || fence_block.store(true, Ordering::Release));
+        // SAFETY: the captured atomic is Send + Sync.
+        unsafe { NSOperationQueue::mainQueue().addOperationWithBlock(&block) };
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while (!fence.load(Ordering::Acquire) || actions.lock().unwrap().len() < expected)
+            && Instant::now() < deadline
+        {
+            NSRunLoop::currentRunLoop().runMode_beforeDate(
+                unsafe { NSDefaultRunLoopMode },
+                &NSDate::dateWithTimeIntervalSinceNow(0.015),
             );
-            let slice = NSDate::dateWithTimeIntervalSinceNow(0.03);
-            NSRunLoop::currentRunLoop().runMode_beforeDate(unsafe { NSDefaultRunLoopMode }, &slice);
         }
-    };
-    let take = |expected_count| {
-        // AppKit may defer dispatching the selector itself to the next
-        // run-loop turn; wait for the exact expected delivery when positive.
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while actions.lock().unwrap().len() < expected_count && Instant::now() < deadline {
-            let slice = NSDate::dateWithTimeIntervalSinceNow(0.03);
-            NSRunLoop::currentRunLoop().runMode_beforeDate(unsafe { NSDefaultRunLoopMode }, &slice);
-        }
-        drain_scheduled_actions();
+        assert!(fence.load(Ordering::Acquire), "action queue fence");
         std::mem::take(&mut *actions.lock().unwrap())
     };
-    let initial_foreground = foreground();
-    click_status();
-    assert!(panel.isVisible() && macos_menu_panel::is_visible());
+    let click = |menu: &NSMenu, item: &NSMenuItem| {
+        menu.performActionForItemAtIndex(menu.indexOfItem(item));
+    };
+
+    delegate.menuNeedsUpdate(&menu);
+    delegate.menuWillOpen(&menu);
+    assert!(is_visible());
+    assert_eq!(take(1), [Action::Observe]);
+    let mut changed = view.clone();
+    changed.serial = 2;
+    changed.system_proxy = false;
+    changed.tun = true;
+    changed.route.as_mut().unwrap().token.revision = 8;
+    update_controls(mtm, changed.clone());
+    assert_eq!(row(TUN).state(), NSControlStateValueOn);
+    assert!(!row(SYSTEM).isEnabled() && !row(TUN).isEnabled() && !confirm.isEnabled());
+    click(&menu, &row(TUN));
+    click(&route, &confirm);
+    assert!(
+        take(0).is_empty(),
+        "stale menu action must not reverse intent"
+    );
+    delegate.menuDidClose(&menu);
+    assert!(!is_visible());
+
+    delegate.menuNeedsUpdate(&menu);
+    assert!(confirm.isEnabled());
+    click(&route, &confirm);
+    assert!(!row(STOP).isEnabled());
+    click(&menu, &row(STOP));
     assert_eq!(
-        foreground(),
-        initial_foreground,
-        "opening must preserve foreground"
+        take(1),
+        [Action::Route(RouteToken {
+            revision: 8,
+            ..token
+        })]
     );
-    assert!(panel.isOnActiveSpace());
-    assert_eq!(take(1), [Action::Observe]);
+    let mut quiet = changed.clone();
+    quiet.serial = 3;
+    update_controls(mtm, quiet);
+    update_controls(mtm, view);
+    assert!(
+        !row(STOP).isEnabled(),
+        "old read may not undo local busy lock"
+    );
+    reject_queued(mtm, 0, "操作未完成：隔离检验".into());
+    assert!(row(STOP).isEnabled());
+    assert!(row(DETAIL).title().to_string().contains("操作未完成"));
 
-    let inside = NSPoint::new(
-        panel.frame().origin.x + 40.0,
-        panel.frame().origin.y + 170.0,
-    );
-    macos_menu_panel::dismiss_if_outside(mtm, inside);
-    assert!(panel.isVisible(), "inner click must not close the panel");
-    let outside = NSPoint::new(panel.frame().origin.x + 40.0, panel.frame().origin.y - 6.0);
-    macos_menu_panel::dismiss_if_outside(mtm, outside);
-    assert!(!panel.isVisible() && !macos_menu_panel::is_visible());
-    assert!(
-        take(0).is_empty(),
-        "outside dismissal must not dispatch an action"
-    );
-    click_status();
-    assert_eq!(take(1), [Action::Observe]);
-    click_status();
-    assert!(!panel.isVisible(), "same icon toggles off");
-    drain_scheduled_actions();
-    click_status();
-    assert!(panel.isVisible());
-    assert_eq!(take(1), [Action::Observe]);
-    unsafe { panel.cancelOperation(None) };
-    assert!(!panel.isVisible(), "Escape closes");
-    assert!(take(0).is_empty(), "Escape must not dispatch an action");
-
-    click_status();
-    assert_eq!(take(1), [Action::Observe]);
-    let surface = panel.contentView().expect("native content view");
-    assert!(!panel.isOpaque() && panel.hasShadow());
-    let layer = surface.layer().expect("blur layer");
-    assert!(
-        layer.masksToBounds(),
-        "one mask clips the material and its border"
-    );
-    let radius: f64 = unsafe { objc2::msg_send![&*layer, cornerRadius] };
-    assert_eq!(radius, 14.0);
-    let mut buttons: Vec<Retained<NSButton>> = surface
-        .subviews()
-        .iter()
-        .filter_map(|view| view.downcast().ok())
-        .collect();
-    buttons.sort_by_key(|b| b.tag());
-    assert_eq!(buttons.len(), 8);
-    assert!(buttons
-        .windows(2)
-        .all(|pair| pair[0].frame().origin.y > pair[1].frame().origin.y));
-    let press = |index: usize| {
-        let button = &buttons[index];
-        let _ = unsafe { button.sendAction_to(button.action(), button.target().as_deref()) };
-    };
-    assert!(
-        buttons[0].title().to_string().starts_with('✓')
-            && !buttons[4].isEnabled()
-            && buttons[5].isEnabled()
-    );
-    press(0);
-    press(0);
-    assert_eq!(take(1), [Action::SystemProxy(false)]);
-    assert!(panel.isVisible(), "leave controls visible for feedback");
-    assert!(
-        !buttons[0].isEnabled(),
-        "queued action locally locks duplicates"
-    );
-    update_controls(mtm, system_on.clone()); // duplicate observation cannot unlock queued click
-    update_controls(
-        mtm,
-        Controls {
-            serial: 2,
-            ..system_on.clone()
-        },
-    );
-    assert!(
-        !buttons[0].isEnabled(),
-        "new quiet observation cannot unlock queued click"
-    );
-    update_controls(
-        mtm,
-        Controls {
-            serial: 3,
-            action_serial: 3,
-            busy: Some("stopping"),
-            ..system_on.clone()
-        },
-    );
-    press(3);
-    assert!(
-        take(0).is_empty(),
-        "reject actions until the shared operation completes"
-    );
-
-    let stopped = Controls {
-        serial: 4,
-        action_serial: 4,
-        status: "已关闭",
-        can_start: true,
-        can_stop: false,
-        system_proxy: false,
-        ..system_on.clone()
-    };
+    changed.serial = 4;
+    changed.action_serial = 1;
+    update_controls(mtm, changed.clone());
+    click(&menu, &row(TUN));
+    assert_eq!(take(1), [Action::Tun(false)]);
+    let mut pending = changed.clone();
+    pending.serial = 5;
+    pending.action_serial = 2;
+    pending.busy = Some("stopping");
+    update_controls(mtm, pending);
+    assert!(!row(REFRESH).isEnabled());
+    assert!(row(STATUS_ROW).title().to_string().contains("正在关闭代理"));
+    let mut stopped = changed;
+    stopped.serial = 6;
+    stopped.action_serial = 3;
+    stopped.status = "已关闭";
+    stopped.tun = false;
+    stopped.can_start = true;
+    stopped.can_stop = false;
     update_controls(mtm, stopped.clone());
-    update_controls(mtm, system_on.clone()); // delayed IPC read
-    assert!(!buttons[0].title().to_string().starts_with('✓') && buttons[4].isEnabled());
-    press(0);
-    assert_eq!(take(1), [Action::SystemProxy(true)]);
-    let update = |serial| {
-        update_controls(
-            mtm,
-            Controls {
-                serial,
-                action_serial: serial,
-                ..stopped.clone()
-            },
-        )
-    };
-    update(5);
-    press(1);
-    assert_eq!(take(1), [Action::Tun(true)]);
-    update(6);
-    press(4);
+    assert!(row(START).isEnabled() && !row(STOP).isEnabled());
+    click(&menu, &row(START));
     assert_eq!(take(1), [Action::Start]);
-    update(7);
-    press(3);
-    assert_eq!(take(1), [Action::Refresh]);
-    update(8);
-
-    press(2);
-    assert!(buttons[2].title().to_string().contains("确认开启路由") && take(0).is_empty());
-    press(3);
-    assert!(take(0).is_empty() && !buttons[2].title().to_string().contains("确认"));
-    press(2);
-    press(2);
-    press(2);
-    assert_eq!(take(1), [Action::Route(token)]);
-    assert!(panel.isVisible());
-    update_controls(
-        mtm,
-        Controls {
-            serial: 9,
-            action_serial: 9,
-            ..system_on.clone()
-        },
+    stopped.serial = 7;
+    stopped.action_serial = 4;
+    update_controls(mtm, stopped);
+    click(&menu, &row(REFRESH));
+    click(&route, &route.itemWithTag(ROUTE_SETTINGS).unwrap());
+    click(&menu, &row(OPEN));
+    click(&menu, &row(QUIT));
+    assert_eq!(
+        take(4),
+        [
+            Action::Refresh,
+            Action::OpenRoute,
+            Action::OpenWindow,
+            Action::Quit
+        ]
     );
-    press(5);
-    assert_eq!(take(1), [Action::Stop]);
-    assert!(panel.isVisible());
-    assert!(!buttons[5].isEnabled());
-    macos_menu_panel::reject_queued(mtm, 8, "old rejection".into());
-    assert!(!buttons[5].isEnabled(), "ignore a stale rejection");
-    macos_menu_panel::reject_queued(mtm, 9, "fixture rejection".into());
-    assert!(
-        buttons[5].isEnabled(),
-        "a non-admitted action releases the latch"
-    );
-    update(10);
-    assert!(buttons[7].title().to_string().ends_with("退出 Serylane"));
-    for (index, action) in [(6, Action::OpenWindow), (7, Action::Quit)] {
-        if !panel.isVisible() {
-            click_status();
-            assert_eq!(take(1), [Action::Observe]);
-        }
-        press(index);
-        assert!(!panel.isVisible());
-        assert_eq!(take(1), [action]);
-    }
-
-    click_status();
-    macos_menu_panel::uninstall(mtm);
-    assert!(!panel.isVisible() && status.target().is_none() && status.action().is_none());
-    assert!(macos_menu_panel::with_item(mtm, |_, _, _| ()).is_none());
-    macos_menu_panel::uninstall(mtm);
-    println!("native panel: rounded layer, ordered rows, original anchor and mouse masks, outside/Escape and repeat toggle, nonactivation, shared-state rendering, all controls, confirmation and exactly one deferred action passed; hardware full-screen acceptance is separate");
+    uninstall(mtm);
+    assert!(!is_visible());
+    assert!(with_item(mtm, |_, _, _| ()).is_none());
+    uninstall(mtm);
+    println!("native NSMenu: native ownership, rows, shared readback, stale intents, queued actions, AppKit delegation, and exact dispatch passed");
 }
 
-/// Opt-in isolated WindowServer host. The external QA companion posts actual
-/// mouse/key events; neither fixture reads product settings or runs a proxy.
+/// Disposable real WindowServer host; no product AppStorage or proxy runs.
 #[cfg(target_os = "macos")]
 fn real_space_host(
     app: &objc2_app_kit::NSApplication,
     mtm: objc2::MainThreadMarker,
     folder: &std::path::Path,
 ) {
-    use macos_menu_panel::{Controls, RouteRow, RouteToken};
+    use macos_menu_panel::Controls;
     use objc2::rc::autoreleasepool;
-    use objc2_app_kit::{NSAccessibility, NSButton, NSEventMask, NSScreen, NSWorkspace};
+    use objc2_app_kit::{NSAccessibility, NSEventMask, NSScreen, NSWorkspace};
     use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSString};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
@@ -655,9 +504,7 @@ fn real_space_host(
     app.finishLaunching();
     let actions = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&actions);
-    // A unique color in the fixture's otherwise production S artwork makes
-    // the GUI driver locate the real icon, not click a stale calendar/overflow
-    // position when the system folds status items around the notch.
+    let event_path = folder.join("events.json");
     let source = macos_layout::brand_icon();
     let mut pixels = source.rgba().to_vec();
     for pixel in pixels.as_chunks_mut::<4>().0 {
@@ -669,7 +516,11 @@ fn real_space_host(
         source.height(),
     ));
     macos_menu_panel::install(mtm, brand, true, move |action| {
-        observed.lock().unwrap().push(format!("{action:?}"));
+        let mut events = observed.lock().unwrap();
+        events.push(format!("{action:?}"));
+        let tmp = event_path.with_extension("tmp");
+        std::fs::write(&tmp, json!(*events).to_string()).unwrap();
+        std::fs::rename(tmp, &event_path).unwrap();
     })
     .unwrap();
     let button = macos_menu_panel::with_item(mtm, |item, brand, traffic| {
@@ -681,25 +532,22 @@ fn real_space_host(
         button
     })
     .unwrap();
-    let panel = app
-        .windows()
-        .iter()
-        .find(|window| window.title().to_string() == "Serylane 快捷面板")
-        .unwrap();
-    let content = panel.contentView().unwrap();
-    let rows: Vec<_> = content
-        .subviews()
-        .iter()
-        .filter_map(|view| view.downcast::<NSButton>().ok())
-        .collect();
+    macos_menu_panel::update_controls(
+        mtm,
+        Controls {
+            serial: 1,
+            status: "已关闭",
+            can_switch: true,
+            can_start: true,
+            tun_supported: true,
+            ..Controls::default()
+        },
+    );
 
-    let mut confirmed = 0;
     let start = std::time::Instant::now();
     while start.elapsed().as_secs() < 150 && !folder.join("stop").exists() {
         autoreleasepool(|_| {
-            // Pull events through NSApplication, not through direct selector
-            // dispatch; both status tracking and local monitors stay active.
-            let until = NSDate::dateWithTimeIntervalSinceNow(0.04);
+            let until = NSDate::dateWithTimeIntervalSinceNow(0.035);
             while let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
                 NSEventMask::Any,
                 Some(&until),
@@ -711,42 +559,23 @@ fn real_space_host(
                     break;
                 }
             }
-            let actions = actions.lock().unwrap();
             let writes = actions
+                .lock()
+                .unwrap()
                 .iter()
-                .filter(|action| action.as_str() != "Observe")
+                .filter(|a| a.as_str() != "Observe")
                 .count();
-            if writes + 1 > confirmed {
-                confirmed = writes + 1;
+            if writes != 0 {
                 macos_menu_panel::update_controls(
                     mtm,
                     Controls {
-                        serial: confirmed as u64,
+                        serial: writes as u64 + 1,
                         action_serial: writes as u64,
-                        status: if writes == 0 {
-                            "已关闭"
-                        } else {
-                            "系统代理运行中"
-                        },
+                        status: "系统代理运行中",
                         can_switch: true,
-                        can_start: writes == 0,
-                        can_stop: writes != 0,
-                        system_proxy: writes != 0,
+                        can_stop: true,
+                        system_proxy: true,
                         tun_supported: true,
-                        route: Some(RouteRow {
-                            token: RouteToken {
-                                enabled: true,
-                                revision: 1,
-                                profile: None,
-                                profile_revision: None,
-                            },
-                            label: "路由",
-                            message: "已关闭".into(),
-                            can_toggle: true,
-                            active: false,
-                            domains: 4,
-                            target: "QA".into(),
-                        }),
                         ..Controls::default()
                     },
                 );
@@ -761,28 +590,20 @@ fn real_space_host(
                     r.size.height,
                 ]
             };
-            let anchor = button.window().map(|w| {
-                to_cg(w.convertRectToScreen(button.convertRect_toView(button.bounds(), None)))
-            });
-            let boxes: Vec<_> = rows
-                .iter()
-                .map(|b| to_cg(panel.convertRectToScreen(b.convertRect_toView(b.bounds(), None))))
-                .collect();
-            let front = NSWorkspace::sharedWorkspace()
-                .frontmostApplication()
-                .map(|app| app.processIdentifier());
-            let status_window = button.window();
+            let anchor = button
+                .window()
+                .map(|w| w.convertRectToScreen(button.convertRect_toView(button.bounds(), None)))
+                .map(to_cg);
             let data = json!({
-                "statusWindow": status_window.as_ref().map(|window| window.windowNumber()),
-                "statusVisible": status_window.as_ref().is_some_and(|window| window.isVisible()),
-                "pid": std::process::id(), "front": front, "screens": screens.count(), "anchor": anchor,
-                "panel": to_cg(panel.frame()), "rows": boxes, "visible": panel.isVisible(),
-                "activeSpace": panel.isOnActiveSpace(), "window": panel.windowNumber(),
-                "actions": &*actions,
+                "anchor": anchor,
+                "pid": std::process::id(),
+                "front": NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| a.processIdentifier()),
+                "screens": screens.count(),
+                "visible": macos_menu_panel::is_visible(),
             });
-            let temp = folder.join("panel.tmp");
+            let temp = folder.join("host.tmp");
             std::fs::write(&temp, data.to_string()).unwrap();
-            std::fs::rename(temp, folder.join("panel.json")).unwrap();
+            std::fs::rename(temp, folder.join("host.json")).unwrap();
         });
     }
     macos_menu_panel::uninstall(mtm);

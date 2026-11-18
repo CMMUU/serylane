@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.43 - 2026-11-19
+
+- Use a standard macOS AppKit menu with system appearance, keyboard navigation and dismissal. Left and right clicks use the same menu; selecting a command closes it without cancelling the operation.
+- Retain shared proxy controls, live status, route confirmation and menu-bar traffic. Stale selections do not reverse a newer proxy or route change.
+- The macOS compatibility packages do not add Developer ID signing, Apple notarization or working TUN. Other platforms are unchanged.
+
 ## 0.7.42 - 2026-11-17
 
 - Share one proxy control and readback path between the main toolbar and the macOS menu. The menu can switch System Proxy or TUN, confirm saved routing changes, refresh, start in the saved mode, or stop.
