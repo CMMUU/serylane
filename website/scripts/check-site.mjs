@@ -118,6 +118,9 @@ for (const path of files.filter(path => path.endsWith('.html'))) {
     assert.equal(link['aria-current'], locale.id === locales[i].id ? 'page' : undefined);
   }
   const nav = html.match(/<nav id="main-nav"[^>]*>[\s\S]*?<\/nav>/)[0];
+  const mobile = html.match(/<details class="mobile-site-nav"[^>]*>[\s\S]*?<\/details>/)?.[0];
+  assert.ok(mobile && tags(mobile, 'summary').length === 1, route + ': native mobile navigation');
+  assert.deepEqual(tags(mobile, 'a').map(link => link.href), tags(nav, 'a').map(link => link.href), route + ': same links in mobile and desktop');
   for (const kind of ['guide', 'docs']) assert.ok(tags(nav, 'a').some(link => link.href === pathFor(kind, locale)), route + ': localized entry ' + kind);
   if (page === 'guide') {
     const toc = html.match(/<nav class="chapter-nav"[^>]*>[\s\S]*?<\/nav>/)?.[0];

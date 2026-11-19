@@ -62,6 +62,16 @@ function picker(page, locale, ui, idsByRoute) {
     icon('m6 9 6 6 6-6') + '</summary><ul class="language-options" aria-label="' + esc(ui.language) + '">' + links.join('') + '</ul></details>';
 }
 
+function nativeMobileNav(html, ui) {
+  const nav = html.match(/<nav id="main-nav"[^>]*>[\s\S]*?<\/nav>/)?.[0];
+  const toggle = html.match(/<button class="menu-toggle"[^>]*>[\s\S]*?<\/button>/)?.[0];
+  assert.ok(nav && toggle, 'Expected the shared desktop nav and mobile trigger');
+  const list = nav.replace(' id="main-nav"', '');
+  const mobile = '<details class="mobile-site-nav" data-mobile-nav><summary class="menu-toggle" aria-label="' +
+    esc(ui.nav) + '">' + icon('M4 6h16M4 12h16M4 18h16') + '</summary>' + list + '</details>';
+  return html.replace(toggle, '').replace('</header>', () => mobile + '</header>');
+}
+
 function head(page, locale, title, description) {
   const url = origin + pathFor(page, locale);
   const websiteId = origin + '/#website';
@@ -275,7 +285,8 @@ export async function buildSite() {
   await Promise.all([...contentRoutes].map(async ([route, { page, locale, file }]) => {
     const html = bodies.get(route);
     assert.equal(html.split('<!-- LANGUAGE -->').length, 2, route + ': one shared language picker');
-    const hydrated = html.replace('<!-- LANGUAGE -->', () => picker(page, locale, translations.get(locale.id), idsByRoute))
+    const ui = translations.get(locale.id);
+    const hydrated = nativeMobileNav(html, ui).replace('<!-- LANGUAGE -->', () => picker(page, locale, ui, idsByRoute))
       .replace('<script src="/site.js" defer></script>', '<script src="/site.js" defer></script>\n<script src="/language.js" defer></script>');
     const target = new URL(file, output);
     await mkdir(dirname(fileURLToPath(target)), { recursive: true });

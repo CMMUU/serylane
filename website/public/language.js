@@ -5,16 +5,18 @@
 (() => {
   const picker = document.querySelector("[data-language-menu]");
   if (!picker) return;
-  const trigger = picker.querySelector("summary");
+  const menus = [picker, ...document.querySelectorAll("[data-mobile-nav]")];
   document.addEventListener("pointerdown", event => {
-    if (picker.open && !picker.contains(event.target)) picker.open = false;
+    for (const menu of menus) if (menu.open && !menu.contains(event.target)) menu.open = false;
   });
   document.addEventListener("keydown", event => {
-    if (event.key !== "Escape" || !picker.open) return;
+    if (event.key !== "Escape") return;
+    const menu = menus.find(item => item.open && item.contains(event.target)) ?? menus.find(item => item.open);
+    if (!menu) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    picker.open = false;
-    trigger.focus();
+    menu.open = false;
+    menu.querySelector("summary").focus();
   }, true);
   picker.addEventListener("click", event => {
     const link = event.target.closest("a[data-language-link]");
