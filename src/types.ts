@@ -412,7 +412,7 @@ export type AppInfo = {
   targetArch: string;
 };
 
-export type UpdateSource = "github" | "github_proxy" | "hk";
+export type UpdateSource = "github" | "github_accelerator" | "github_proxy" | "hk";
 export type AppUpdateInfo = {
   currentVersion: string;
   latestVersion: string;
@@ -438,6 +438,7 @@ export type AppUpdateStatus = {
   lastInstall?: string | null;
   phase: "idle" | "checking" | "current" | "ahead" | "available" | "downloading" | "ready" | "installing" | "cancelled" | "failed";
   info: AppUpdateInfo | null;
+  noticeVersion?: string | null;
   downloadedBytes: number;
   totalBytes: number;
   error: string | null;

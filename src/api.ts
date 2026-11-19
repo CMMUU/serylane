@@ -121,6 +121,7 @@ export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
   checkAppUpdate: () => invoke<AppUpdateStatus>("check_app_update"),
   appUpdateStatus: () => invoke<AppUpdateStatus>("app_update_status"),
+  dismissAppUpdateNotice: (versionTag: string) => invoke<void>("dismiss_app_update_notice", { versionTag }),
   downloadAppUpdate: (versionTag: string) => invoke<AppUpdateStatus>("download_app_update", { versionTag }),
   cancelAppUpdate: () => invoke<void>("cancel_app_update"),
   installAppUpdate: (versionTag: string, confirmed: boolean) => invoke<void>("install_app_update", { versionTag, confirmed }),

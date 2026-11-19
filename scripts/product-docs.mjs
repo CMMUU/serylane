@@ -17,7 +17,7 @@ export function productTable() {
   const updates = read('src-tauri/src/app_update.rs');
   const sources = capture(updates, /pub enum UpdateSource \{([\s\S]*?)\n\}/, 'UpdateSource');
   const variants = sources.split('\n').map(line => line.trim()).filter(line => /^[A-Z]\w*,$/.test(line));
-  const expected = ['Github', 'GithubProxy', 'Hk'];
+  const expected = ['Github', 'GithubAccelerator', 'GithubProxy', 'Hk'];
   const order = capture(updates, /const SOURCE_ORDER:[^=]+=\s*\[([\s\S]*?)\];/, 'update source priority')
     .split(',').map(item => item.trim().replace('UpdateSource::', '')).filter(Boolean);
   if (variants.map(item => item.slice(0, -1)).join(',') !== expected.join(',') || order.join(',') !== expected.join(',')) {
@@ -26,7 +26,7 @@ export function productTable() {
   const enabled = name => capture(capabilities, new RegExp(`pub const ${name}: bool = (true|false);`), name) === 'true' ? '已启用' : '暂时停用';
   const min = capture(policy, /const MIN_HEALTHY_NODES: usize = (\d+);/, 'minimum AI nodes');
   const max = capture(policy, /const SELECTED_NODES: usize = (\d+);/, 'maximum AI nodes');
-  return `| 源码事实 | 当前值 |\n| --- | --- |\n| 源码版本 | ${version}（不代表已经发行） |\n| 官网安装包 | 下载中心 |\n| 应用内更新 | GitHub 直连 → Serylane 本地代理 → 下载中心 |\n| AI 合格节点范围 | ${min}–${max} 个；单节点没有备用 |\n| 程序代理 | ${enabled('PROGRAM_PROXY')} |\n| 增强稳定灾备 | ${enabled('ENHANCED_STABILITY')} |\n| 新增 Codex 接入 | ${enabled('CODEX_ATTACH')} |`;
+  return `| 源码事实 | 当前值 |\n| --- | --- |\n| 源码版本 | ${version}（不代表已经发行） |\n| 官网安装包 | 下载中心 |\n| 应用内更新 | GitHub 直连 → GitHub 加速代理 → 经 Serylane 本地代理访问 GitHub → 下载中心 |\n| AI 合格节点范围 | ${min}–${max} 个；单节点没有备用 |\n| 程序代理 | ${enabled('PROGRAM_PROXY')} |\n| 增强稳定灾备 | ${enabled('ENHANCED_STABILITY')} |\n| 新增 Codex 接入 | ${enabled('CODEX_ATTACH')} |`;
 }
 
 export function verifyProductDocs(write = false) {

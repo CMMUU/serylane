@@ -618,16 +618,27 @@ fn updater_native_windows_installer_child() {
 }
 
 #[test]
-fn updater_checks_direct_then_active_local_proxy_then_center() {
+fn updater_checks_direct_then_accelerator_then_active_local_proxy_then_center() {
     assert_eq!(available_sources(true).collect::<Vec<_>>(), SOURCE_ORDER);
     assert_eq!(
         available_sources(false).collect::<Vec<_>>(),
-        [UpdateSource::Github, UpdateSource::Hk]
+        [
+            UpdateSource::Github,
+            UpdateSource::GithubAccelerator,
+            UpdateSource::Hk
+        ]
     );
     let direct = manifest_location(UpdateSource::Github, Some("v1.2.3")).unwrap();
     let proxied = manifest_location(UpdateSource::GithubProxy, Some("v1.2.3")).unwrap();
+    let accelerated = manifest_location(UpdateSource::GithubAccelerator, Some("v1.2.3")).unwrap();
     assert_eq!(direct.endpoints, proxied.endpoints);
     assert_eq!(direct.expected_version, Some(StableVersion(1, 2, 3)));
+    assert_eq!(direct.expected_version, accelerated.expected_version);
+    assert_eq!(
+        accelerated.endpoints[0].as_str(),
+        "https://serylane.cmmuu.com/api/update/github/v1.2.3/latest-serylane.json"
+    );
+    assert!(UpdateSource::GithubAccelerator.direct());
     assert_eq!(
         direct.endpoints[0].as_str(),
         "https://github.com/CMMUU/serylane/releases/download/v1.2.3/latest-serylane.json"
@@ -637,7 +648,7 @@ fn updater_checks_direct_then_active_local_proxy_then_center() {
 
 #[test]
 fn updater_checks_only_until_the_first_verified_manifest() {
-    use UpdateSource::{Github, GithubProxy, Hk};
+    use UpdateSource::{Github, GithubAccelerator, GithubProxy, Hk};
 
     let directory = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(
@@ -648,10 +659,19 @@ fn updater_checks_only_until_the_first_verified_manifest() {
     );
     for (proxy_ready, success, expected) in [
         (true, Some(Github), &[Github][..]),
-        (true, Some(GithubProxy), &[Github, GithubProxy][..]),
-        (true, Some(Hk), &[Github, GithubProxy, Hk][..]),
-        (false, Some(Hk), &[Github, Hk][..]),
-        (true, None, &[Github, GithubProxy, Hk][..]),
+        (
+            false,
+            Some(GithubAccelerator),
+            &[Github, GithubAccelerator][..],
+        ),
+        (
+            true,
+            Some(GithubProxy),
+            &[Github, GithubAccelerator, GithubProxy][..],
+        ),
+        (true, Some(Hk), &SOURCE_ORDER[..]),
+        (false, Some(Hk), &[Github, GithubAccelerator, Hk][..]),
+        (true, None, &SOURCE_ORDER[..]),
     ] {
         let mut attempted = Vec::new();
         let (candidate, channels) = tauri::async_runtime::block_on(first_update_candidate(
@@ -679,6 +699,74 @@ fn updater_checks_only_until_the_first_verified_manifest() {
             assert_eq!(channel.error.is_none(), success == Some(channel.source));
         }
     }
+}
+
+#[test]
+fn accelerated_transport_retains_canonical_manifest_and_signed_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let f = Fixture::new(
+        b"signed accelerated package".to_vec(),
+        "9.0.1",
+        &test_executable(directory.path()),
+        None,
+    );
+    let mut update = f.candidate.update.clone();
+    let key = &f.candidate.platform_key;
+    let filename = artifact_name(key, &update.version).unwrap();
+    let github = asset_url(UpdateSource::Github, &update.version, &filename).unwrap();
+    update.download_url = github.parse().unwrap();
+    update.raw_json["platforms"][key]["url"] = github.clone().into();
+    let official =
+        Candidate::from_update(update.clone(), UpdateSource::Github, &f.platform).unwrap();
+    let accelerated =
+        Candidate::from_update(update.clone(), UpdateSource::GithubAccelerator, &f.platform)
+            .unwrap();
+    assert_eq!(accelerated.update.download_url.as_str(), github);
+    assert_eq!(
+        accelerated.transport_url,
+        accelerator_asset("9.0.1", &filename).unwrap()
+    );
+    assert!(same_build(&official, &accelerated));
+    accelerated
+        .verify_for_install(&accelerated, &f.bytes, "9.0.0", &f.platform)
+        .unwrap();
+
+    update.download_url = accelerated.transport_url;
+    update.raw_json["platforms"][key]["url"] = update.download_url.as_str().into();
+    assert!(Candidate::from_update(update, UpdateSource::GithubAccelerator, &f.platform).is_err());
+}
+
+#[test]
+fn dismissed_background_notice_survives_a_status_refresh_and_retains_update_availability() {
+    let mut session = Session::default();
+    let mut info = AppUpdateInfo {
+        latest_version: "v9.1.0".into(),
+        current_version: "9.0.0".into(),
+        available: true,
+        ahead: false,
+        notes: String::new(),
+        published_at: None,
+        release_url: String::new(),
+        source: UpdateSource::GithubAccelerator,
+        channels: vec![],
+    };
+    session.update_notice(&info, false);
+    assert!(session.status.notice_version.is_none());
+    session.update_notice(&info, true);
+    assert_eq!(session.status.notice_version.as_deref(), Some("v9.1.0"));
+    session.status.info = Some(info.clone());
+    session.dismiss_notice("v9.0.1");
+    assert_eq!(session.status.notice_version.as_deref(), Some("v9.1.0"));
+    session.dismiss_notice("v9.1.0");
+    assert!(session.status.info.as_ref().unwrap().available);
+    session.update_notice(&info, true);
+    assert!(session.status.notice_version.is_none());
+    info.latest_version = "v9.1.1".into();
+    session.update_notice(&info, true);
+    assert_eq!(session.status.notice_version.as_deref(), Some("v9.1.1"));
+    info.available = false;
+    session.update_notice(&info, true);
+    assert!(session.status.notice_version.is_none());
 }
 
 #[test]

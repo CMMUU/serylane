@@ -234,13 +234,14 @@ let runtimeReadSequence = 0;
 let baseReadSequence = 0;
 let settingsSaving = false;
 let appUpdateChecking = false;
-let appUpdateError: string | null = null;
 let appUpdateStatus: AppUpdateStatus = { phase: "idle", info: null, downloadedBytes: 0, totalBytes: 0, error: null };
 let appUpdateActionBusy = false;
 let appUpdatePollBusy = false;
 let appUpdateOperationId = 0;
-let automaticUpdateCheckScheduled = false;
-let updateCheckAttemptedThisSession = false;
+let appUpdateReadRevision = 0;
+let startedAutoDownload: string | undefined;
+const dismissedUpdateVersions = new Set<string>();
+let displayedUpdateVersion: string | null = null;
 let appearanceFeedback = "";
 let sessionResumeStatus: SessionResumeStatus | null = null;
 let sessionResumeRevision = 0;
@@ -271,7 +272,11 @@ app.innerHTML = `
           <span class="traffic-download"><b><!--i18n:ui-4673a230616561-->下载</b><strong id="global-download-rate">—</strong></span>
         </div>
       </div>
-      <span class="sidebar-version" id="sidebar-version"></span>
+      <button class="sidebar-version" id="sidebar-version-link" type="button"
+        title="软件更新" data-i18n-title="ui-651f274470153a" aria-labelledby="sidebar-version sidebar-update-label">
+        <span id="sidebar-version"></span><span class="sidebar-update-dot" id="sidebar-update-dot" hidden aria-hidden="true"></span>
+        <span class="visually-hidden" id="sidebar-update-label"></span>
+      </button>
     </aside>
     <main class="main-content">
       <header class="topbar" aria-label="应用状态与全局控制" data-i18n-aria-label="ui-28f29edbfaa3f4">
@@ -583,7 +588,7 @@ languageInput.addEventListener("change", async () => {
 void api.appLocale().then(selectLocale).catch(() => selectLocale(initialLocale)).finally(() => {
   languageInput.disabled = false;
   app.hidden = false;
-  showPendingUpdateNotice();
+  renderUpdateNotice();
 });
 let confirmationResolver: ((confirmed: boolean) => void) | null = null;
 let confirmationReturnFocus: HTMLElement | null = null;
@@ -795,7 +800,11 @@ function refreshBase(): Promise<boolean> {
   return pageReads.run('base', context, async () => {
     if (context !== dataContext()) return false;
     baseLoading = true; renderHeader();
-    try { return await performBaseRead(); }
+    try {
+      const refreshed = await performBaseRead();
+      if (refreshed) maybeAutoDownload();
+      return refreshed;
+    }
     finally { baseLoading = false; renderHeader(); }
   });
 }
@@ -891,7 +900,6 @@ async function performBaseRead() {
   void api.tunHelperStatus().then(helper => {
     if (helperRevision === runtimeMutationRevision) { store.tunHelper = helper; renderTunHelper(); }
   }).catch(() => {});
-  scheduleAutomaticUpdateCheck();
   void refreshSessionResume();
   void refreshProxies(true);
   return true;
@@ -1300,6 +1308,14 @@ function renderSettings() {
 
 function renderAppUpdate() {
   const presentation = describeAppUpdate(appUpdateStatus);
+  const newer = appUpdateStatus.info?.available ? appUpdateStatus.info : null;
+  $("#sidebar-update-dot")!.hidden = !newer;
+  if (newer) {
+    setMessage($("#sidebar-update-label")!, "update-card-title", "Serylane " + newer.latestVersion + " 可用", { version: newer.latestVersion });
+  } else {
+    setMessage($("#sidebar-update-label")!, "ui-651f274470153a", "软件更新");
+  }
+  renderUpdateNotice();
   setLocalizedText($("#app-update-network-path")!, appUpdateStatus.networkPath && appUpdateStatus.networkPath !== "待确定" ? `网络路径：${appUpdateStatus.networkPath}` : "");
   const lastInstall = $("#app-update-last-install")!;
   lastInstall.textContent = appUpdateStatus.lastInstall ?? "";
@@ -1360,70 +1376,70 @@ function renderAppUpdate() {
 }
 
 function acceptAppUpdate(status: AppUpdateStatus) {
+  appUpdateReadRevision++;
   appUpdateStatus = status;
   store.appUpdate = status.info;
-  appUpdateError = status.error;
   renderAppUpdate();
 }
 
-const shownUpdateVersions = new Set<string>();
-let pendingUpdateNotice: string | null = null;
-
-function showPendingUpdateNotice() {
-  if (!pendingUpdateNotice || document.hidden || app?.hidden) return;
-  const version = pendingUpdateNotice;
-  pendingUpdateNotice = null;
-  if (shownUpdateVersions.has(version)) return;
-  shownUpdateVersions.add(version);
-  const title = `Serylane ${version} 可用`;
-  setMessage($("#app-update-notice-version")!, "update-card-title", title, { version });
-  setMessage($("#app-update-announcement")!, "update-card-title", title, { version });
-  $("#app-update-notice")!.hidden = false;
+function renderUpdateNotice() {
+  const version = backgroundUpdateVersion(appUpdateStatus, dismissedUpdateVersions);
+  if (version === displayedUpdateVersion || (version && (document.hidden || app?.hidden))) return;
+  displayedUpdateVersion = version;
+  if (version) {
+    const title = "Serylane " + version + " 可用";
+    setMessage($("#app-update-notice-version")!, "update-card-title", title, { version });
+    setMessage($("#app-update-announcement")!, "update-card-title", title, { version });
+  } else {
+    setLocalizedText($("#app-update-announcement")!, "");
+  }
+  $("#app-update-notice")!.hidden = !version;
 }
 
-$("#app-update-notice-open")!.addEventListener("click", () => {
-  $("#app-update-notice")!.hidden = true;
-  setLocalizedText($("#app-update-announcement")!, "");
-  navigate("settings");
-  const heading = $("#update-heading")!;
-  heading.tabIndex = -1;
-  requestAnimationFrame(() => {
-    heading.focus({ preventScroll: true });
-    $("#app-update-panel")!.scrollIntoView({ block: "start", behavior: "instant" });
-  });
-});
-$("#app-update-notice-dismiss")!.addEventListener("click", () => {
-  $("#app-update-notice")!.hidden = true;
-  setLocalizedText($("#app-update-announcement")!, "");
-});
+function dismissUpdateNotice() {
+  const version = displayedUpdateVersion;
+  if (!version) return;
+  dismissedUpdateVersions.add(version);
+  renderUpdateNotice();
+  void api.dismissAppUpdateNotice(version).catch(() => {});
+}
 
-async function checkForAppUpdate(silent: boolean) {
-  if (appUpdateChecking || appUpdateActionBusy || describeAppUpdate(appUpdateStatus).busy || (appUpdateStatus.phase === "ready" || appUpdateStatus.retryInstall) && silent) return;
-  updateCheckAttemptedThisSession = true;
+function openUpdateSettings() {
+  dismissUpdateNotice();
+  navigate("settings");
+  requestAnimationFrame(() => {
+    const action = describeAppUpdate(appUpdateStatus);
+    const button = $<HTMLButtonElement>(action.canInstall ? "#app-update-install" : "#app-update-download")!;
+    const target = !button.disabled && !button.classList.contains("is-hidden") ? button : $("#update-heading")!;
+    if (target !== button) target.tabIndex = -1;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "center", behavior: "instant" });
+  });
+}
+
+$("#app-update-notice-open")!.addEventListener("click", openUpdateSettings);
+$("#app-update-notice-dismiss")!.addEventListener("click", dismissUpdateNotice);
+$("#sidebar-version-link")!.addEventListener("click", openUpdateSettings);
+
+async function checkForAppUpdate() {
+  if (appUpdateChecking || appUpdateActionBusy || describeAppUpdate(appUpdateStatus).busy) return;
   appUpdateChecking = true;
-  appUpdateError = null;
   appUpdateStatus = { ...appUpdateStatus, phase: "checking", error: null };
   renderAppUpdate();
   try {
     const result = await api.checkAppUpdate();
     acceptAppUpdate(result);
-    if (silent) {
-      pendingUpdateNotice = backgroundUpdateVersion(result, shownUpdateVersions);
-      showPendingUpdateNotice();
-    } else {
-      toast(describeAppUpdate(result).label, "info");
-    }
+    toast(describeAppUpdate(result).label, "info");
   } catch (error) {
-    appUpdateError = errorMessage(error);
-    appUpdateStatus = { ...appUpdateStatus, phase: "failed", info: null, error: appUpdateError };
-    store.appUpdate = null;
-    pendingUpdateNotice = null;
-    if (!silent) toast(appUpdateError, "error");
+    const detail = errorMessage(error);
+    try { acceptAppUpdate(await api.appUpdateStatus()); }
+    catch { acceptAppUpdate({ ...appUpdateStatus, phase: "failed", info: null, error: detail }); }
+    if (appUpdateStatus.phase !== "checking") toast(detail, "error");
   } finally {
     appUpdateChecking = false;
     renderAppUpdate();
   }
-  if (appUpdateStatus.phase === "available" && store.settings?.autoDownloadUpdates) await downloadAppUpdate();
+  maybeAutoDownload();
 }
 
 async function downloadAppUpdate() {
@@ -1457,21 +1473,24 @@ async function downloadAppUpdate() {
   }
 }
 
-function scheduleAutomaticUpdateCheck() {
-  if (
-    automaticUpdateCheckScheduled ||
-    !store.settings?.autoCheckUpdates
-  ) {
-    return;
-  }
-  automaticUpdateCheckScheduled = true;
-  window.setTimeout(() => {
-    if (appLifecycle.paused || updateCheckAttemptedThisSession || !store.settings?.autoCheckUpdates) return;
-    void checkForAppUpdate(true);
-  }, 18_000);
-  window.setInterval(() => {
-    if (!appLifecycle.paused && store.settings?.autoCheckUpdates) void checkForAppUpdate(true);
-  }, 6 * 60 * 60 * 1_000);
+function maybeAutoDownload() {
+  const { phase, taskId, info } = appUpdateStatus;
+  if (phase !== "available" || !info?.available || !taskId || taskId === startedAutoDownload
+    || appUpdateChecking || appUpdateActionBusy || appLifecycle.paused || !store.settings?.autoDownloadUpdates) return;
+  startedAutoDownload = taskId;
+  void downloadAppUpdate();
+}
+
+async function refreshAppUpdateStatus() {
+  if (appUpdateActionBusy || appUpdateChecking || appLifecycle.paused) return;
+  const revision = ++appUpdateReadRevision;
+  try {
+    const status = await api.appUpdateStatus();
+    if (revision === appUpdateReadRevision && !appUpdateActionBusy && !appUpdateChecking) {
+      acceptAppUpdate(status);
+      maybeAutoDownload();
+    }
+  } catch { /* Startup and its failures are independent of the WebView's availability. */ }
 }
 
 function tunHelperStateLabel(state: TunHelperStatus["state"] | undefined): string {
@@ -3320,7 +3339,7 @@ $("#tun-helper-uninstall")!.addEventListener("click", async (event) => {
 });
 
 $("#app-update-check")!.addEventListener("click", () => {
-  void checkForAppUpdate(false);
+  void checkForAppUpdate();
 });
 
 $("#app-update-open")!.addEventListener("click", async () => {
@@ -3344,7 +3363,6 @@ $("#update-preferences-form")!.addEventListener("submit", async (event) => {
     );
     acceptAppUpdate(await api.appUpdateStatus());
     renderSettings();
-    scheduleAutomaticUpdateCheck();
     toast("更新偏好已保存；网络设置未改变", "success");
   } catch (error) { toast(errorMessage(error), "error"); }
   finally { appUpdateActionBusy = false; renderAppUpdate(); }
@@ -3518,9 +3536,11 @@ void listen<string>("navigate-view", (event) => {
 });
 
 void refreshBase();
+void listen("app-update-changed", () => { void refreshAppUpdateStatus(); })
+  .then(refreshAppUpdateStatus).catch(refreshAppUpdateStatus);
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { showPendingUpdateNotice(); void refreshBase(); if (store.view === 'connections') void refreshConnections(); }
+  if (!document.hidden) { renderUpdateNotice(); void refreshAppUpdateStatus(); void refreshBase(); if (store.view === 'connections') void refreshConnections(); }
 });
 
 // Subscribe before the snapshot read; generation ordering handles their race.

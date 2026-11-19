@@ -1,6 +1,8 @@
 import { TARGETS, ReleaseError } from './releases.ts';
 import type { Fetcher, Target } from './releases.ts';
 import { centerCatalog, verifyCenterAsset } from './center.ts';
+import { GITHUB_UPDATE_PATH, githubUpdate } from './github-updates.ts';
+import type { GithubUpdateCache } from './github-updates.ts';
 
 const HEADERS = {
   'Cache-Control': 'no-store, max-age=0', 'CDN-Cache-Control': 'no-store',
@@ -18,8 +20,9 @@ function unavailable(isAPI: boolean, code: string) {
   });
 }
 
-export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher: Fetcher = fetch): Promise<Response> {
+export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher: Fetcher = fetch, edge?: GithubUpdateCache): Promise<Response> {
   const url = new URL(request.url);
+  if (url.pathname.startsWith(GITHUB_UPDATE_PATH)) return githubUpdate(request, url, fetcher, edge);
   if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/download/')) return env.ASSETS.fetch(request);
   const isAPI = url.pathname === '/api/releases/latest';
   const isResolve = url.pathname.startsWith('/api/download/');
@@ -50,4 +53,8 @@ export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher
   if (request.method === 'HEAD') { await result.body?.cancel(); return new Response(null, result); }
   return result;
 }
-export default { fetch: (request, env) => handle(request, env) } satisfies ExportedHandler<Env>;
+export default {
+  fetch: (request, env, ctx) => handle(request, env, fetch, {
+    cache: caches.default, waitUntil: promise => ctx.waitUntil(promise),
+  }),
+} satisfies ExportedHandler<Env>;
