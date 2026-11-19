@@ -36,9 +36,12 @@ test("download progress is bounded and never NaN", () => {
   assert.equal(describeAppUpdate({ ...status("downloading"), downloadedBytes: 500 }).progress, 100);
   assert.equal(describeAppUpdate({ ...status("downloading"), totalBytes: 0 }).progress, 0);
 });
-test("update settings display the automatic order and the actual path label", () => {
+test("update settings display the actual source in the result", () => {
   const settings = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
-  assert.match(settings, /GitHub 直连 → GitHub 加速代理 → 经 Serylane 本地代理访问 GitHub → 下载中心/);
+  const preferences = settings.match(/<form id="update-preferences-form">([\s\S]*?)<\/form>/)?.[1];
+  assert.ok(preferences);
+  assert.doesNotMatch(preferences, /更新来源|update-path-order/);
+  assert.match(settings, /更新来源<\/span><strong id="app-update-source">/);
   assert.equal(updateSourceLabel("github"), "GitHub 直连");
   assert.equal(updateSourceLabel("github_accelerator"), "GitHub 加速代理");
   assert.equal(updateSourceLabel("github_proxy"), "GitHub（Serylane 代理）");
