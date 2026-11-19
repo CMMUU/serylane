@@ -34,8 +34,8 @@
     failed: data.releaseFailed ?? fallback.failed,
   };
 
-  // Navigation also runs on documentation and error pages without a download section.
-  const menuButton = document.querySelector(".menu-toggle");
+  // The generated site uses native details. Keep the standalone 404 and raw sources working.
+  const menuButton = data.siteLocale ? null : document.querySelector(".menu-toggle");
   const menu = document.querySelector("#main-nav");
   function setMenu(open, returnFocus = false) {
     if (!menu || !menuButton) return;
@@ -52,7 +52,7 @@
   document.addEventListener("click", event => {
     if (menuButton?.getAttribute("aria-expanded") === "true" && !event.target.closest(".site-header")) setMenu(false);
   });
-  window.matchMedia(data.siteLocale ? "(min-width: 981px)" : "(min-width: 641px)").addEventListener("change", event => { if (event.matches) setMenu(false); });
+  if (menuButton) window.matchMedia("(min-width: 641px)").addEventListener("change", event => { if (event.matches) setMenu(false); });
 
   const links = [...document.querySelectorAll(".download-target[data-download-target]")];
   if (!links.length) return;

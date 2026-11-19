@@ -447,14 +447,21 @@ html[data-motion="paused"] .route-flow { animation-play-state: paused; }
 [dir="rtl"] .document-main ol, [dir="rtl"] .document-main ul { padding-left: 0; padding-inline-start: 24px; }
 [dir="rtl"] .breadcrumb, [dir="rtl"] .download-target { unicode-bidi: isolate; }
 
+.mobile-site-nav { display: none; flex: none; }
+.mobile-site-nav > summary { cursor: pointer; list-style: none; }
+.mobile-site-nav > summary::-webkit-details-marker { display: none; }
+.mobile-site-nav > summary:hover { background: var(--hover); }
 @media (max-width: 980px) {
   [data-site-locale] .site-header { justify-content: space-between; }
   [data-site-locale] .header-controls { margin-inline-start: auto; }
-  [data-site-locale] .menu-toggle { display: flex; order: 3; }
+  .mobile-site-nav { display: block; order: 3; }
+  .mobile-site-nav > .menu-toggle { display: flex; align-items: center; justify-content: center; }
+  .mobile-site-nav > .menu-toggle .icon { width: 19px; height: 19px; }
   [data-site-locale] .main-nav { display: none; position: absolute; top: calc(100% - 1px); inset-inline: 0; margin: 0; padding: 12px;
     border: 1px solid var(--line); border-radius: 0 0 6px 6px; background: var(--surface-raised); flex-direction: column;
     align-items: stretch; gap: 0; font-size: 14px; box-shadow: 0 16px 25px #00000012; }
-  [data-site-locale] .main-nav.is-open { display: flex; }
+  [data-site-locale] .mobile-site-nav[open] > .main-nav { display: flex; }
+  .mobile-site-nav .main-nav .nav-download { display: flex; margin-top: 8px; }
   [data-site-locale] .main-nav > a:not(.button) { min-height: 44px; padding-inline: 12px; }
 }
 @media (max-width: 760px) {
@@ -474,7 +481,7 @@ html[data-motion="paused"] .route-flow { animation-play-state: paused; }
 }
 @media (max-width: 360px) {
   [data-site-locale] .site-header { flex-wrap: wrap; padding-block: 8px; row-gap: 4px; }
-  [data-site-locale] .menu-toggle { order: 2; }
+  .mobile-site-nav { order: 2; }
   [data-site-locale] .header-controls { order: 3; flex-basis: 100%; justify-content: space-between; margin: 0; }
   .language-current { max-inline-size: none; }
 }
