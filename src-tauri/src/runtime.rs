@@ -33,6 +33,21 @@ const VALIDATION_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_VALIDATION_LOG_BYTES: u64 = 2 * 1024 * 1024;
 const VALIDATION_DIAGNOSTIC_BYTES: u64 = 32 * 1024;
 
+#[cfg(target_os = "macos")]
+const TUN_PORT_HANDOFF_TIMEOUT: Duration = Duration::from_secs(35);
+
+type ProxyPorts = [(&'static str, Option<u16>); 2];
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum TunPorts {
+    Running(ProxyPorts),
+    Released {
+        ports: ProxyPorts,
+        deadline: Instant,
+    },
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BinaryInfo {
@@ -80,6 +95,8 @@ pub struct MihomoRuntime {
     tun_pid: Mutex<Option<u32>>,
     tun_heartbeat_stop: Mutex<Option<Arc<AtomicBool>>>,
     tun_heartbeat_state: Arc<Mutex<HeartbeatState>>,
+    #[cfg(target_os = "macos")]
+    tun_ports: Mutex<Option<TunPorts>>,
 }
 
 impl MihomoRuntime {
@@ -162,6 +179,10 @@ impl MihomoRuntime {
         }
         let pid = child.id();
         *lock(&self.child, "child")? = Some(child);
+        #[cfg(target_os = "macos")]
+        {
+            *lock(&self.tun_ports, "TUN proxy ports")? = None;
+        }
         *lock(&self.binary_path, "binary path")? = Some(binary);
         *lock(&self.binary_version, "binary version")? = version;
         *lock(&self.config_path, "config path")? = Some(config_path);
@@ -195,7 +216,7 @@ impl MihomoRuntime {
         if !helper.ready() {
             return Err(AppError::Platform(helper.message));
         }
-        preflight_ports(source)?;
+        let ports = preflight_ports(source)?;
         validate_source(app, source)?;
         self.set_phase(RuntimePhase::Starting);
 
@@ -212,6 +233,12 @@ impl MihomoRuntime {
 
         *lock(&self.tun_lease, "tun lease")? = Some(lease.clone());
         *lock(&self.tun_pid, "tun pid")? = Some(started.pid);
+        #[cfg(target_os = "macos")]
+        {
+            *lock(&self.tun_ports, "TUN proxy ports")? = Some(TunPorts::Running(ports));
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = ports;
         *lock(&self.binary_path, "binary path")? = binary_path;
         *lock(&self.binary_version, "binary version")? = started.version;
         *lock(&self.config_path, "config path")? = Some(config_path);
@@ -241,10 +268,24 @@ impl MihomoRuntime {
         self.set_phase(RuntimePhase::Stopping);
         self.stop_tun_heartbeat();
         let lease = lock(&self.tun_lease, "tun lease")?.take();
+        #[cfg(target_os = "macos")]
+        let had_lease = lease.is_some();
         let tun_stop_result = match lease {
             Some(lease) => tun_service::stop_lease(&lease),
             None => Ok(()),
         };
+        #[cfg(target_os = "macos")]
+        if had_lease {
+            let mut ownership = lock(&self.tun_ports, "TUN proxy ports")?;
+            if let Some(TunPorts::Running(ports)) = ownership.take() {
+                if tun_stop_result.is_ok() {
+                    *ownership = Some(TunPorts::Released {
+                        ports,
+                        deadline: Instant::now() + TUN_PORT_HANDOFF_TIMEOUT,
+                    });
+                }
+            }
+        }
         *lock(&self.tun_pid, "tun pid")? = None;
         {
             let mut child_guard = lock(&self.child, "child")?;
@@ -261,6 +302,35 @@ impl MihomoRuntime {
         let status = self.status(app);
         tun_stop_result?;
         Ok(status)
+    }
+
+    /// The TUN owner and the replacement use different macOS UIDs. An
+    /// acknowledged stop can leave the old TCP sockets in the kernel for two
+    /// MSLs. Keep the saved ports and wait only on that handoff.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn wait_for_tun_ports(
+        &self,
+        mixed_port: u16,
+        controller_port: u16,
+        admitting: impl Fn() -> bool,
+    ) -> AppResult<()> {
+        let Some(TunPorts::Released { ports, deadline }) =
+            *lock(&self.tun_ports, "TUN proxy ports")?
+        else {
+            return Ok(());
+        };
+        wait_for_port_handoff(
+            [
+                ("mixed port", mixed_port),
+                ("controller port", controller_port),
+            ],
+            ports,
+            deadline,
+            admitting,
+            bind_local_port,
+            |deadline| tcp_socket_snapshot(deadline).ok(),
+            std::thread::sleep,
+        )
     }
 
     pub fn status(&self, app: Option<&AppHandle>) -> RuntimeStatus {
@@ -770,7 +840,7 @@ fn validation_diagnostic(bytes: &[u8]) -> String {
     redacted[..end].to_string()
 }
 
-fn preflight_ports(source: &str) -> AppResult<()> {
+fn preflight_ports(source: &str) -> AppResult<ProxyPorts> {
     let document: serde_yaml::Value =
         serde_yaml::from_str(source).map_err(|error| AppError::Config(error.to_string()))?;
     let root = document
@@ -785,21 +855,143 @@ fn preflight_ports(source: &str) -> AppResult<()> {
         .and_then(serde_yaml::Value::as_str)
         .and_then(|value| value.rsplit_once(':'))
         .and_then(|(_, port)| port.parse::<u16>().ok());
-    for (label, port) in [
+    let ports = [
         ("mixed port", mixed_port),
         ("controller port", controller_port),
-    ] {
+    ];
+    for (label, port) in ports {
         if let Some(port) = port {
-            TcpListener::bind(("127.0.0.1", port)).map_err(|error| {
-                AppError::startup(
-                    crate::error::StartupReason::PortInUse,
-                    format!("{label} {port}: {error}"),
-                    None,
-                )
-            })?;
+            bind_local_port(port).map_err(|error| port_startup_error(label, port, error))?;
         }
     }
-    Ok(())
+    Ok(ports)
+}
+
+fn bind_local_port(port: u16) -> std::io::Result<()> {
+    TcpListener::bind(("127.0.0.1", port)).map(drop)
+}
+
+fn port_startup_error(label: &str, port: u16, error: std::io::Error) -> AppError {
+    AppError::startup(
+        crate::error::StartupReason::PortInUse,
+        format!("{label} {port}: {error}"),
+        None,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_port_handoff(
+    requested: [(&str, u16); 2],
+    released: ProxyPorts,
+    deadline: Instant,
+    admitting: impl Fn() -> bool,
+    mut bind: impl FnMut(u16) -> std::io::Result<()>,
+    mut snapshot: impl FnMut(Instant) -> Option<String>,
+    mut sleep: impl FnMut(Duration),
+) -> AppResult<()> {
+    loop {
+        if !admitting() {
+            return Err(AppError::Conflict("应用正在退出，模式切换已取消".into()));
+        }
+        let mut sockets = None;
+        let mut waiting = false;
+        for (label, port) in requested {
+            let Err(error) = bind(port) else {
+                continue;
+            };
+            if error.kind() != std::io::ErrorKind::AddrInUse
+                || !released
+                    .iter()
+                    .any(|&(name, old)| name == label && old == Some(port))
+                || Instant::now() >= deadline
+            {
+                return Err(port_startup_error(label, port, error));
+            }
+            let view = sockets.get_or_insert_with(|| snapshot(deadline));
+            if !view
+                .as_deref()
+                .is_some_and(|text| only_closing_tcp_sockets(text, port))
+            {
+                // The port can become free between the failed bind and the
+                // snapshot. A fresh bind settles that race. A live listener
+                // or unreadable/ambiguous snapshot never authorizes waiting.
+                bind(port).map_err(|error| port_startup_error(label, port, error))?;
+                continue;
+            }
+            waiting = true;
+        }
+        if !waiting {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(500).min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn only_closing_tcp_sockets(snapshot: &str, port: u16) -> bool {
+    let mut found_closing = false;
+    for line in snapshot.lines() {
+        let mut columns = line.split_ascii_whitespace();
+        let (Some(proto), Some(local)) = (columns.next(), columns.nth(2)) else {
+            continue;
+        };
+        let Some((address, number)) = local.rsplit_once('.') else {
+            continue;
+        };
+        if !matches!(proto, "tcp4" | "tcp6" | "tcp46")
+            || !matches!(address, "127.0.0.1" | "::ffff:127.0.0.1" | "*")
+            || number.parse::<u16>() != Ok(port)
+        {
+            continue;
+        }
+        if !matches!(
+            columns.nth(1),
+            Some("TIME_WAIT" | "FIN_WAIT_1" | "FIN_WAIT_2" | "CLOSING" | "LAST_ACK")
+        ) {
+            return false;
+        }
+        found_closing = true;
+    }
+    found_closing
+}
+
+#[cfg(target_os = "macos")]
+fn tcp_socket_snapshot(handoff_deadline: Instant) -> std::io::Result<String> {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    let mut output = tempfile::tempfile()?;
+    let mut child = Command::new("/usr/sbin/netstat")
+        .args(["-an", "-p", "tcp"])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(output.try_clone()?)
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = handoff_deadline.min(Instant::now() + Duration::from_millis(750));
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(None)
+                if Instant::now() < deadline
+                    && output
+                        .metadata()
+                        .is_ok_and(|metadata| metadata.len() <= MAX_BYTES) =>
+            {
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::other("无法在时限内核对 TCP 端口"));
+            }
+        }
+    }
+    output.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    output.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(std::io::Error::other("TCP 端口核对输出超限"));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn binary_version(path: &Path) -> AppResult<String> {
@@ -1089,6 +1281,112 @@ mod tests {
         let source =
             format!("mixed-port: {port}\nexternal-controller: 127.0.0.1:19090\nproxies: []\n");
         assert!(preflight_ports(&source).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_confirmed_closing_sockets_are_eligible_for_port_handoff() {
+        use super::only_closing_tcp_sockets;
+
+        let closing = "tcp4 0 0 127.0.0.1.7890 127.0.0.1.54321 TIME_WAIT\n";
+        assert!(only_closing_tcp_sockets(closing, 7890));
+        assert!(!only_closing_tcp_sockets(closing, 9090));
+        for conflicting in [
+            "tcp4 0 0 127.0.0.1.7890 *.* LISTEN",
+            "tcp46 0 0 *.7890 *.* LISTEN",
+            "tcp4 0 0 127.0.0.1.7890 127.0.0.1.54322 ESTABLISHED",
+            "tcp4 0 0 127.0.0.1.7890 *.*",
+        ] {
+            assert!(!only_closing_tcp_sockets(
+                &format!("{closing}{conflicting}"),
+                7890
+            ));
+        }
+        assert!(only_closing_tcp_sockets(
+            &format!("{closing}tcp4 0 0 127.0.0.1.9090 *.* LISTEN"),
+            7890
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn port_handoff_waits_for_its_old_port_and_rechecks_both_ports() {
+        use super::wait_for_port_handoff;
+        use std::cell::Cell;
+        use std::io::{Error, ErrorKind};
+
+        let requested = [("mixed port", 7890), ("controller port", 9090)];
+        let released = [("mixed port", Some(7890)), ("controller port", Some(9090))];
+        let closing = "tcp4 0 0 127.0.0.1.7890 127.0.0.1.54321 TIME_WAIT\n";
+        let waits = Cell::new(0);
+        wait_for_port_handoff(
+            requested,
+            released,
+            std::time::Instant::now() + Duration::from_secs(1),
+            || true,
+            |port| {
+                if port == 7890 && waits.get() == 0 {
+                    Err(Error::from(ErrorKind::AddrInUse))
+                } else {
+                    Ok(())
+                }
+            },
+            |_| Some(closing.to_string()),
+            |_| waits.set(waits.get() + 1),
+        )
+        .unwrap();
+        assert_eq!(waits.get(), 1);
+
+        let error = wait_for_port_handoff(
+            requested,
+            released,
+            std::time::Instant::now() + Duration::from_secs(1),
+            || true,
+            |_| Err(Error::from(ErrorKind::AddrInUse)),
+            |_| Some(format!("{closing}tcp4 0 0 127.0.0.1.9090 *.* LISTEN")),
+            |_| panic!("an actual listener must be reported immediately"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("controller port 9090"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn port_handoff_is_bounded_by_ownership_expiry_and_shutdown() {
+        use super::wait_for_port_handoff;
+        use std::io::{Error, ErrorKind};
+        use std::time::Instant;
+
+        let requested = [("mixed port", 7890), ("controller port", 9090)];
+        let released = [("mixed port", Some(7890)), ("controller port", Some(9090))];
+        let future = Instant::now() + Duration::from_secs(1);
+        for (ports, deadline) in [
+            (released, Instant::now()),
+            ([("mixed port", Some(7895)), released[1]], future),
+        ] {
+            assert!(wait_for_port_handoff(
+                requested,
+                ports,
+                deadline,
+                || true,
+                |_| Err(Error::from(ErrorKind::AddrInUse)),
+                |_| panic!("expired or unrelated handoff does not inspect sockets"),
+                |_| panic!("expired or unrelated handoff does not wait"),
+            )
+            .is_err());
+        }
+        assert!(matches!(
+            wait_for_port_handoff(
+                requested,
+                released,
+                future,
+                || false,
+                |_| panic!("shutdown forbids starting the handoff"),
+                |_| panic!("shutdown forbids inspecting sockets"),
+                |_| panic!("shutdown forbids waiting"),
+            ),
+            Err(AppError::Conflict(_))
+        ));
     }
 
     #[test]
