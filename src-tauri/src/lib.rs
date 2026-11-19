@@ -1802,10 +1802,9 @@ pub fn run() {
             #[cfg(windows)]
             windows_lifecycle::install(app.handle()).map_err(std::io::Error::other)?;
             #[cfg(target_os = "macos")]
-            let upgrade_pending = macos_upgrade::bootstrap(app.handle().clone());
+            macos_upgrade::bootstrap(app.handle().clone());
             #[cfg(not(target_os = "macos"))]
-            let upgrade_pending = false;
-            if !upgrade_pending && startup::migrate_login_entry(app.handle(), &settings).is_err() {
+            if startup::migrate_login_entry(app.handle(), &settings).is_err() {
                 app_log::record(
                     1,
                     app_log::Area::Settings,
@@ -1915,10 +1914,9 @@ pub fn run() {
                 .bootstrap(app.handle());
             app.state::<openai_stability::StabilityManager>()
                 .start(app.handle().clone());
-            if !upgrade_pending {
-                app.state::<session_resume::SessionResumeManager>()
-                    .bootstrap(app.handle(), &settings, &persistent);
-            }
+            #[cfg(not(target_os = "macos"))]
+            app.state::<session_resume::SessionResumeManager>()
+                .bootstrap(app.handle(), &settings, &persistent);
             // The native window starts hidden to avoid a visible flash at login.
             if startup::show_initial_window(&settings, &std::env::args().collect::<Vec<_>>()) {
                 if let Some(window) = app.get_webview_window("main") {
@@ -1945,6 +1943,10 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if window.label() == "main" && matches!(event, WindowEvent::Focused(true)) {
+                macos_upgrade::resume_after_approval(window.app_handle().clone());
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();

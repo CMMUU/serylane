@@ -3531,6 +3531,8 @@ void listen<ProxyControlSnapshot>("proxy-control-state", event => acceptProxyCon
 
 void listen<boolean>("proxy-stop-finished", event => { void refreshAfterNativeStop(event.payload); }).catch(() => {});
 
+void listen("tun-helper-changed", () => { void refreshRuntimeOnly().catch(() => {}); }).catch(() => {});
+
 void listen<string>("navigate-view", (event) => {
   if (event.payload === "overview" || event.payload === "routing") navigate(event.payload);
 });

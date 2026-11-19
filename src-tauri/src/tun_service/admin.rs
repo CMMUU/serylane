@@ -5,6 +5,7 @@ use super::lifecycle::{ProbeRead, SharedProbe};
 use super::protocol::{PLIST_NAME, PROTOCOL_VERSION};
 use super::{TunHelperState, TunHelperStatus};
 use crate::macos_service::{self, Service};
+use crate::macos_upgrade::record_stage as record_recovery;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex, MutexGuard, OnceLock,
@@ -66,9 +67,31 @@ pub fn register() -> Result<TunHelperStatus, String> {
     register_inner(Registration::Install)
 }
 
+/// Discover an existing service after a Finder replacement. The launchd
+/// observation is a hint. The signed, installed application must also have a
+/// registration recognized by Service Management.
+pub(crate) fn overwrite_source() -> Result<Option<String>, String> {
+    let Some(version) = launchd::stale_version_now() else {
+        return Ok(None);
+    };
+    codesign::validate_installation()?;
+    let status = recovery_service_status()?;
+    Ok(matches!(
+        status,
+        macos_service::ENABLED | macos_service::REQUIRES_APPROVAL
+    )
+    .then_some(version))
+}
+
+pub(crate) fn recovery_service_status() -> Result<isize, String> {
+    SERVICE.ensure_settled()?;
+    SERVICE.status()
+}
+
 pub(crate) fn register_after_upgrade(attempted: &AtomicBool) -> Result<TunHelperStatus, String> {
     let _guard = mutation()?;
     let observed = register_inner(Registration::Upgrade)?;
+    record_recovery("handshake", &format!("state={:?}", observed.state));
     retry_stale_binding_once(
         observed,
         attempted,
@@ -77,9 +100,25 @@ pub(crate) fn register_after_upgrade(attempted: &AtomicBool) -> Result<TunHelper
             // retrying. Authenticate the replacement before touching the old
             // association and require it to still be enabled (not denied).
             codesign::validate_installation()?;
-            Ok(launchd::stale_binding_now() && SERVICE.status()? == macos_service::ENABLED)
+            let version = launchd::stale_version_now();
+            let status = recovery_service_status()?;
+            record_recovery(
+                "stale_binding",
+                &format!(
+                    "source={} sm_status={status}",
+                    version.as_deref().unwrap_or("unknown")
+                ),
+            );
+            Ok(version.is_some() && status == macos_service::ENABLED)
         },
-        || rebind(|| SERVICE.unregister_enabled()),
+        || {
+            rebind(|| {
+                record_recovery("unregister", "request");
+                SERVICE.unregister_enabled()?;
+                record_recovery("unregister", "completed");
+                Ok(())
+            })
+        },
     )
 }
 
@@ -120,7 +159,14 @@ fn register_inner(registration: Registration) -> Result<TunHelperStatus, String>
     SERVICE.ensure_settled()?;
     codesign::validate_installation()?;
     reset_service_probes();
-    match (registration, SERVICE.status()?) {
+    let status = SERVICE.status()?;
+    if matches!(
+        registration,
+        Registration::Upgrade | Registration::AfterRemoval
+    ) {
+        record_recovery("permission", &format!("sm_status={status}"));
+    }
+    match (registration, status) {
         (Registration::AfterRemoval, _) => register_after_confirmed_removal()?,
         (_, macos_service::REQUIRES_APPROVAL) => return Ok(requires_approval()),
         (_, macos_service::ENABLED) => {}
@@ -188,7 +234,16 @@ fn register_after_confirmed_removal() -> Result<(), String> {
                 && launchd::confirms_absence()
                 && macos_service::registration_absent(SERVICE.status()?))
         },
-        || SERVICE.register(),
+        || {
+            record_recovery(
+                "removal_confirmed",
+                "confirmed by Service Management and launchd",
+            );
+            record_recovery("register", "request");
+            SERVICE.register()?;
+            record_recovery("register", "completed");
+            Ok(())
+        },
     )
 }
 

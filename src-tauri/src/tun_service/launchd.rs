@@ -11,13 +11,13 @@ pub(super) enum Failure {
     SpawnFailed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Observation {
     Unknown,
     Absent,
     Present {
         failure: Option<Failure>,
-        stale_binding: bool,
+        stale_version: Option<String>,
     },
 }
 
@@ -40,14 +40,11 @@ pub(super) fn failure() -> Option<Failure> {
 
 /// Recheck immediately before detaching. A cached diagnosis may describe an
 /// old job that launchd has already replaced or started.
-pub(super) fn stale_binding_now() -> bool {
-    matches!(
-        inspect(),
-        Ok(Observation::Present {
-            failure: Some(Failure::SpawnFailed),
-            stale_binding: true
-        })
-    )
+pub(super) fn stale_version_now() -> Option<String> {
+    match inspect() {
+        Ok(Observation::Present { stale_version, .. }) => stale_version,
+        _ => None,
+    }
 }
 
 pub(super) fn confirms_absence() -> bool {
@@ -140,17 +137,20 @@ fn parse(text: &str, current_version: &str) -> Observation {
     let reports_our_binding = value("managed_by") == Some("com.apple.xpc.ServiceManagement")
         && value("parent bundle identifier") == Some("com.cmmuu.mihomodesktop")
         && program == Some(expected_program.as_str());
-    let old_version = value("parent bundle version")
-        .and_then(version_triplet)
-        .zip(version_triplet(current_version))
-        .is_some_and(|(registered, current)| registered < current);
+    let old_version = value("parent bundle version").filter(|registered| {
+        version_triplet(registered)
+            .zip(version_triplet(current_version))
+            .is_some_and(|(registered, current)| registered < current)
+    });
     // These observations are used solely to decide whether to ask
     // SMAppService to redo an existing association. They grant no trust.
     // A newly registered (same-version) job must not restart the transaction
     // even if it subsequently reports a launch constraint problem.
     Observation::Present {
         failure: failed.then_some(Failure::SpawnFailed),
-        stale_binding: failed && reports_our_binding && old_version,
+        stale_version: old_version
+            .filter(|_| failed && reports_our_binding)
+            .map(str::to_owned),
     }
 }
 
@@ -179,7 +179,7 @@ mod tests {
     fn observed_macos_spawn_failure_requires_reassociation_not_more_authorization() {
         assert_eq!(
             parse(&job("\tstate = spawn scheduled\n\tactive count = 0\n\tlast exit code = 78: EX_CONFIG\n\tjob state = spawn failed"), "0.7.44"),
-            Observation::Present { failure: Some(Failure::SpawnFailed), stale_binding: false }
+            Observation::Present { failure: Some(Failure::SpawnFailed), stale_version: None }
         );
     }
 
@@ -194,7 +194,7 @@ mod tests {
             "\tjob state = spawn failed\n\tlast exit code = 1",
             "\tlaunch info = {\n\t\tstate = spawn scheduled\n\t\tactive count = 0\n\t}\n\tlast exit code = 78: EX_CONFIG\n\tjob state = spawn failed",
         ] {
-            assert_eq!(parse(&job(text), "0.7.44"), Observation::Present { failure: None, stale_binding: false }, "{text}");
+            assert_eq!(parse(&job(text), "0.7.44"), Observation::Present { failure: None, stale_version: None }, "{text}");
         }
     }
 
@@ -207,12 +207,19 @@ mod tests {
             matches!(
                 parse(text, ver),
                 Observation::Present {
-                    stale_binding: true,
+                    stale_version: Some(_),
                     ..
                 }
             )
         };
         assert!(eligible(&fixture, "0.7.44"));
+        assert_eq!(
+            parse(&fixture, "0.7.48"),
+            Observation::Present {
+                failure: Some(Failure::SpawnFailed),
+                stale_version: Some("0.7.42".to_owned()),
+            }
+        );
         assert!(!eligible(&fixture, "0.7.42"));
         assert!(!eligible(&fixture, "0.7.41"));
         for unrelated in [
