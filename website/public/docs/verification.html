@@ -96,7 +96,7 @@
 </section>
 <section id="update-downloads">
 <h2>If an update download is interrupted</h2>
-<p>The current updater checks GitHub directly, then through the running Serylane proxy, then through the download center. If a download fails in transit, the updater can try a later route for the same signed package. The interface shows the active route and attempt. A download can be cancelled while the proxy keeps running.</p>
+<p>The current updater checks GitHub directly, then through the Serylane GitHub accelerator, the running Serylane proxy, and the download center. If a download fails in transit, the updater can try a later route for the same signed package. The interface shows the active route and attempt. A download can be cancelled while the proxy keeps running.</p>
 <p>Recovery keeps the selected version, platform, architecture, size, SHA-256 and signature. Certificate or integrity failures stop the download. Installation is available after verification and requires confirmation.</p>
 <p>An old installed version still uses its own updater. If it cannot update, use the official download section for a verified full package of the same architecture, keeping the configuration directory. Source behavior is not a claim that the current installed binary already contains it.</p>
 </section>

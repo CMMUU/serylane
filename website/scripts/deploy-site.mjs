@@ -111,6 +111,43 @@ export async function verifyDownloads(fetcher = request) {
   console.log(`Verified latest release ${release.version}, all six center-only architecture routes, and rejected retired channel overrides.`);
 
 }
+
+export async function verifyGithubAccelerator(fetcher = request) {
+  const endpoint = origin + '/api/update/github';
+  const metadata = await fetcher(endpoint + '/latest');
+  assert.equal(metadata.status, 200, 'GitHub accelerator could not resolve a stable release');
+  const { tag_name: tag, prerelease, draft } = await metadata.json();
+  assert.match(tag, /^v\d+\.\d+\.\d+$/);
+  assert.equal(prerelease, false);
+  assert.equal(draft, false);
+  const manifestResponse = await fetcher(endpoint + '/' + tag + '/latest-serylane.json');
+  assert.equal(manifestResponse.status, 200, 'GitHub accelerator manifest unavailable');
+  const manifest = await manifestResponse.json();
+  assert.equal('v' + manifest.version, tag);
+  const canonical = 'https://github.com/CMMUU/serylane/releases/download/' + tag + '/';
+  const update = manifest.platforms['darwin-aarch64'];
+  const expectedFile = 'Serylane_' + manifest.version + '_aarch64.app.tar.gz';
+  assert.equal(update.url, canonical + expectedFile);
+  assert.ok(Number.isSafeInteger(update.size) && update.size > 0 && update.size <= 256 * 1024 * 1024);
+  assert.match(update.sha256, /^[a-f0-9]{64}$/);
+  const response = await fetcher(endpoint + '/' + tag + '/' + expectedFile, {
+    signal: AbortSignal.timeout(180000),
+  });
+  assert.equal(response.status, 200, 'GitHub accelerator did not stream the package');
+  assert.equal(response.headers.get('x-serylane-channel'), 'github_accelerator');
+  assert.equal(Number(response.headers.get('content-length')), update.size);
+  const digest = createHash('sha256');
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    assert.ok(size <= update.size, 'GitHub accelerator delivered extra bytes');
+    digest.update(chunk);
+  }
+  assert.equal(size, update.size);
+  assert.equal(digest.digest('hex'), update.sha256, 'GitHub accelerator byte identity mismatch');
+  console.log('Verified GitHub accelerator ' + tag + ', macOS ARM64, ' + size + ' bytes and SHA-256.');
+}
+
 export async function retryRead(check, wait = () => new Promise(resolve => setTimeout(resolve, 15000))) {
   // Edge activation can briefly return the previous asset manifest. Retry only
   // reads for up to 75 seconds; never repeat an upload or deployment write.
@@ -156,6 +193,7 @@ export async function main() {
   await retryRead(() => verifyStatic(expected));
   await retryRead(verifyNotFound);
   await retryRead(verifyDownloads);
+  await retryRead(verifyGithubAccelerator);
   console.log(`Website synchronized and verified: ${origin}, source ${commit}, Worker ${version}`);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

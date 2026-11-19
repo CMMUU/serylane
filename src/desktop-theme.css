@@ -220,7 +220,16 @@ input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--da
 .global-traffic-compact > span { display: flex; gap: 7px; }
 .global-traffic-compact b { color: var(--muted); font-size: 13px; font-weight: 400; }
 .global-traffic-compact strong { color: var(--text); font-size: 13px; font-weight: 400; }
-.sidebar-version { flex: 0 0 auto; margin: 14px 16px 0; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.sidebar-version {
+  flex: 0 0 auto; margin: 14px 16px 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line);
+  background: transparent; color: var(--muted); font: inherit; font-size: 13px; text-align: start; cursor: pointer;
+}
+.sidebar-version:hover { color: var(--text); }
+.sidebar-update-dot {
+  display: inline-block; inline-size: 7px; block-size: 7px; margin-inline-start: 5px;
+  border-radius: 50%; background: var(--danger); vertical-align: super;
+}
+.sidebar-update-dot[hidden] { display: none; }
 .main-content {
   min-width: 0; min-height: 0; margin: 8px 24px 12px 0; padding: 0 16px;
   border: 1px solid var(--glass-edge); border-radius: var(--radius-panel);

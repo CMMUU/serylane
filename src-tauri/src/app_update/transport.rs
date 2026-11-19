@@ -17,7 +17,7 @@ fn github_redirect_allowed(url: &Url) -> bool {
 }
 
 pub(super) fn redirect_policy(source: UpdateSource) -> updater_http::redirect::Policy {
-    if !source.github() {
+    if !source.github() || source == UpdateSource::GithubAccelerator {
         return updater_http::redirect::Policy::none();
     }
     updater_http::redirect::Policy::custom(|attempt| {
@@ -160,7 +160,7 @@ pub(super) async fn download_once(
             true,
         ));
     }
-    // Validate the immutable center identity before any bytes are requested.
+    // Validate the immutable release identity before any bytes are requested.
     let (hash, size) = validate_asset(
         candidate.source,
         &candidate.platform_key,
@@ -182,7 +182,7 @@ pub(super) async fn download_once(
     }
     // The local signed-fixture transport override exists only in test builds.
     #[cfg(not(test))]
-    if transport.download_url != candidate.update.download_url
+    if transport.download_url != candidate.transport_url
         || transport.signature != candidate.update.signature
     {
         return Err(TransportFailure::new(

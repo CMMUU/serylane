@@ -2,7 +2,28 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { retryRead, sourceAssetBytes, uploadedVersion, verifyStatic, verifyDownloads, STATIC_ASSETS, staticAssetManifest, verifyNotFound } from './deploy-site.mjs';
+import { retryRead, sourceAssetBytes, uploadedVersion, verifyStatic, verifyDownloads, verifyGithubAccelerator, STATIC_ASSETS, staticAssetManifest, verifyNotFound } from './deploy-site.mjs';
+
+test('accelerator is verified by streaming the exact GitHub release package', async () => {
+  const body = Buffer.from('signed updater bytes');
+  const filename = 'Serylane_0.7.46_aarch64.app.tar.gz';
+  const updater = {
+    url: 'https://github.com/CMMUU/serylane/releases/download/v0.7.46/' + filename,
+    size: body.length,
+    sha256: createHash('sha256').update(body).digest('hex'),
+  };
+  const fixture = (bytes, manifest = updater) => async url => {
+    if (url.endsWith('/github/latest')) return Response.json({ tag_name: 'v0.7.46', prerelease: false, draft: false });
+    if (url.endsWith('/v0.7.46/latest-serylane.json')) return Response.json({ version: '0.7.46', platforms: { 'darwin-aarch64': manifest } });
+    assert.ok(url.endsWith('/v0.7.46/' + filename));
+    return new Response(bytes, {
+      headers: { 'content-length': manifest.size, 'x-serylane-channel': 'github_accelerator' },
+    });
+  };
+  await verifyGithubAccelerator(fixture(body));
+  await assert.rejects(verifyGithubAccelerator(fixture(Buffer.alloc(body.length))), /byte identity mismatch/);
+  await assert.rejects(verifyGithubAccelerator(fixture(body, { ...updater, url: 'https://example.test/' + filename })));
+});
 
 test('static byte proof includes every canonical locale page and shared theme resource', async () => {
   const pages = ['/', '/docs/', '/docs/routing', '/docs/privacy', '/docs/verification'];

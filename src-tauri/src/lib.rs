@@ -21,6 +21,8 @@ mod macos_service;
 mod macos_update_install;
 #[cfg(target_os = "macos")]
 mod macos_upgrade;
+#[cfg(target_os = "macos")]
+mod macos_window_recovery;
 mod manual_outbound;
 mod mihomo_api;
 mod models;
@@ -1601,6 +1603,11 @@ fn reveal_main_window(app: &AppHandle) -> bool {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        #[cfg(target_os = "macos")]
+        {
+            macos_window_recovery::bring_to_front(&window);
+            macos_window_recovery::resume(&window);
+        }
         return true;
     }
     false
@@ -1740,7 +1747,13 @@ pub fn run() {
             1
         });
     }
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .manage(macos_window_recovery::MainWindowRecovery::default())
+        .on_page_load(macos_window_recovery::loaded)
+        .on_web_content_process_terminate(macos_window_recovery::terminated);
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -1910,9 +1923,12 @@ pub fn run() {
             if startup::show_initial_window(&settings, &std::env::args().collect::<Vec<_>>()) {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
+                    #[cfg(target_os = "macos")]
+                    macos_window_recovery::resume(&window);
                 }
             }
             subscription_quota::start(app.handle().clone());
+            app_update::schedule_checks(app.handle().clone());
             let pruning_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -1957,6 +1973,7 @@ pub fn run() {
             app_update::check_app_update,
             app_update::app_update_status,
             app_update::save_update_preferences,
+            app_update::dismiss_app_update_notice,
             app_update::download_app_update,
             app_update::cancel_app_update,
             app_update::install_app_update,

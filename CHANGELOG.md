@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.46 - 2026-11-19
+
+- Open the macOS status menu in a non-activating AppKit panel in the current full-screen space. Recover the main window when WebKit terminates before its first page loads.
+- Check for updates in the background at startup. The update card and the version badge open Software Update at the download action.
+- Check and download through GitHub direct, the Serylane GitHub accelerator, GitHub through the local Serylane proxy, and the download center, in that order.
+
 ## 0.7.45 - 2026-11-19
 
 - Recover a confirmed stale macOS TUN Helper registration that fails to launch with `EX_CONFIG` after an upgrade. Wait for the old launchd job to disappear, then authenticate the current Helper before permitting TUN to start.

@@ -41,3 +41,19 @@
 - L1 候选基于 GitHub main `673f7db` 与修复 `936e3cb`，已通过 Developer ID、Hardened Runtime、公证票据检查。隔离 macOS 27.2.1（26B131，ARM64）中重现旧登记 `78: EX_CONFIG`，按系统提示重新批准后台服务，未跳过系统授权；重新打开后确认 v0.7.45 Helper 就绪。未指定 HTTP 代理的 TCP 与外部 IPv4 HTTPS 经 `utun4`；停止后核心退出，路由和系统代理与基线相同。虚拟机关停，宿主代理与默认路由未改变。
 - L1 候选前的标准 `npm run check` 覆盖 379 个 Node 测试；本机串行 Rust 测试 472 通过、5 项前置条件未满足而跳过。额外全量旧 Node 测试入口的 13 项错误与未修改的 v0.7.44 基线一致，不作为本次修复引入的回归。
 - 发布顺序：现有 CI／站点检查 → 受审 main → GitHub 正式签名发布 → 下载中心归档 → 官网六架构入口与集中项目文档。上一公开版本 v0.7.44 的兼容包和标签保留。Intel 运行时、休眠唤醒及 IPv6 不用签名验收替代。
+
+## v0.7.46 全屏菜单、主窗口恢复和更新门禁
+
+- 用户已确认方案二、正式发布及集中验收同步。基线为已发布 GitHub main `feb001252bcbe391d35dd9525d2381316868fd30`，隔离工作树为 `codex/fullscreen-window-update-v0746`。以当前屏幕的全屏菜单可见且可操作、首次 WebKit 内容进程退出后能显示应用、已核对新版可从第二路下载为首要验收条件。
+- 检查及下载顺序为 GitHub 直连 → GitHub 加速代理 → 经 Serylane 本地代理访问 GitHub → 下载中心。加速代理使用现有官网 Worker 和固定的 Serylane 正式版路径。固定版本工件继续校验平台、架构、大小、SHA-256 和签名。
+- 自动检查在进程内调度。确认可用新版时，主窗口可见后显示右下角卡片。同一进程内关闭或打开卡片后，相同版本不再次弹出，侧栏版本红点继续显示。点击卡片或版本号进入软件更新并定位可用的下载或安装操作。
+- 已批准修改 `src-tauri/src/{lib,macos_menu_panel,app_update}.rs`、`src-tauri/tests/macos_tray_native.rs`、`src-tauri/src/app_update/{transport,contract_tests,recovery_tests}.rs`、`src/{main,api,types,app-update,settings-view}.ts`、`src/desktop-theme.css`、`tests/update.test.mjs` 和 11 个现有语言包。新增 `src-tauri/src/macos_window_recovery.rs`、`website/src/github-updates.ts`，修改 `website/src/worker.ts` 和 `website/scripts/{test-worker,deploy-site,test-deploy-site}.mjs`。
+- 文档及发行范围包括本门禁、`AGENTS.md`、`README.md`、`CHANGELOG.md`、`scripts/product-docs.mjs`、`docs/{index,当前实现与业务契约,自动更新与发版,发布说明-v0.7.46}.md`、`website/public/{docs,zh/docs}/{index,verification}.html` 和五个版本文件。发行验收进入 `CMMUU/project-docs` 的 `serylane/{README,当前实现与业务契约,发布说明-v0.7.46}.md`。
+- 使用真实全屏空间、带流量宽度的状态项、隔离候选的 WebKit 首次加载中断以及四路失败注入和公开下载验收。签名、归档及官网沿现有发布流程。本地联验时间盒为一个工作日，失败可回退本工作树的具体批次。
+- 用户追加确认使用 AppKit 非激活 NSPanel，保留现有菜单命令及 11 种语言。完整应用须在其他应用全屏时实际显示菜单，并从菜单打开、显示常规和遭遇首次 WebKit 中断后的主窗口。再核对四路更新、启动卡片与版本号红点，通过后发布 v0.7.46 并同步集中验收。
+
+### 候选本地验收
+
+- Apple 芯片 macOS 27.2.1 隔离虚拟机中，完整候选的 64pt 双行流量状态项在另一应用的真实全屏空间响应左键与右键。可再次点图标、点外部或按 Esc 收起。选「打开主窗口」切换到 Serylane 主窗口所在的桌面。
+- 虚拟机的 WebKit WebContent 受到系统 IOSurface 权限限制，已发布 v0.7.45 也复现图层空白。改在实体 Mac 上以独立应用标识和配置运行完整候选。让首个文档保持尚未提交，结束该隔离 WebContent 进程，再调用 AppKit 面板的原生打开命令。新进程加载应用入口并挂载 11 个导航项，实际画面显示完整首页。
+- 软件更新在冷进程实测发现 Rustls 尚未设置加密提供程序。GitHub 发行查询现在先初始化和更新插件一致的提供程序，再构建 HTTPS 客户端。独立运行的回归测试覆盖先于插件的 GitHub 两个入口。

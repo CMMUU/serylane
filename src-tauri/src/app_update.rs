@@ -4,6 +4,7 @@ use crate::runtime::MihomoRuntime;
 use crate::storage::AppStorage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -28,22 +29,27 @@ const HK_RELEASES: &str = "https://files.cmmuu.com/releases/serylane";
 const DOWNLOAD_CENTER: &str = "https://downloads.cmmuu.com/projects/serylane";
 const GITHUB_REPOSITORY: &str = "https://github.com/CMMUU/serylane";
 const GITHUB_LATEST: &str = "https://api.github.com/repos/CMMUU/serylane/releases/latest";
+const GITHUB_ACCELERATOR: &str = "https://serylane.cmmuu.com/api/update/github";
 const CHECK_BUDGET: Duration = Duration::from_secs(12);
 const MAX_METADATA_BYTES: usize = 512 * 1024;
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(3);
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateSource {
     Github,
+    GithubAccelerator,
     GithubProxy,
     #[default]
     #[serde(alias = "auto", alias = "gitee")]
     Hk,
 }
 
-const SOURCE_ORDER: [UpdateSource; 3] = [
+const SOURCE_ORDER: [UpdateSource; 4] = [
     UpdateSource::Github,
+    UpdateSource::GithubAccelerator,
     UpdateSource::GithubProxy,
     UpdateSource::Hk,
 ];
@@ -52,22 +58,26 @@ impl UpdateSource {
     fn label(self) -> &'static str {
         match self {
             Self::Github => "GitHub 直连",
+            Self::GithubAccelerator => "GitHub 加速代理",
             Self::GithubProxy => "GitHub（Serylane 代理）",
             Self::Hk => "下载中心",
         }
     }
 
     fn network_path(self, proxy: Option<&Url>) -> &'static str {
-        match self {
-            Self::Github => "GitHub 直连",
-            Self::GithubProxy => "GitHub（Serylane 代理）",
-            Self::Hk if proxy.is_some() => "下载中心（Serylane 代理）",
-            Self::Hk => "下载中心",
+        if self == Self::Hk && proxy.is_some() {
+            "下载中心（Serylane 代理）"
+        } else {
+            self.label()
         }
     }
 
     fn github(self) -> bool {
         self != Self::Hk
+    }
+
+    fn direct(self) -> bool {
+        matches!(self, Self::Github | Self::GithubAccelerator)
     }
 }
 
@@ -166,6 +176,7 @@ pub struct AppUpdateStatus {
     pub last_install: Option<String>,
     pub retry_install: bool,
     pub info: Option<AppUpdateInfo>,
+    pub notice_version: Option<String>,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
     pub error: Option<String>,
@@ -186,6 +197,7 @@ impl Default for AppUpdateStatus {
             last_install: None,
             retry_install: false,
             info: None,
+            notice_version: None,
             downloaded_bytes: 0,
             total_bytes: 0,
             error: None,
@@ -197,6 +209,7 @@ impl Default for AppUpdateStatus {
 struct Candidate {
     update: Update,
     source: UpdateSource,
+    transport_url: Url,
     version: StableVersion,
     sha256: String,
     size: u64,
@@ -274,10 +287,19 @@ impl Candidate {
             &update.download_url,
             &update.raw_json,
         )?;
+        let transport_url = if source == UpdateSource::GithubAccelerator {
+            // Map the already validated GitHub asset. The proxy never chooses
+            // the artifact or supplies its own package identity.
+            let filename = update.download_url.path().rsplit('/').next().unwrap();
+            accelerator_asset(&update.version, filename)?
+        } else {
+            update.download_url.clone()
+        };
         update.timeout = Some(Duration::from_secs(600));
         Ok(Self {
             update,
             source,
+            transport_url,
             version,
             sha256,
             size,
@@ -299,6 +321,8 @@ impl Candidate {
             || !same_build(self, &checked)
             || self.source != selected.source
             || self.update.download_url != selected.update.download_url
+            || self.transport_url != checked.transport_url
+            || self.transport_url != selected.transport_url
         {
             return Err(failure(
                 "待安装版本或平台信息已变化，请重新检查更新；未执行安装",
@@ -325,6 +349,24 @@ struct Session {
     // Only the native, signature-verified download path can populate this.
     // The frontend never supplies installation bytes, a path, or a download URL.
     ready: Option<(Candidate, Vec<u8>)>,
+    handled_notices: HashSet<String>,
+}
+
+impl Session {
+    fn update_notice(&mut self, info: &AppUpdateInfo, background: bool) {
+        let version = &info.latest_version;
+        let pending = self.status.notice_version.as_ref() == Some(version);
+        self.status.notice_version =
+            (info.available && (background || pending) && !self.handled_notices.contains(version))
+                .then(|| version.clone());
+    }
+
+    fn dismiss_notice(&mut self, version: &str) {
+        if self.status.notice_version.as_deref() == Some(version) {
+            self.handled_notices.insert(version.into());
+            self.status.notice_version = None;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -333,6 +375,7 @@ pub struct AppUpdateManager {
     busy: Arc<AtomicBool>,
     cancelled: AtomicBool,
     receipt_checked: AtomicBool,
+    checked_this_launch: AtomicBool,
 }
 
 struct Operation {
@@ -433,6 +476,11 @@ fn asset_url(source: UpdateSource, version: &str, filename: &str) -> AppResult<S
     })
 }
 
+fn accelerator_asset(version: &str, filename: &str) -> AppResult<Url> {
+    Url::parse(&format!("{GITHUB_ACCELERATOR}/v{version}/{filename}"))
+        .map_err(|_| failure("GitHub 加速代理地址无效"))
+}
+
 fn validate_asset(
     source: UpdateSource,
     target: &str,
@@ -484,10 +532,12 @@ fn manifest_location(source: UpdateSource, tag: Option<&str>) -> AppResult<Manif
         } else {
             "latest-serylane-hk.json"
         };
-        (
-            asset_url(source, &tag[1..], file)?,
-            Some(parse_version(&tag[1..])?),
-        )
+        let address = if source == UpdateSource::GithubAccelerator {
+            accelerator_asset(&tag[1..], file)?.to_string()
+        } else {
+            asset_url(source, &tag[1..], file)?
+        };
+        (address, Some(parse_version(&tag[1..])?))
     } else if source.github() {
         return Err(failure("GitHub 更新清单需要已确认的稳定发布标签"));
     } else {
@@ -499,7 +549,15 @@ fn manifest_location(source: UpdateSource, tag: Option<&str>) -> AppResult<Manif
     })
 }
 
-async fn github_release_tag(source: UpdateSource, proxy: Option<&Url>) -> AppResult<String> {
+fn github_release_client(
+    source: UpdateSource,
+    proxy: Option<&Url>,
+) -> AppResult<updater_http::Client> {
+    // Release discovery runs before the updater plugin's first check. Select
+    // the same provider the plugin uses before creating its reqwest client.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
     let mut client = updater_http::Client::builder()
         .https_only(true)
         .no_proxy()
@@ -512,11 +570,20 @@ async fn github_release_tag(source: UpdateSource, proxy: Option<&Url>) -> AppRes
             updater_http::Proxy::all(proxy.as_str()).map_err(|_| failure("本地代理地址无效"))?,
         );
     }
-    let client = client
+    client
         .build()
-        .map_err(|_| failure("无法创建 GitHub 更新连接"))?;
+        .map_err(|_| failure("无法创建 GitHub 更新连接"))
+}
+
+async fn github_release_tag(source: UpdateSource, proxy: Option<&Url>) -> AppResult<String> {
+    let client = github_release_client(source, proxy)?;
+    let endpoint = if source == UpdateSource::GithubAccelerator {
+        format!("{GITHUB_ACCELERATOR}/latest")
+    } else {
+        GITHUB_LATEST.to_owned()
+    };
     let mut response = client
-        .get(GITHUB_LATEST)
+        .get(endpoint)
         .header("User-Agent", "Serylane")
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -601,7 +668,7 @@ async fn check_source_at(
                 .redirect(transport::redirect_policy(source))
                 .connect_timeout(transport::CONNECT_TIMEOUT)
         });
-    if source == UpdateSource::Github {
+    if source.direct() {
         builder = builder.no_proxy();
     } else if let Some(proxy) = proxy {
         builder = builder.proxy(proxy.clone());
@@ -704,12 +771,25 @@ pub fn save_update_preferences(
     let storage = AppStorage::from_app(&app).map_err(|e| e.dto())?;
     let mut settings = storage.settings().map_err(|e| e.dto())?;
     let source_changed = settings.update_source != source;
+    let enable_first_check = auto_check && !settings.auto_check_updates;
     settings.update_source = source;
     settings.auto_check_updates = auto_check;
     settings.auto_download_updates = auto_download;
     storage.save_settings(&settings).map_err(|e| e.dto())?;
-    if source_changed {
-        *state.lock().map_err(|e| e.dto())? = Session::default();
+    {
+        let mut session = state.lock().map_err(|e| e.dto())?;
+        if source_changed {
+            session.status = AppUpdateStatus::default();
+            session.candidates.clear();
+            session.ready = None;
+        }
+        if !auto_check {
+            session.status.notice_version = None;
+        }
+    }
+    drop(_operation);
+    if enable_first_check {
+        tauri::async_runtime::spawn(async move { background_check(&app, Check::Startup).await });
     }
     Ok(crate::models::PublicAppSettings::from(&settings))
 }
@@ -740,20 +820,88 @@ pub async fn check_app_update(
     app: AppHandle,
     state: State<'_, AppUpdateManager>,
 ) -> Result<AppUpdateStatus, AppErrorDto> {
+    check_update(&app, &state, Check::Manual).await
+}
+
+#[tauri::command]
+pub fn dismiss_app_update_notice(
+    state: State<'_, AppUpdateManager>,
+    version_tag: String,
+) -> Result<(), AppErrorDto> {
+    state
+        .lock()
+        .map_err(|e| e.dto())?
+        .dismiss_notice(&version_tag);
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Check {
+    Manual,
+    Startup,
+    Periodic,
+}
+
+pub(super) fn schedule_checks(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(STARTUP_CHECK_DELAY).await;
+        background_check(&app, Check::Startup).await;
+        loop {
+            tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
+            if crate::lifecycle::PROCESS_LIFECYCLE.snapshot().phase == "closing" {
+                break;
+            }
+            background_check(&app, Check::Periodic).await;
+        }
+    });
+}
+
+async fn background_check(app: &AppHandle, check: Check) {
+    let state = app.state::<AppUpdateManager>();
+    let _ = check_update(app, &state, check).await;
+    let _ = app.emit("app-update-changed", ());
+}
+
+async fn check_update(
+    app: &AppHandle,
+    state: &AppUpdateManager,
+    check: Check,
+) -> Result<AppUpdateStatus, AppErrorDto> {
+    let background = check != Check::Manual;
     let _operation = state.begin().map_err(|e| e.dto())?;
     {
         let mut session = state.lock().map_err(|e| e.dto())?;
-        let last_install = session.status.last_install.clone();
-        *session = Session::default();
-        session.status.last_install = last_install;
-        session.status.phase = "checking".into();
-        session.status.task_id = uuid::Uuid::new_v4().to_string();
+        if background
+            && (crate::lifecycle::PROCESS_LIFECYCLE.snapshot().phase != "open"
+                || session.status.phase == "ready"
+                || session.status.retry_install
+                || check == Check::Startup && state.checked_this_launch.load(Ordering::Acquire)
+                || !AppStorage::from_app(app)
+                    .and_then(|storage| storage.settings())
+                    .is_ok_and(|settings| settings.auto_check_updates))
+        {
+            return Ok(session.status.clone());
+        }
+        state.checked_this_launch.store(true, Ordering::Release);
+        session.candidates.clear();
+        session.ready = None;
+        session.status = AppUpdateStatus {
+            last_install: session.status.last_install.take(),
+            info: session.status.info.take(),
+            notice_version: session.status.notice_version.take(),
+            phase: "checking".into(),
+            task_id: uuid::Uuid::new_v4().to_string(),
+            ..AppUpdateStatus::default()
+        };
+    }
+    if background {
+        let _ = app.emit("app-update-changed", ());
     }
     let result = async {
-        let proxy = proxy_for_update(&app)?;
+        let proxy = proxy_for_update(app)?;
         let task_id = state.lock()?.status.task_id.clone();
         let (latest, channels) = first_update_candidate(proxy.is_some(), &task_id, |source| {
-            check_source(&app, source, proxy.as_ref(), None)
+            check_source(app, source, proxy.as_ref(), None)
         })
         .await;
         let latest = latest.ok_or_else(|| {
@@ -799,12 +947,19 @@ pub async fn check_app_update(
         }
         .into();
         session.status.network_path = info.source.network_path(proxy.as_ref()).into();
+        session.update_notice(&info, background);
         session.status.info = Some(info);
         session.candidates = vec![latest];
         Ok(session.status.clone())
     }
     .await;
-    result.map_err(|e| state.finish_error(&e))
+    result.map_err(|error| {
+        if let Ok(mut session) = state.lock() {
+            session.status.info = None;
+            session.status.notice_version = None;
+        }
+        state.finish_error(&error)
+    })
 }
 
 // Test transport injection retains the real plugin signature verification.
@@ -905,12 +1060,9 @@ pub async fn download_app_update(
                 },
                 |candidate| {
                     let mut update = candidate.update.clone();
-                    update.proxy = if source == UpdateSource::Github {
-                        None
-                    } else {
-                        proxy.clone()
-                    };
-                    update.no_proxy = source == UpdateSource::Github;
+                    update.download_url = candidate.transport_url.clone();
+                    update.proxy = if source.direct() { None } else { proxy.clone() };
+                    update.no_proxy = source.direct();
                     update
                 },
             )
@@ -1141,6 +1293,14 @@ pub fn open_official_release(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_discovery_builds_https_client_before_updater() {
+        for source in [UpdateSource::Github, UpdateSource::GithubAccelerator] {
+            github_release_client(source, None).expect("release index HTTPS client");
+        }
+    }
+
     #[test]
     fn space_budget_includes_uncompressed_backup_and_does_not_overflow() {
         assert_eq!(installation_reserve(10, 100), 128 * 1024 * 1024 + 280);

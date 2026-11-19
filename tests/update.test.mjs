@@ -38,21 +38,28 @@ test("download progress is bounded and never NaN", () => {
 });
 test("update settings display the automatic order and the actual path label", () => {
   const settings = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
-  assert.match(settings, /GitHub 直连 → Serylane 代理 → 下载中心/);
+  assert.match(settings, /GitHub 直连 → GitHub 加速代理 → 经 Serylane 本地代理访问 GitHub → 下载中心/);
   assert.equal(updateSourceLabel("github"), "GitHub 直连");
+  assert.equal(updateSourceLabel("github_accelerator"), "GitHub 加速代理");
   assert.equal(updateSourceLabel("github_proxy"), "GitHub（Serylane 代理）");
   assert.equal(updateSourceLabel("hk"), "下载中心");
   assert.match(describeAppUpdate({ ...status("failed"), error: null }).detail, /更新来源暂不可用.*重试/);
 });
 
 test("background notification deduplicates newer versions and ignores current or failed checks", () => {
-  assert.equal(backgroundUpdateVersion(status("available"), new Set()), "v1.0.0");
-  assert.equal(backgroundUpdateVersion(status("available"), new Set(["v1.0.0"])), null);
+  const pending = { ...status("available"), noticeVersion: "v1.0.0" };
+  assert.equal(backgroundUpdateVersion(pending, new Set()), "v1.0.0");
+  assert.equal(backgroundUpdateVersion(pending, new Set(["v1.0.0"])), null);
+  assert.equal(backgroundUpdateVersion({ ...pending, phase: "ready" }, new Set()), "v1.0.0");
+  assert.equal(backgroundUpdateVersion({ ...pending, noticeVersion: "v1.0.1" }, new Set()), null);
+  assert.equal(backgroundUpdateVersion(status("available"), new Set()), null);
   assert.equal(backgroundUpdateVersion(status("current", false), new Set()), null);
   assert.equal(backgroundUpdateVersion(status("failed"), new Set()), null);
   assert.equal(backgroundUpdateVersion({ ...status("failed"), info: null }, new Set()), null);
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  assert.match(main, /app-update-notice-open[\s\S]*?navigate\("settings"\)[\s\S]*?app-update-panel[\s\S]*?scrollIntoView/);
+  assert.match(main, /function openUpdateSettings\(\)[\s\S]*?navigate\("settings"\)[\s\S]*?app-update-download[\s\S]*?scrollIntoView/);
+  assert.match(main, /#sidebar-version-link"\)!\.addEventListener\("click", openUpdateSettings\)/);
+  assert.match(main, /#app-update-notice-open"\)!\.addEventListener\("click", openUpdateSettings\)/);
 });
 
 test("updater uses confirmed native installation and separately saved non-network preferences", () => {
@@ -61,7 +68,9 @@ test("updater uses confirmed native installation and separately saved non-networ
   const rust = readFileSync(new URL("../src-tauri/src/app_update.rs", import.meta.url), "utf8") + readFileSync(new URL("../src-tauri/src/app_update/transaction.rs", import.meta.url), "utf8");
   assert.match(api, /invoke<void>\("install_app_update", \{ versionTag, confirmed \}\)/);
   assert.match(main, /if \(!confirmed\) \{ appUpdateActionBusy = false; renderAppUpdate\(\); return; \}[\s\S]*api\.installAppUpdate\(version, true\)/);
-  assert.match(main, /6 \* 60 \* 60 \* 1_000/);
+  assert.match(rust, /UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs\(6 \* 60 \* 60\)/);
+  assert.match(rust, /background_check\(&app, Check::Startup\)/);
+  assert.match(main, /listen\("app-update-changed",[\s\S]*?\.then\(refreshAppUpdateStatus\)/);
   assert.match(main, /saveUpdatePreferences/);
   assert.match(rust, /candidate\s*\.update\s*\.install\(bytes\)/);
   assert.match(rust, /prepare_app_upgrade\(&self\.app, target\)/);

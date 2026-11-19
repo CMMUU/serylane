@@ -3,15 +3,16 @@ import type { AppUpdateStatus, UpdateSource } from "./types";
 export const updateSourceLabel = (source: UpdateSource | undefined): string => {
   const labels: Record<UpdateSource, string> = {
     github: "GitHub 直连",
+    github_accelerator: "GitHub 加速代理",
     github_proxy: "GitHub（Serylane 代理）",
     hk: "下载中心",
   };
   return source ? labels[source] : "—";
 };
 
-export function backgroundUpdateVersion(status: AppUpdateStatus, shown: ReadonlySet<string>): string | null {
-  const info = status.info;
-  return status.phase === "available" && info?.available && !shown.has(info.latestVersion) ? info.latestVersion : null;
+export function backgroundUpdateVersion(status: AppUpdateStatus, dismissed: ReadonlySet<string>): string | null {
+  const version = status.noticeVersion;
+  return version && status.info?.available && status.info.latestVersion === version && !dismissed.has(version) ? version : null;
 }
 
 export const updateStageLabel = (stage?: string) => ({ preflight: "安装预检", stopping: "停止旧进程", services: "准备服务", replacing: "替换应用", restarting: "等待重启", verify: "验证完整性", verified: "验证完成", download: "下载文件", retrying: "等待重试", recovering: "重新确认同版本更新包" } as Record<string,string>)[stage ?? ""] ?? "准备中";
@@ -22,7 +23,7 @@ export function describeAppUpdate(status: AppUpdateStatus) {
   const source = updateSourceLabel(info?.source);
   const retryInstall = phase === "failed" && status.stage === "preflight" && status.retryInstall === true && Boolean(info?.available);
   const labels: Record<AppUpdateStatus["phase"], [string, string, string]> = {
-    idle: ["待检查", "尚未检查", "按顺序检查 GitHub 直连、Serylane 代理和下载中心。"],
+    idle: ["待检查", "尚未检查", "按顺序检查已配置的更新来源。"],
     checking: ["检查中", "正在检查更新", "正在按更新路径检查正式版…"],
     current: ["版本一致", "已是最新版本", "当前版本与已核对的稳定版一致。"],
     ahead: ["本地领先", "本地版本高于发行版", "当前构建较新，保留当前版本。"],

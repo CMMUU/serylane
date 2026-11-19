@@ -5,6 +5,77 @@ import { TARGETS, HK_FILES, filenames } from '../src/releases.ts';
 import { CENTER, CENTER_API } from '../src/center.ts';
 const env = { ASSETS: { fetch: () => new Response('static-assets') } };
 const request = (path, method = 'GET') => new Request('https://serylane.cmmuu.com' + path, { method });
+const accelerator = '/api/update/github/';
+const githubReleases = 'https://github.com/CMMUU/serylane/releases';
+const tag = 'v0.7.46';
+const asset = 'Serylane_0.7.46_aarch64.app.tar.gz';
+const cdn = 'https://release-assets.githubusercontent.com/github-fixture/asset?temporary=1';
+
+test('GitHub accelerator resolves the stable tag and streams the fixed release bytes through its cache', async () => {
+  const calls = [];
+  const data = new TextEncoder().encode('updater package bytes');
+  const fetcher = async (url, init) => {
+    calls.push([url, init.method]);
+    assert.equal(init.redirect, 'manual');
+    assert.deepEqual(init.headers, { 'Accept-Encoding': 'identity' });
+    if (url.endsWith('/latest/download/latest-serylane.json')) {
+      return Response.redirect(githubReleases + '/download/' + tag + '/latest-serylane.json');
+    }
+    if (url === githubReleases + '/download/' + tag + '/' + asset) return Response.redirect(cdn);
+    assert.equal(url, cdn);
+    return new Response(data, { headers: { 'Content-Length': String(data.length) } });
+  };
+  const cache = new Map();
+  const tasks = [];
+  const edge = {
+    cache: {
+      match: async key => cache.get(key)?.clone(),
+      put: async (key, response) => { cache.set(key, new Response(await response.arrayBuffer(), response)); },
+    },
+    waitUntil: task => tasks.push(task),
+  };
+  const metadata = await handle(request(accelerator + 'latest'), env, fetcher, edge);
+  assert.equal(metadata.status, 200);
+  assert.deepEqual(await metadata.json(), {
+    tag_name: tag, draft: false, prerelease: false, assets: [{ name: 'latest-serylane.json' }],
+  });
+  assert.deepEqual(calls, [[githubReleases + '/latest/download/latest-serylane.json', 'HEAD']]);
+  const response = await handle(request(accelerator + tag + '/' + asset), env, fetcher, edge);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('location'), null);
+  assert.equal(response.headers.get('x-serylane-channel'), 'github_accelerator');
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), data);
+  await Promise.all(tasks);
+  const repeat = await handle(request(accelerator + tag + '/' + asset, 'HEAD'), env, fetcher, edge);
+  assert.equal(repeat.headers.get('content-length'), String(data.length));
+  assert.equal(await repeat.text(), '');
+  assert.equal(calls.length, 3, 'reuse the fixed-version edge cache');
+});
+
+test('GitHub accelerator rejects external URLs, mutable paths and foreign redirects', async () => {
+  const noFetch = async () => assert.fail('untrusted request reached GitHub');
+  for (const path of [
+    'v0.7.46/https%3A%2F%2Fgithub.com',
+    'v0.7.45/' + asset,
+    'v0.7.46/' + asset + '/extra',
+    'v0.7.46/other-repository.zip',
+    'v0.7.46-rc.1/latest-serylane.json',
+  ]) {
+    assert.equal((await handle(request(accelerator + path), env, noFetch)).status, 404);
+  }
+  assert.equal((await handle(request(accelerator + 'latest?url=https://example.test'), env, noFetch)).status, 400);
+  assert.equal((await handle(request(accelerator + 'latest', 'POST'), env, noFetch)).status, 405);
+  let fetches = 0;
+  const foreign = async () => {
+    fetches++;
+    return Response.redirect('https://release-assets.githubusercontent.com.example.test/fixture');
+  };
+  assert.equal((await handle(request(accelerator + tag + '/' + asset), env, foreign)).status, 503);
+  assert.equal(fetches, 1);
+  const tooLarge = async () => new Response('fixture', { headers: { 'content-length': '268435457' } });
+  assert.equal((await handle(request(accelerator + tag + '/' + asset), env, tooLarge)).status, 503);
+});
+
 function fixture(version = 'v0.7.33') {
   const names = filenames(version);
   return { schemaVersion: 1, project: 'serylane', version, checkedAt: new Date().toISOString(), source: 'github',
