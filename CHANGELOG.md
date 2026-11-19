@@ -2,6 +2,8 @@
 
 ## 0.7.48 - 2026-11-20
 
+- Restore the standard AppKit status menu with macOS appearance, checkmarks and dismissal for icon-only and traffic status items.
+- Wait for old TUN connections to release the configured ports before switching to System Proxy on macOS. Report an active listener as a conflict.
 - Recover a confirmed stale macOS TUN Helper registration after replacing the app in Finder, including when the in-app updater left no recovery record.
 - Resume TUN Helper recovery when the app regains focus after macOS background-service approval. Record the recovery stage and native error for diagnosis.
 
