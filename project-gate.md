@@ -34,3 +34,10 @@
 - L1 `npm run test:core` 的隔离 Mihomo 配置通过。官网 `npm test` 通过 11 页、372 个链接与静态资源、16 项 Worker 和部署脚本测试。Python 3.12 发行脚本测试通过 151 项，Node 版本标签与恢复测试通过 9 项。
 - 本轮保留新版发行的项目更新签名。macOS 沿用上一版兼容发行方式，Developer ID、Apple 公证、用户主机登录与重启验收单独记录。语言资源采用机器辅助翻译，主流程词条经过人工编辑，长尾文案的母语审校待补。
 - L1 对已发行的 v0.7.43 核对 GitHub 与下载中心清单。隔离 Mihomo 实例通过本地 HTTP 代理读取 GitHub 发行 API 和固定版本清单。两来源的 10 个更新目标大小、SHA-256 与签名一致。
+
+## v0.7.45：macOS TUN 签名发布门禁
+
+- 用户于 2026-11-19（Asia/Shanghai）确认四文件修复及正式发布范围。生产代码仅限 `src-tauri/src/tun_service/{admin,launchd}.rs`、`src-tauri/src/{macos_service,macos_upgrade}.rs` 及其中的测试。发布另同步五个版本文件、README、CHANGELOG、本门禁、文档索引、业务契约、新发布说明、官网双语的首页／使用说明／路由／验证页，以及集中项目三份文档。现有工作流、签名校验和平台范围不变。
+- L1 候选基于 GitHub main `673f7db` 与修复 `936e3cb`，已通过 Developer ID、Hardened Runtime、公证票据检查。隔离 macOS 27.2.1（26B131，ARM64）中重现旧登记 `78: EX_CONFIG`，按系统提示重新批准后台服务，未跳过系统授权；重新打开后确认 v0.7.45 Helper 就绪。未指定 HTTP 代理的 TCP 与外部 IPv4 HTTPS 经 `utun4`；停止后核心退出，路由和系统代理与基线相同。虚拟机关停，宿主代理与默认路由未改变。
+- L1 候选前的标准 `npm run check` 覆盖 379 个 Node 测试；本机串行 Rust 测试 472 通过、5 项前置条件未满足而跳过。额外全量旧 Node 测试入口的 13 项错误与未修改的 v0.7.44 基线一致，不作为本次修复引入的回归。
+- 发布顺序：现有 CI／站点检查 → 受审 main → GitHub 正式签名发布 → 下载中心归档 → 官网六架构入口与集中项目文档。上一公开版本 v0.7.44 的兼容包和标签保留。Intel 运行时、休眠唤醒及 IPv6 不用签名验收替代。

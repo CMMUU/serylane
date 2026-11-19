@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.45 - 2026-11-19
+
+- Recover a confirmed stale macOS TUN Helper registration that fails to launch with `EX_CONFIG` after an upgrade. Wait for the old launchd job to disappear, then authenticate the current Helper before permitting TUN to start.
+- Keep macOS background-service approval and package-identity checks. If macOS asks for permission again, allow Serylane in Login Items and reopen the app to continue recovery.
+- Return to Developer ID signing with hardened runtime and Apple notarization for macOS release packages. Validate TCP and external IPv4 HTTPS takeover and route restoration in an isolated Apple-silicon macOS 27.2.1 VM. Windows and Linux support boundaries are unchanged.
+
 ## 0.7.44 - 2026-11-19
 
 - Offer 11 interface languages by their native names. Changes apply in the current window and are saved automatically. Arabic uses a right-to-left layout.

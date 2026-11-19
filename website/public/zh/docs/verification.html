@@ -80,10 +80,10 @@ sha256sum '/下载目录/实际安装包文件名.AppImage'</code></pre><p>上�
 <p>文件完整性、项目更新签名身份、系统代码签名与 TUN 授权分别核对。通过项目更新校验不等于 macOS TUN 辅助服务已满足系统要求。</p>
 </section>
 <section id="macos-tun">
-<h2>macOS 兼容包的 TUN 仍未就绪</h2>
-<p>当前兼容包保留项目更新签名与完整性校验，但没有 TUN 所需 Developer ID 身份与 Apple 公证。重复授权辅助服务，或重复下载同一临时签名包，都不会补齐缺失身份。</p>
-<p>服务登记与安装包签名是不同问题。「需要重新关联」针对服务登记或启动状态，不会修复不满足要求的包；「需要更新安装包」要求实际发布并符合条件的完整包，不应靠重复授权解决。适用的辅助服务修复前先停止代理，并按对应发行版说明操作。</p>
-<p>正式签名、公证与实机 TUN 验收仍需分别推进。<a href="/zh/docs/#tun-compatibility">查看三平台支持边界</a>；v0.7.18、v0.7.19 原说明保留在<a href="#verification-history">历史记录</a>中。</p>
+<h2>核对 macOS 签名与 TUN 辅助服务授权</h2>
+<p>使用 TUN 前，请核对完整安装包的发行说明是否标注 Developer ID 签名和 Apple 公证。v0.7.44 等旧兼容包缺少这两项；项目更新签名或重复授权不会补齐开发者身份。</p>
+<p>v0.7.45 修复升级后旧 launchd 登记导致的 <code>EX_CONFIG</code>。先确认旧服务退出并移除，再核对新版 Helper 的身份、版本和协议，随后才允许启动 TUN。如系统要求批准，在「登录项与扩展」允许 Serylane 后重新打开应用。若在应用设置中手动重新关联，请先停止代理。</p>
+<p>Apple 签名与公证、系统辅助服务许可、流量实际接管需分别核对。<a href="/zh/docs/#tun-compatibility">查看平台与实测范围</a>，或查看<a href="#verification-history">以往验证记录</a>。</p>
 </section>
 <section id="update-downloads">
 <h2>下载更新暂时中断时如何处理</h2>

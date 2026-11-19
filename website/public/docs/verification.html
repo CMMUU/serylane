@@ -89,10 +89,10 @@
 <p>Content integrity, the project’s update signing identity, OS signing and TUN authorization are separate checks. A package can pass the project update check without satisfying macOS TUN helper requirements.</p>
 </section>
 <section id="macos-tun">
-<h2>macOS compatibility packages are not TUN-ready</h2>
-<p>The current compatibility packages retain project update signatures and integrity checks, but do not include the required Developer ID identity or Apple notarization. TUN is not ready in those packages. Reauthorizing a helper or downloading the same temporarily signed package again does not add the missing identity.</p>
-<p>Helper-registration repair and a package-signing problem are different conditions. A request to re-associate a service concerns its registration/start state; it does not repair an unsuitable package. A request for a corrected installer requires an actually published package that meets those requirements—not repeated authorization. Stop the proxy before an applicable helper repair, and follow the actual release’s instructions.</p>
-<p>Formal signing, notarization and real-device TUN acceptance remain separate work. <a href="/docs/#tun-compatibility">Review all platform limits</a>; historical v0.7.18/v0.7.19 messages are preserved <a href="#verification-history">below</a>.</p>
+<h2>Verify macOS signing and TUN helper approval</h2>
+<p>For TUN, use a complete installer whose release notes confirm Developer ID signing and Apple notarization. The v0.7.44 and earlier compatibility packages did not include both. A project update signature or repeated approval does not add the missing signing identity.</p>
+<p>v0.7.45 addresses the old launchd registration that can fail with <code>EX_CONFIG</code> after an upgrade. Recovery confirms that the old job is gone and checks the new helper’s identity, version and protocol before allowing TUN. If the system asks for approval, allow Serylane in Login Items &amp; Extensions and reopen the app. For a manual repair in Settings, stop the proxy first.</p>
+<p>Apple signing and notarization, the system’s helper approval, and real traffic takeover are separate checks. <a href="/docs/#tun-compatibility">See platform and runtime coverage</a> or read <a href="#verification-history">earlier verification records</a>.</p>
 </section>
 <section id="update-downloads">
 <h2>If an update download is interrupted</h2>

@@ -5,7 +5,10 @@ use super::lifecycle::{ProbeRead, SharedProbe};
 use super::protocol::{PLIST_NAME, PROTOCOL_VERSION};
 use super::{TunHelperState, TunHelperStatus};
 use crate::macos_service::{self, Service};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex, MutexGuard, OnceLock,
+};
 use std::time::{Duration, Instant};
 
 static SERVICE: Service = Service::new(PLIST_NAME, false);
@@ -52,40 +55,84 @@ pub fn status() -> TunHelperStatus {
     }
     match SERVICE.status() {
         Ok(macos_service::ENABLED) => enabled_status(),
-        Ok(macos_service::REQUIRES_APPROVAL) => TunHelperStatus {
-            supported: true,
-            state: TunHelperState::RequiresApproval,
-            message: "请在系统设置 → 通用 → 登录项与扩展中允许 Serylane 后台服务".into(),
-            protocol_version: 0,
-            helper_version: None,
-            runtime_running: false,
-            runtime_pid: None,
-            runtime_version: None,
-            last_error: None,
-        },
+        Ok(macos_service::REQUIRES_APPROVAL) => requires_approval(),
         Ok(_) => not_installed(),
         Err(error) => TunHelperStatus::unsupported(error),
     }
 }
 
 pub fn register() -> Result<TunHelperStatus, String> {
-    let _guard = MUTATION
-        .try_lock()
-        .map_err(|_| "辅助服务正在更新，请稍后核对状态".to_string())?;
-    register_inner()
+    let _guard = mutation()?;
+    register_inner(Registration::Install)
 }
 
-fn register_inner() -> Result<TunHelperStatus, String> {
+pub(crate) fn register_after_upgrade(attempted: &AtomicBool) -> Result<TunHelperStatus, String> {
+    let _guard = mutation()?;
+    let observed = register_inner(Registration::Upgrade)?;
+    retry_stale_binding_once(
+        observed,
+        attempted,
+        || {
+            // The initial diagnosis can have become stale while launchd was
+            // retrying. Authenticate the replacement before touching the old
+            // association and require it to still be enabled (not denied).
+            codesign::validate_installation()?;
+            Ok(launchd::stale_binding_now() && SERVICE.status()? == macos_service::ENABLED)
+        },
+        || rebind(|| SERVICE.unregister_enabled()),
+    )
+}
+
+fn retry_stale_binding_once(
+    observed: TunHelperStatus,
+    attempted: &AtomicBool,
+    confirm: impl FnOnce() -> Result<bool, String>,
+    rebind: impl FnOnce() -> Result<TunHelperStatus, String>,
+) -> Result<TunHelperStatus, String> {
+    if observed.state == TunHelperState::NeedsRepair
+        && !observed.runtime_running
+        && observed.runtime_pid.is_none()
+        && !attempted.load(Ordering::Acquire)
+        && confirm()?
+        && !attempted.swap(true, Ordering::AcqRel)
+    {
+        return rebind();
+    }
+    Ok(observed)
+}
+
+fn mutation() -> Result<MutexGuard<'static, ()>, String> {
+    MUTATION
+        .try_lock()
+        .map_err(|_| "辅助服务正在更新，请稍后核对状态".to_string())
+}
+
+#[derive(Clone, Copy)]
+enum Registration {
+    Install,
+    Upgrade,
+    AfterRemoval,
+}
+
+fn register_inner(registration: Registration) -> Result<TunHelperStatus, String> {
     // An OS Enabled value can outlive a timed-out unregister request. Do not
     // accept its old handshake and clear an upgrade marker before completion.
     SERVICE.ensure_settled()?;
     codesign::validate_installation()?;
     reset_service_probes();
-    if !matches!(
-        SERVICE.status()?,
-        macos_service::ENABLED | macos_service::REQUIRES_APPROVAL
-    ) {
-        SERVICE.register()?;
+    match (registration, SERVICE.status()?) {
+        (Registration::AfterRemoval, _) => register_after_confirmed_removal()?,
+        (_, macos_service::REQUIRES_APPROVAL) => return Ok(requires_approval()),
+        (_, macos_service::ENABLED) => {}
+        (Registration::Upgrade, state) if macos_service::registration_absent(state) => {
+            // Recovery may have been interrupted after unregister returned.
+            // Check that launchd no longer has the old job before registering.
+            register_after_confirmed_removal()?;
+        }
+        (Registration::Install, state) if macos_service::registration_absent(state) => {
+            SERVICE.register()?;
+        }
+        _ => return Err("系统返回未知的辅助服务登记状态；未重新注册".into()),
     }
     // Registration is not readiness: require a fresh authenticated response.
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -94,8 +141,10 @@ fn register_inner() -> Result<TunHelperStatus, String> {
         // registered job. Give that first handshake a bounded retry window;
         // never unregister or re-register as part of these retries.
         let observed = match SERVICE.status()? {
-            macos_service::ENABLED => status_from_probe(client::status_probe()),
-            _ => status(),
+            macos_service::ENABLED => enabled_status(),
+            macos_service::REQUIRES_APPROVAL => requires_approval(),
+            state if macos_service::registration_absent(state) => not_installed(),
+            _ => return Err("系统返回未知的辅助服务登记状态；尚未确认连接".into()),
         };
         if !wait_for_handshake(observed.state) || Instant::now() >= deadline {
             reset_service_probes();
@@ -106,9 +155,7 @@ fn register_inner() -> Result<TunHelperStatus, String> {
 }
 
 pub fn unregister() -> Result<(), String> {
-    let _guard = MUTATION
-        .try_lock()
-        .map_err(|_| "辅助服务正在更新，请稍后核对状态".to_string())?;
+    let _guard = mutation()?;
     reset_service_probes();
     SERVICE.unregister()?;
     reset_service_probes();
@@ -116,19 +163,51 @@ pub fn unregister() -> Result<(), String> {
 }
 
 pub fn repair() -> Result<TunHelperStatus, String> {
-    let _guard = MUTATION
-        .try_lock()
-        .map_err(|_| "辅助服务正在更新，请稍后核对状态".to_string())?;
+    let _guard = mutation()?;
     if SERVICE.status()? == macos_service::REQUIRES_APPROVAL {
         return Err("系统尚未允许 Serylane 后台服务，请先在系统设置中允许；未重复注册".into());
     }
     // A broken replacement package must not detach an existing working service.
     codesign::validate_installation()?;
+    rebind(|| SERVICE.unregister())
+}
+
+fn rebind(detach: impl FnOnce() -> Result<(), String>) -> Result<TunHelperStatus, String> {
     reset_service_probes();
     // Do not swallow failure or register while the old process is still exiting.
-    SERVICE.unregister()?;
-    reset_service_probes();
-    register_inner()
+    detach()?;
+    register_inner(Registration::AfterRemoval)
+}
+
+fn register_after_confirmed_removal() -> Result<(), String> {
+    register_when_removed(
+        Duration::from_secs(4),
+        || {
+            SERVICE.ensure_settled()?;
+            Ok(macos_service::registration_absent(SERVICE.status()?)
+                && launchd::confirms_absence()
+                && macos_service::registration_absent(SERVICE.status()?))
+        },
+        || SERVICE.register(),
+    )
+}
+
+fn register_when_removed(
+    timeout: Duration,
+    mut removed: impl FnMut() -> Result<bool, String>,
+    register: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        if removed()? {
+            return register();
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err("系统尚未确认旧辅助服务已退出并移除；未注册新的辅助服务".into());
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(150)));
+    }
 }
 
 pub fn open_approval_settings() -> Result<(), String> {
@@ -136,15 +215,30 @@ pub fn open_approval_settings() -> Result<(), String> {
 }
 
 fn enabled_status() -> TunHelperStatus {
-    if launchd::failure() == Some(launchd::Failure::SpawnFailed) {
-        let mut status = status_from_probe(ProbeRead::Complete(Err(
-            "launchd: job state=spawn failed, last exit code=78 (EX_CONFIG)".into(),
-        )));
+    let probe = client::status_probe();
+    let failure = if matches!(&probe, ProbeRead::Complete(Err(_))) {
+        launchd::failure()
+    } else {
+        None
+    };
+    status_from_enabled_probe(probe, failure)
+}
+
+fn status_from_enabled_probe(
+    probe: ProbeRead<client::RuntimeSnapshot>,
+    failure: Option<launchd::Failure>,
+) -> TunHelperStatus {
+    let mut status = status_from_probe(probe);
+    // An authenticated response beats launchd diagnostics from an old spawn.
+    // A pending XPC response is not itself a failed launch.
+    if status.state == TunHelperState::Unreachable && failure == Some(launchd::Failure::SpawnFailed)
+    {
         status.state = TunHelperState::NeedsRepair;
-        status.message = "系统保留了辅助服务登记，但辅助程序启动失败。请先停止代理，再点击“重新关联辅助服务”；这不是重复授权能解决的问题。".into();
-        return status;
+        status.message = "系统有辅助服务登记，但未启动辅助程序。可在停止代理后点击“重新关联辅助服务”；不必重复授权。".into();
+        status.last_error =
+            Some("launchd: job state=spawn failed, last exit code=78 (EX_CONFIG)".into());
     }
-    status_from_probe(client::status_probe())
+    status
 }
 
 fn wait_for_handshake(state: TunHelperState) -> bool {
@@ -211,6 +305,14 @@ fn status_from_probe(probe: ProbeRead<client::RuntimeSnapshot>) -> TunHelperStat
     }
 }
 
+fn requires_approval() -> TunHelperStatus {
+    TunHelperStatus {
+        state: TunHelperState::RequiresApproval,
+        message: "请在系统设置 → 通用 → 登录项与扩展中允许 Serylane 后台服务".into(),
+        ..not_installed()
+    }
+}
+
 fn not_installed() -> TunHelperStatus {
     TunHelperStatus {
         supported: true,
@@ -228,6 +330,139 @@ fn not_installed() -> TunHelperStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn failed_handshake() -> TunHelperStatus {
+        status_from_enabled_probe(
+            ProbeRead::Complete(Err("connection rejected".into())),
+            Some(launchd::Failure::SpawnFailed),
+        )
+    }
+
+    #[test]
+    fn live_authenticated_response_beats_historical_launchd_diagnosis() {
+        let stale = Some(launchd::Failure::SpawnFailed);
+        let snapshot = client::RuntimeSnapshot {
+            protocol_version: PROTOCOL_VERSION,
+            helper_version: Some(env!("CARGO_PKG_VERSION").into()),
+            running: true,
+            pid: Some(123),
+            version: None,
+            config_path: None,
+            last_error: None,
+        };
+        let status = status_from_enabled_probe(ProbeRead::Complete(Ok(snapshot)), stale);
+        assert!(status.ready());
+        assert!(status.runtime_running);
+        assert_eq!(
+            status_from_enabled_probe(ProbeRead::Checking, stale).state,
+            TunHelperState::Checking
+        );
+        assert_eq!(failed_handshake().state, TunHelperState::NeedsRepair);
+        assert!(failed_handshake().last_error.unwrap().contains("EX_CONFIG"));
+    }
+
+    #[test]
+    fn upgrade_never_detaches_a_healthy_busy_unconfirmed_or_disallowed_job() {
+        let attempted = AtomicBool::new(false);
+        let mut busy = failed_handshake();
+        busy.runtime_pid = Some(321);
+        for state in [
+            busy,
+            requires_approval(),
+            status_from_probe(ProbeRead::Checking),
+            status_from_probe(ProbeRead::Complete(Err("timed out".into()))),
+            TunHelperStatus {
+                state: TunHelperState::Outdated,
+                ..not_installed()
+            },
+            TunHelperStatus {
+                state: TunHelperState::Ready,
+                ..not_installed()
+            },
+            TunHelperStatus {
+                state: TunHelperState::InvalidInstallation,
+                ..not_installed()
+            },
+        ] {
+            let expected = state.state;
+            let observed = retry_stale_binding_once(
+                state,
+                &attempted,
+                || panic!("ineligible stale job"),
+                || panic!("must not rebind"),
+            )
+            .unwrap();
+            assert_eq!(observed.state, expected);
+        }
+        let observation = retry_stale_binding_once(
+            failed_handshake(),
+            &attempted,
+            || Ok(false),
+            || panic!("no fresh evidence"),
+        )
+        .unwrap();
+        assert_eq!(observation.state, TunHelperState::NeedsRepair);
+        assert!(!attempted.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn stale_job_is_rebound_at_most_once_even_after_an_error() {
+        for fails in [true, false] {
+            let attempted = AtomicBool::new(false);
+            let initial = failed_handshake();
+            let observed = retry_stale_binding_once(
+                initial,
+                &attempted,
+                || Ok(true),
+                || {
+                    if fails {
+                        Err("unregister failed".into())
+                    } else {
+                        // A successful SMAppService call is not a handshake.
+                        Ok(status_from_probe(ProbeRead::Checking))
+                    }
+                },
+            );
+            assert_eq!(observed.is_err(), fails);
+            if let Ok(status) = observed {
+                assert!(!status.ready());
+            }
+            assert!(attempted.load(Ordering::Acquire));
+            let status = retry_stale_binding_once(
+                failed_handshake(),
+                &attempted,
+                || panic!("already attempted"),
+                || panic!("must not repeat"),
+            )
+            .unwrap();
+            assert_eq!(status.state, TunHelperState::NeedsRepair);
+        }
+    }
+
+    #[test]
+    fn registration_is_not_called_when_removal_is_unconfirmed_or_failed() {
+        for unconfirmed in [Ok(false), Err("permission or command failure".into())] {
+            assert!(register_when_removed(
+                Duration::ZERO,
+                || unconfirmed.clone(),
+                || panic!("old removal unverified")
+            )
+            .is_err());
+        }
+        let confirmed = std::cell::Cell::new(false);
+        register_when_removed(
+            Duration::ZERO,
+            || {
+                confirmed.set(true);
+                Ok(true)
+            },
+            || {
+                assert!(confirmed.get());
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
 
     #[test]
     fn only_transient_handshake_states_are_retried_without_reregistering() {

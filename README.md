@@ -31,7 +31,7 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 <!-- product-contract:start -->
 | 源码事实 | 当前值 |
 | --- | --- |
-| 源码版本 | 0.7.44（不代表已经发行） |
+| 源码版本 | 0.7.45（不代表已经发行） |
 | 官网安装包 | 下载中心 |
 | 应用内更新 | GitHub 直连 → Serylane 本地代理 → 下载中心 |
 | AI 合格节点范围 | 1–10 个；单节点没有备用 |
@@ -54,10 +54,10 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 | 平台 | 当前实际状态 |
 | --- | --- |
 | Windows 10/11 | 实验性，需要整个应用具有管理员权限；尚未完成真实路由、DNS、异常退出恢复的完整验收。 |
-| macOS | 已有特权辅助服务代码与租约；兼容发行包缺少满足 TUN 要求的 Developer ID 身份，不应视为 TUN 已可用。 |
+| macOS | TUN 使用 `utun` 与特权辅助服务。请选择带 Developer ID 签名和 Apple 公证的完整安装包；v0.7.45 修复部分升级后的旧服务登记问题。v0.7.44 等临时签名兼容包不满足 TUN 要求。 |
 | Linux | 当前未实现 TUN 网络接管，入口不可用。 |
 
-[启用与兼容性](docs/TUN启用与兼容性.md) · [三端稳定化方案](docs/TUN三端稳定化方案-2026-10-30.md)。稳定化方案是下一阶段设计，不能把构建、模拟或单元测试通过当成三端网络接管验收完成。
+[v0.7.45 的安装、授权与验收范围](docs/发布说明-v0.7.45.md) · [三端稳定化方案](docs/TUN三端稳定化方案-2026-10-30.md)。已在 Apple 芯片上的 macOS 27.2.1 隔离虚拟机验证升级恢复、实际接管和停止后的路由恢复；Intel 的发行工件验证与运行时实测分别记录。
 
 ## 开发与验证
 
@@ -80,9 +80,9 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 - [文档索引](docs/index.md) · [当前实现与业务契约](docs/当前实现与业务契约.md) · [代理质量验收](docs/代理质量验收.md) · [更新日志](CHANGELOG.md)
 - [当前应用图标](assets/brand/图标说明.md) · [集中项目文档](https://github.com/CMMUU/project-docs/tree/main/serylane)
 - 改动功能时同时更新当前说明、源码事实表和对应测试；执行 `node scripts/product-docs.mjs --write` 刷新事实表，`node scripts/product-docs.mjs` 验证同步。
-- 六个平台的构建、原生安装升级门禁及签名验收通过后才发布。GitHub 用于源码、构建和不可变发行产物归档；不再作为应用或官网的下载备用源。历史标签、签名、兼容身份与附件不重写。
+- 六个平台的构建、原生安装升级门禁及签名验收通过后才发布。GitHub 用于源码、构建和不可变发行产物归档，也是应用内更新路径之一；官网安装入口仍统一使用下载中心。历史标签、签名、兼容身份与附件不重写。
 - 官网从受信任 main 独立部署，不依赖旧镜像任务是否成功。发行后核对下载中心版本、文件完整性及官网六个架构入口；未归档到中心时不能报告用户交付完成。
-- macOS 兼容包的项目更新签名不等于 Developer ID 或 Apple 公证。TUN 正式可用还需要签名、服务安装与真实网络矩阵验收。
+- 项目更新签名、macOS Developer ID、Apple 公证和系统后台服务许可分别核验。临时签名兼容包的更新签名不会补齐 TUN 服务所需的开发者身份。
 
 ## 许可证
 
