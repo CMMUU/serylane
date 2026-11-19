@@ -102,7 +102,7 @@
 <div class="notice"><p><strong>TUN 不能被描述为已经完成三平台日常网络接管验收。</strong>辅助服务源码或隔离自动化不代表真实路由、DNS、休眠唤醒和长期连接已验收。</p></div>
 <ul>
 <li><strong>Windows：</strong>仍为管理员会话下的实验性功能；真实路由、DNS、关机与恢复需独立验收。</li>
-<li><strong>macOS：</strong>使用发行说明明确标注 Developer ID 签名和 Apple 公证的完整安装包。v0.7.45 修复升级后旧辅助服务登记启动失败的问题。如系统再次要求批准，在「系统设置 → 通用 → 登录项与扩展」允许 Serylane 后重新打开应用。v0.7.44 等历史临时签名兼容包不满足 TUN 要求。</li>
+<li><strong>macOS：</strong>使用发行说明明确标注 Developer ID 签名和 Apple 公证的完整安装包。应用内更新或 Finder 覆盖升级后，Serylane 会检查启动失败的旧辅助服务登记。如系统要求批准，在「系统设置 → 通用 → 登录项与扩展」允许 Serylane 后返回应用继续。v0.7.44 等历史临时签名兼容包不满足 TUN 要求。</li>
 <li><strong>Linux：</strong>尚未实现 TUN 网络接管，相关入口不可用。本地代理、系统代理、程序代理与 TUN 是独立能力。</li>
 </ul>
 <p>v0.7.45 的已公证候选在 Apple 芯片 Mac 的隔离 macOS 27.2.1 虚拟机验证了辅助服务恢复、TCP 和外部 IPv4 HTTPS 接管，以及停止后的路由恢复。Intel 实机、IPv6、休眠唤醒和长流不在这次实测范围内。先核对实际安装包的发布说明。<a href="/zh/docs/verification#macos-tun">查看 macOS 签名与辅助服务边界</a>。下方 <a href="#history-tun-v0-7-17">v0.7.17 启动流程</a>与 <a href="#tun-readiness">v0.7.35 分阶段检查</a>保留为历史记录，不是日常 TUN 使用验收结论。</p>

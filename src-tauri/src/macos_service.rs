@@ -154,15 +154,22 @@ unsafe fn error_message(error: *mut AnyObject) -> String {
         return "系统服务操作未完成，请核对登录项与扩展设置".into();
     }
     let code: isize = msg_send![error, code];
+    let domain: *mut AnyObject = msg_send![error, domain];
+    let domain = error_text(domain).unwrap_or_else(|| "NSError".into());
+    let identity = format!("{domain} {code}");
     let description: *mut AnyObject = msg_send![error, localizedDescription];
-    if description.is_null() {
-        return format!("系统服务操作未完成（代码 {code}）");
+    match error_text(description) {
+        Some(description) => format!("{description}（{identity}）"),
+        None => format!("系统服务操作未完成（{identity}）"),
     }
-    let utf8: *const c_char = msg_send![description, UTF8String];
-    if utf8.is_null() {
-        return format!("系统服务操作未完成（代码 {code}）");
+}
+
+unsafe fn error_text(string: *mut AnyObject) -> Option<String> {
+    if string.is_null() {
+        return None;
     }
-    format!("{}（代码 {code}）", CStr::from_ptr(utf8).to_string_lossy())
+    let utf8: *const c_char = msg_send![string, UTF8String];
+    (!utf8.is_null()).then(|| CStr::from_ptr(utf8).to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

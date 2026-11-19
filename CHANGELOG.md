@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.48 - 2026-11-20
+
+- Recover a confirmed stale macOS TUN Helper registration after replacing the app in Finder, including when the in-app updater left no recovery record.
+- Resume TUN Helper recovery when the app regains focus after macOS background-service approval. Record the recovery stage and native error for diagnosis.
+
 ## 0.7.47 - 2026-11-20
 
 - Simplify Software Update preferences by removing the static list of routes. Check results show the source used.

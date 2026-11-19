@@ -1,7 +1,11 @@
-//! Crash-recoverable service association transaction around a verified in-app
-//! update. This never downloads packages, grants consent or starts a proxy.
+//! Crash-recoverable service association after an in-app or Finder update.
+//! Service Management remains responsible for consent and registration.
 use crate::{
+    app_log::{self, Area},
     error::{AppError, AppResult},
+    macos_service,
+    models::RuntimePhase,
+    runtime::MihomoRuntime,
     storage::AppStorage,
     tun_service::{self, TunHelperState, TunHelperStatus},
 };
@@ -14,13 +18,16 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Mutex,
     },
+    time::Duration,
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const IDENTIFIER: &str = "com.cmmuu.mihomodesktop";
 static PENDING: AtomicBool = AtomicBool::new(false);
 static TUN_PENDING: AtomicBool = AtomicBool::new(false);
 static STALE_TUN_REBIND_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+static AWAITING_APPROVAL: AtomicBool = AtomicBool::new(false);
+static APPROVAL_RECHECK: AtomicBool = AtomicBool::new(false);
 static FAILURE: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -237,6 +244,7 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
         return Ok(());
     };
     TUN_PENDING.store(marker.tun_was_enabled, Ordering::Release);
+    AWAITING_APPROVAL.store(false, Ordering::Release);
     let result = (|| -> AppResult<()> {
         let bundle = tun_service::codesign::bundle_root()
             .map_err(AppError::Platform)?
@@ -254,6 +262,14 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
         marker.login_was_enabled = false;
         persist_marker(&path, &marker)?;
         if marker.tun_was_enabled {
+            record_stage(
+                "recover",
+                &format!(
+                    "source={} current={}",
+                    marker.source_version,
+                    env!("CARGO_PKG_VERSION")
+                ),
+            );
             let status = match phase {
                 TransactionPhase::Rollback => tun_service::admin::register(),
                 TransactionPhase::Replacement => {
@@ -261,9 +277,20 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
                 }
             }
             .map_err(AppError::Platform)?;
+            if status.state == TunHelperState::RequiresApproval {
+                AWAITING_APPROVAL.store(true, Ordering::Release);
+            }
             if !status.ready() {
                 return Err(AppError::Platform(status.message));
             }
+            record_stage(
+                "ready",
+                &format!(
+                    "version={} protocol={}",
+                    env!("CARGO_PKG_VERSION"),
+                    status.protocol_version
+                ),
+            );
         }
         fs::remove_file(&path)?;
         // sync deletion as well: an old marker resurfacing after a power failure
@@ -275,9 +302,27 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
     })();
     match &result {
         Ok(()) => clear_pending(),
-        Err(error) => set_pending(Some(format!(
-            "软件可继续更新；可选服务关联待处理：{error}。网络模式与服务意图已保留。"
-        ))),
+        Err(error) => {
+            if marker.tun_was_enabled {
+                // The user may have changed consent while an OS operation was
+                // in flight. Only a fresh Service Management result can resume it.
+                if !AWAITING_APPROVAL.load(Ordering::Acquire)
+                    && tun_service::admin::recovery_service_status()
+                        == Ok(macos_service::REQUIRES_APPROVAL)
+                {
+                    AWAITING_APPROVAL.store(true, Ordering::Release);
+                }
+                record_stage(
+                    if AWAITING_APPROVAL.load(Ordering::Acquire) {
+                        "waiting_approval"
+                    } else {
+                        "failed"
+                    },
+                    &error.to_string(),
+                );
+            }
+            set_pending(Some(format!("辅助服务关联待处理：{error}")));
+        }
     }
     result
 }
@@ -289,6 +334,7 @@ pub fn forget_tun_intent(app: &AppHandle) -> AppResult<()> {
     };
     marker.tun_was_enabled = false;
     TUN_PENDING.store(false, Ordering::Release);
+    AWAITING_APPROVAL.store(false, Ordering::Release);
     if marker.login_was_enabled {
         persist_marker(&path, &marker)?;
     } else {
@@ -308,6 +354,7 @@ fn clear_pending() {
     PENDING.store(false, Ordering::Release);
     TUN_PENDING.store(false, Ordering::Release);
     STALE_TUN_REBIND_ATTEMPTED.store(false, Ordering::Release);
+    AWAITING_APPROVAL.store(false, Ordering::Release);
     if let Ok(mut failure) = FAILURE.lock() {
         *failure = None;
     }
@@ -318,9 +365,13 @@ pub fn status_override() -> Option<TunHelperStatus> {
         return None;
     }
     let failure = FAILURE.lock().ok().and_then(|value| value.clone());
-    if failure.is_some() {
-        let observed = tun_service::admin::status();
+    if let Some(error) = &failure {
+        let mut observed = tun_service::admin::status();
         if show_recovery_diagnosis(observed.state) {
+            observed.last_error = Some(match observed.last_error {
+                Some(detail) => format!("{detail}\n{error}"),
+                None => error.clone(),
+            });
             return Some(observed);
         }
     }
@@ -353,48 +404,109 @@ fn show_recovery_diagnosis(state: TunHelperState) -> bool {
     )
 }
 
-/// Returns true when this function owns deferred session restoration. Read the
-/// latest settings after recovery so manual Stop/preferences win over startup.
-pub fn bootstrap(app: AppHandle) -> bool {
+pub(crate) fn record_stage(stage: &str, detail: &str) {
+    let level = u8::from(matches!(stage, "waiting_approval" | "failed"));
+    app_log::record(
+        level,
+        Area::Settings,
+        &format!("TUN recovery stage={stage} {detail}"),
+    );
+}
+
+fn overwrite_marker(app: &AppHandle) -> AppResult<Option<Marker>> {
+    let Some(source_version) =
+        tun_service::admin::overwrite_source().map_err(AppError::Platform)?
+    else {
+        return Ok(None);
+    };
+    let bundle = tun_service::codesign::bundle_root()
+        .map_err(AppError::Platform)?
+        .canonicalize()?;
+    let current = env!("CARGO_PKG_VERSION");
+    let marker = Marker {
+        schema: 1,
+        identifier: IDENTIFIER.into(),
+        bundle_path: bundle,
+        source_version,
+        target_version: current.into(),
+        tun_was_enabled: true,
+        login_was_enabled: false,
+    };
+    marker.validate(&app.config().identifier, &marker.bundle_path, current)?;
+    Ok(Some(marker))
+}
+
+fn recover_on_startup(app: &AppHandle) -> AppResult<()> {
+    let path = marker_path(app)?;
+    let discovered = if marker_entry_requires_recovery(fs::symlink_metadata(&path)) {
+        None
+    } else {
+        let Some(marker) = overwrite_marker(app)? else {
+            return Ok(());
+        };
+        Some(marker)
+    };
+    let _permit = crate::user_rules::acquire_configuration(app)?;
+    if let Some(marker) =
+        discovered.filter(|_| !marker_entry_requires_recovery(fs::symlink_metadata(&path)))
+    {
+        // Durable intent precedes any detachment, including a Finder upgrade
+        // that never passed through the app updater.
+        persist_marker(&path, &marker)?;
+        TUN_PENDING.store(true, Ordering::Release);
+        set_pending(None);
+        record_stage(
+            "overwrite",
+            &format!(
+                "source={} target={}",
+                marker.source_version, marker.target_version
+            ),
+        );
+    }
+    recover(app)
+}
+
+/// Read the latest session intent after discovery and recovery. A manual Stop
+/// can invalidate the reservation while the non-UI worker is running.
+pub fn bootstrap(app: AppHandle) {
     // `Path::exists` hides access errors and follows dangling symlinks. Only a
     // definite missing entry permits normal startup/migration; all other cases
     // go through the conservative recovery path and surface their real error.
     let pending = marker_path(&app)
         .map(|path| marker_entry_requires_recovery(fs::symlink_metadata(path)))
         .unwrap_or(true);
-    if !pending {
-        return false;
+    if pending {
+        let tun_pending = marker_path(&app)
+            .and_then(|path| load(&path))
+            .ok()
+            .flatten()
+            .is_none_or(|marker| marker.tun_was_enabled);
+        TUN_PENDING.store(tun_pending, Ordering::Release);
+        set_pending(None);
     }
-    let tun_pending = marker_path(&app)
-        .and_then(|path| load(&path))
-        .ok()
-        .flatten()
-        .is_none_or(|marker| marker.tun_was_enabled);
-    TUN_PENDING.store(tun_pending, Ordering::Release);
-    set_pending(None);
     let resume_generation = AppStorage::from_app(&app).ok().and_then(|storage| {
         let (settings, persistent) = (storage.settings().ok()?, storage.state().ok()?);
         app.state::<crate::session_resume::SessionResumeManager>()
             .reserve_deferred_bootstrap(&app, &settings, &persistent)
     });
     tauri::async_runtime::spawn_blocking(move || {
-        let result =
-            crate::user_rules::acquire_configuration(&app).and_then(|_permit| recover(&app));
+        let result = recover_on_startup(&app);
+        let _ = app.emit("tun-helper-changed", ());
         let recovered = result.is_ok();
         if let Err(error) = result {
-            set_pending(Some(format!(
-                "服务关联未完成：{error}；请在设置中重新关联辅助服务。"
-            )));
-            crate::app_log::record(
-                1,
-                crate::app_log::Area::Settings,
-                "升级后的服务关联未完成；请在设置中核对状态",
-            );
+            if FAILURE.lock().is_ok_and(|failure| failure.is_none()) {
+                record_stage("failed", &error.to_string());
+                set_pending(Some(format!("辅助服务关联待处理：{error}")));
+            }
         }
         if let Ok(storage) = AppStorage::from_app(&app) {
             if let (Ok(settings), Ok(persistent)) = (storage.settings(), storage.state()) {
-                if recovered {
-                    let _ = crate::startup::migrate_login_entry(&app, &settings);
+                if recovered && crate::startup::migrate_login_entry(&app, &settings).is_err() {
+                    app_log::record(
+                        1,
+                        Area::Settings,
+                        "登录启动项迁移失败；请在设置中重新保存登录启动选项",
+                    );
                 }
                 if let Some(generation) = resume_generation {
                     app.state::<crate::session_resume::SessionResumeManager>()
@@ -403,7 +515,52 @@ pub fn bootstrap(app: AppHandle) -> bool {
             }
         }
     });
-    true
+}
+
+pub fn resume_after_approval(app: AppHandle) {
+    if !AWAITING_APPROVAL.load(Ordering::Acquire) || APPROVAL_RECHECK.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = check_approved(&app) {
+            record_stage("approval_recheck_failed", &error.to_string());
+        }
+        APPROVAL_RECHECK.store(false, Ordering::Release);
+        let _ = app.emit("tun-helper-changed", ());
+    });
+}
+
+fn check_approved(app: &AppHandle) -> AppResult<()> {
+    // System Settings can return focus before the new permission reaches smd.
+    // Poll only the read-only status during this bounded activation window.
+    for attempt in 0..6 {
+        if !AWAITING_APPROVAL.load(Ordering::Acquire)
+            || app
+                .state::<crate::session_resume::SessionResumeManager>()
+                .is_shutting_down()
+        {
+            return Ok(());
+        }
+        if tun_service::admin::recovery_service_status().map_err(AppError::Platform)?
+            == macos_service::ENABLED
+        {
+            let _permit = crate::user_rules::acquire_configuration(app)?;
+            if !AWAITING_APPROVAL.load(Ordering::Acquire)
+                || !matches!(
+                    app.state::<MihomoRuntime>().status(Some(app)).phase,
+                    RuntimePhase::Uninitialized | RuntimePhase::Stopped | RuntimePhase::Crashed
+                )
+            {
+                return Ok(());
+            }
+            record_stage("approval_resumed", "Service Management enabled the service");
+            return recover(app);
+        }
+        if attempt < 5 {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    Ok(())
 }
 
 fn marker_entry_requires_recovery(metadata: std::io::Result<fs::Metadata>) -> bool {

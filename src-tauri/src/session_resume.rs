@@ -271,6 +271,7 @@ impl SessionResumeManager {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn bootstrap(
         &self,
         app: &AppHandle,
