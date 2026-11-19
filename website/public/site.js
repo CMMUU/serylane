@@ -4,7 +4,7 @@
 // access a subscription, save a proxy configuration, or connect to Codex.
 (() => {
   const chinese = /^zh(?:-|$)/i.test(document.documentElement.lang);
-  const copy = chinese ? {
+  const fallback = chinese ? {
     openMenu: "打开导航", closeMenu: "关闭导航", retry: "重新查询版本",
     loading: "正在查询最新正式版…",
     latest: version => `当前最新正式版 ${version}。点击下载时再次核对版本。`,
@@ -20,6 +20,18 @@
     checking: target => `Checking the download center for the latest ${target} package…`,
     started: (version, target) => `This download: download center · ${version} · ${target}. Handed to your browser; the connection uses your browser's current network settings.`,
     failed: "The download center could not verify this package. Click the download again to retry. No download was started.",
+  };
+
+  const data = document.documentElement.dataset ?? {};
+  const format = (template, values) => template.replace(/\{(version|target)\}/g, (_, key) => values[key]);
+  const copy = {
+    openMenu: data.navOpen ?? fallback.openMenu, closeMenu: data.navClose ?? fallback.closeMenu,
+    retry: data.releaseRetry ?? fallback.retry, loading: data.releaseLoading ?? fallback.loading,
+    latest: version => data.releaseLatest ? format(data.releaseLatest, { version }) : fallback.latest(version),
+    unavailable: data.releaseUnavailable ?? fallback.unavailable,
+    checking: target => data.releaseChecking ? format(data.releaseChecking, { target }) : fallback.checking(target),
+    started: (version, target) => data.releaseStarted ? format(data.releaseStarted, { version, target }) : fallback.started(version, target),
+    failed: data.releaseFailed ?? fallback.failed,
   };
 
   // Navigation also runs on documentation and error pages without a download section.
@@ -40,7 +52,7 @@
   document.addEventListener("click", event => {
     if (menuButton?.getAttribute("aria-expanded") === "true" && !event.target.closest(".site-header")) setMenu(false);
   });
-  window.matchMedia("(min-width: 641px)").addEventListener("change", event => { if (event.matches) setMenu(false); });
+  window.matchMedia(data.siteLocale ? "(min-width: 981px)" : "(min-width: 641px)").addEventListener("change", event => { if (event.matches) setMenu(false); });
 
   const links = [...document.querySelectorAll(".download-target[data-download-target]")];
   if (!links.length) return;

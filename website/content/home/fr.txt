@@ -1,0 +1,60 @@
+Serylane — Client proxy de bureau libre basé sur Mihomo
+Client proxy libre pour Windows, macOS et Linux. Gérez vos abonnements, vos nœuds et vos règles, puis consultez vos connexions et les diagnostics.
+13	CLIENT PROXY DE BUREAU LIBRE
+14	Votre réseau.
+15	Vos règles.
+16	Importez vos réglages, choisissez vos routes.
+17	Gardez vos connexions en vue.
+18	Propulsé par Mihomo, conçu pour votre bureau.
+19	Télécharger Serylane
+20	Voir sur GitHub
+25	Votre configuration
+26	Choix manuel des nœuds
+27	Routage par règles
+29	Désactivé par défaut
+30	Schéma de principe, pas de trafic en direct
+32	01 / GARDER LE CONTRÔLE
+33	À vous de décider.
+34	Tous les détails
+35	restent visibles.
+36	Voir le fonctionnement
+38	GÉRER
+39	Comprendre sa configuration.
+40	Consultez la consommation, l’expiration et l’état d’actualisation de vos abonnements.
+42	CONFIGURER
+43	Fixer des règles claires.
+44	Choisissez vos sorties. Activez le routage par domaine seulement au besoin.
+46	OBSERVER
+47	Vérifier chaque étape.
+48	Consultez les connexions, les journaux et les résultats des diagnostics.
+49	Le routage par domaine est désactivé par défaut. Enregistrer et appliquer les réglages sont deux actions distinctes.
+50	Technologies et licence
+51	Moteur Mihomo
+54	02 / POUR VOTRE BUREAU
+55	Choisissez votre
+56	système.
+57	Le paquet adapté.
+58	Un centre de téléchargement.
+59	Vérifier votre fichier
+67	Puce Apple (série M)
+73	La dernière version stable est vérifiée au téléchargement. Réessayez si elle est indisponible.
+75	Sur Mac, ouvrez le menu Apple → À propos de ce Mac. Choisissez Puce Apple pour la série M, ou Intel pour un processeur Intel.
+76	Chaque lien vérifie la version stable et l’architecture auprès du centre de téléchargement. Ces liens fonctionnent sans JavaScript.
+77	Toutes les versions et sommes de contrôle
+78	Notes de version
+79	03 / AVANT DE COMMENCER
+80	Quelques réponses
+81	aux questions courantes.
+82	Les nœuds et les abonnements sont-ils inclus ?
+83	Non. Serylane est un client de bureau, pas un service proxy. Préparez votre propre abonnement ou configuration Mihomo.
+84	Le routage ou Codex s’active-t-il automatiquement ?
+85	Non. Le routage par domaine est facultatif et désactivé par défaut. Choisissez vos outils et votre sortie, enregistrez le brouillon puis appliquez-le. Les nouvelles connexions à Codex et le proxy par application sont désactivés.
+86	Lire le guide de routage
+87	TUN est-il disponible sur tous les systèmes ?
+88	Sur macOS, TUN nécessite un programme d’installation complet signé avec Developer ID et notarié par Apple. La version v0.7.45 corrige les anciens enregistrements du service auxiliaire. TUN sous Windows est expérimental et requiert des droits administrateur. Il n’est pas implémenté sous Linux. Changer de nœud ne rétablit pas un flux interrompu.
+89	Limites par système
+90	Clair.
+91	Maîtrisé.
+92	Navigation de pied de page
+96	GPL-3.0-only · Projet indépendant de Mihomo, Clash et OpenAI.
+97	Préparez vos nœuds ou votre abonnement.

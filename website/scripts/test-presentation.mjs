@@ -201,7 +201,7 @@ function assertTheme(page, theme, preference) {
 for (const source of pages) {
   const htmlTag = source.one(tag => tag.tag === 'html');
   assert.ok(['en', 'zh-CN'].includes(htmlTag.attributes.lang), source.path);
-  assert.equal(htmlTag.attributes['data-theme'], 'dark', source.path + ': dark no-JS default');
+  assert.equal(htmlTag.attributes['data-theme'], 'system', source.path + ': system no-JS default');
   const themeTag = source.one(tag => tag.tag === 'script' && tag.attributes.src === '/theme.js');
   const siteTag = source.one(tag => tag.tag === 'script' && tag.attributes.src === '/site.js');
   assert.ok(themeTag.start < source.html.indexOf('</head>'));
@@ -231,7 +231,7 @@ for (const source of pages) {
     assert.equal(control.attributes.type, 'button');
     for (const name of ['role', 'tabindex', 'aria-checked', 'disabled']) assert.equal(Object.hasOwn(control.attributes, name), false, 'Theme controls retain native button semantics');
     for (const name of ['aria-label', 'title']) assert.match(control.attributes[name] ?? '', localized[control.attributes['data-theme-value']], source.path + ': localized ' + name);
-    assert.equal(control.attributes['aria-pressed'], String(control.attributes['data-theme-value'] === 'dark'));
+    assert.equal(control.attributes['aria-pressed'], String(control.attributes['data-theme-value'] === 'system'));
     const icons = source.tags.filter(tag => tag.tag === 'svg' && within(control, tag));
     assert.equal(icons.length, 1, source.path + ': each theme button has one SVG icon');
     assert.equal(icons[0].attributes['aria-hidden'], 'true');
@@ -291,11 +291,16 @@ console.log(`PASS: ${pages.length} real HTML pages — synchronous first-paint t
 
 for (const source of pages.filter(page => page.path === 'index.html' || page.path === 'zh/index.html')) {
   for (const stored of [null, '', 'invalid', 'LIGHT', ' system ', '__proto__', 'zh-CN', 'dark/light']) {
-    const page = createPage(source, { stored, systemDark: false });
-    assertTheme(page, 'dark');
-    page.ready();
-    assertTheme(page, 'dark', 'dark');
-    assert.deepEqual(page.writes, [], 'Invalid preferences are ignored, not rewritten');
+    for (const systemDark of [false, true]) {
+      const page = createPage(source, { stored, systemDark });
+      const expected = systemDark ? 'dark' : 'light';
+      assertTheme(page, expected);
+      page.ready();
+      assertTheme(page, expected, 'system');
+      page.scheme.change(!systemDark);
+      assertTheme(page, systemDark ? 'light' : 'dark', 'system');
+      assert.deepEqual(page.writes, [], 'Invalid or absent preferences follow system without being rewritten');
+    }
   }
   for (const stored of ['dark', 'light', 'system']) for (const systemDark of [false, true]) {
     const page = createPage(source, { stored, systemDark });
@@ -306,9 +311,9 @@ for (const source of pages.filter(page => page.path === 'index.html' || page.pat
     assert.deepEqual(page.writes, [], 'A stored preference is applied without being rewritten');
   }
   const page = createPage(source, { duplicateThemeGroup: true });
-  assertTheme(page, 'dark');
+  assertTheme(page, 'light');
   page.ready();
-  assertTheme(page, 'dark', 'dark');
+  assertTheme(page, 'light', 'system');
   assert.equal(page.themeGroups.length, 2);
   assert.equal(page.themeButtons.length, 6);
   const controls = [...page.themeButtons];
@@ -347,8 +352,9 @@ for (const source of pages.filter(page => page.path === 'index.html' || page.pat
   assert.deepEqual(page.writes, ['light', 'system', 'dark'].map(value => [key, value]), 'One write per valid click, none for media changes or invalid data');
   for (const blocked of [{ throwStorageProperty: true }, { throwGet: true }, { throwSet: true }]) {
     const blockedPage = createPage(source, blocked);
-    assertTheme(blockedPage, 'dark');
+    assertTheme(blockedPage, 'light');
     blockedPage.ready();
+    assertTheme(blockedPage, 'light', 'system');
     blockedPage.setTheme('light');
     assertTheme(blockedPage, 'light', 'light');
     blockedPage.setTheme('system');
@@ -363,11 +369,11 @@ for (const source of pages.filter(page => page.path === 'index.html' || page.pat
   const withoutMedia = createPage(source, { noMatchMedia: true, noObserver: true });
   assertTheme(withoutMedia, 'dark');
   withoutMedia.ready();
-  assertTheme(withoutMedia, 'dark', 'dark');
+  assertTheme(withoutMedia, 'dark', 'system');
   withoutMedia.setTheme('light');
   assertTheme(withoutMedia, 'light', 'light');
   withoutMedia.setTheme('system');
-  assertTheme(withoutMedia, 'light', 'system');
+  assertTheme(withoutMedia, 'dark', 'system');
   withoutMedia.setTheme('dark');
   assertTheme(withoutMedia, 'dark', 'dark');
   assert.deepEqual(withoutMedia.writes, ['light', 'system', 'dark'].map(value => [key, value]));
@@ -389,7 +395,7 @@ assertTheme(nextPage, 'light', 'light');
 assert.equal(nextPage.root.lang, 'zh-CN');
 assert.deepEqual(firstPage.writes, [[key, 'light']]);
 assert.deepEqual(nextPage.writes, [], 'Cross-page persistence does not rewrite the preference or locale');
-console.log('PASS: dark/light/system, invalid stored/control values, blocked property/getter/setter, system changes, synchronized button groups and exactly one permitted persistent key.');
+console.log('PASS: system default (both palettes), explicit overrides, invalid stored/control values, blocked property/getter/setter, system changes, synchronized button groups and exactly one permitted persistent key.');
 
 for (const source of pages.filter(page => page.path === 'index.html' || page.path === 'zh/index.html')) {
   const chinese = source.one(tag => tag.tag === 'html').attributes.lang === 'zh-CN';

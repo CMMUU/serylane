@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { contentRoutes, equivalents, locales, origin, outputPath as root, pathFor, readUI } from './site-locales.mjs';
 
-const root = fileURLToPath(new URL('../public/', import.meta.url));
-const origin = 'https://serylane.cmmuu.com';
-const pairs = ['/', '/docs/', '/docs/routing', '/docs/verification', '/docs/privacy'];
-const expectedRoutes = [...pairs, ...pairs.map(route => '/zh' + route), '/404'].sort();
+const expectedRoutes = [...contentRoutes.keys(), '/404'].sort();
+const strings = new Map(await Promise.all(locales.map(async locale => [locale.id, await readUI(locale.id)])));
+const legacy = new Set(['en', 'zh-Hans']);
 async function walk(path) {
   const entries = await readdir(path, { withFileTypes: true });
   return (await Promise.all(entries.map(entry => entry.isDirectory() ? walk(join(path, entry.name)) : join(path, entry.name)))).flat();
@@ -17,6 +16,7 @@ function attrs(source) {
 function tags(html, tag) {
   return [...html.matchAll(new RegExp(`<${tag}\\b([^>]*)>`, 'gi'))].map(match => attrs(match[1]));
 }
+const htmlAttr = value => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 function meta(html, key, value) { return tags(html, 'meta').find(tag => tag[key] === value)?.content; }
 const routeOf = path => '/' + path.slice(root.length).replaceAll('\\', '/').replace(/index\.html$/, '').replace(/\.html$/, '');
 const files = await walk(root);
@@ -34,7 +34,9 @@ for (const path of files.filter(path => path.endsWith('.html'))) {
   const html = await readFile(path, 'utf8');
   const route = routeOf(path);
   htmls.set(route, html);
-  const lang = route.startsWith('/zh/') ? 'zh-CN' : 'en';
+  const entry = contentRoutes.get(route);
+  assert.ok(entry || route === '/404', 'Unexpected file: ' + route);
+  const lang = entry?.locale.lang ?? 'en';
   assert.equal(tags(html, 'html')[0]?.lang, lang, `${route}: language follows the explicit URL, not browser detection`);
   assert.equal([...html.matchAll(/<h1(?:\s|>)/g)].length, 1, `${route}: exactly one H1`);
   const title = html.match(/<title>([^<]+)<\/title>/)?.[1];
@@ -61,16 +63,22 @@ for (const path of files.filter(path => path.endsWith('.html'))) {
     assert.match(meta(html, 'name', 'robots') ?? '', /noindex/, '404 must not be indexed');
     continue;
   }
+  const { page, locale } = entry;
+  const rootAttrs = tags(html, 'html')[0];
+  assert.equal(rootAttrs.dir, locale.direction);
+  assert.equal(rootAttrs['data-site-locale'], locale.id);
+  assert.equal(rootAttrs['data-nav-open'], htmlAttr(strings.get(locale.id).open));
+  assert.equal(rootAttrs['data-release-loading'], htmlAttr(strings.get(locale.id).loading));
+  assert.equal(rootAttrs['data-release-started'], htmlAttr(strings.get(locale.id).started));
   const canonical = tags(html, 'link').filter(tag => tag.rel === 'canonical');
   assert.deepEqual(canonical.map(tag => tag.href), [origin + route], `${route}: exact self canonical`);
-  const english = route.startsWith('/zh/') ? route.slice(3) : route;
   const alternate = tags(html, 'link').filter(tag => tag.rel === 'alternate');
-  assert.equal(alternate.length, 3, `${route}: no ambiguous alternates`);
-  for (const [language, target] of [['en', english], ['zh-CN', '/zh' + english], ['x-default', english]]) {
+  assert.equal(alternate.length, locales.length + 1, `${route}: no ambiguous alternates`);
+  for (const [language, target] of equivalents(page)) {
     assert.equal(alternate.find(tag => tag.hreflang === language)?.href, origin + target, `${route}: reciprocal ${language}`);
   }
   assert.equal(meta(html, 'property', 'og:url'), origin + route);
-  assert.equal(meta(html, 'property', 'og:locale'), lang === 'en' ? 'en_US' : 'zh_CN');
+  assert.equal(meta(html, 'property', 'og:locale'), locale.social);
   assert.equal(meta(html, 'property', 'og:title'), title);
   assert.equal(meta(html, 'property', 'og:description'), description);
   assert.equal(meta(html, 'property', 'og:site_name'), 'Serylane');
@@ -87,22 +95,60 @@ for (const path of files.filter(path => path.endsWith('.html'))) {
   assert.ok(webpage, `${route}: WebPage structured data`);
   assert.equal(webpage.url, origin + route);
   assert.equal(webpage.inLanguage, lang);
-  assert.equal(webpage.name, title);
-  if (pairs.includes(route) && route === '/') {
+  assert.ok(webpage.name === title || htmlAttr(webpage.name) === title, route + ': structured page title');
+  if (page === 'home') {
     const app = nodes.find(node => node['@type'] === 'SoftwareApplication');
     assert.equal(app?.name, 'Serylane');
     assert.equal(app.license, 'https://github.com/CMMUU/serylane/blob/main/LICENSE');
     assert.equal(app.operatingSystem, 'Windows, macOS, Linux');
     assert.ok(!app.softwareVersion && !app.offers, 'Do not pin a source release or invent commercial offers');
+    const expectedTargets = ['windows-x64','windows-arm64','macos-x64','macos-arm64','linux-x64','linux-arm64'];
+    const downloads = tags(html, 'a').filter(link => link['data-download-target']);
+    assert.deepEqual(downloads.map(link => link['data-download-target']).sort(), expectedTargets.sort(), route + ': six payload-neutral download links');
+    for (const link of downloads) assert.equal(link.href, '/download/' + link['data-download-target']);
+  }
+  const picker = [...html.matchAll(/<details class="language-menu"[^>]*>[\s\S]*?<\/details>/g)];
+  assert.equal(picker.length, 1, route + ': one native language dropdown');
+  const navLinks = tags(picker[0][0], 'a');
+  assert.deepEqual(navLinks.map(link => link.lang), locales.map(item => item.lang), route + ': menu shows all 11 languages in order');
+  for (let i = 0; i < navLinks.length; i++) {
+    const link = navLinks[i];
+    assert.equal(link.hreflang, locales[i].lang);
+    assert.equal(link.href, pathFor(page, locales[i]));
+    assert.equal(link['aria-current'], locale.id === locales[i].id ? 'page' : undefined);
+  }
+  const nav = html.match(/<nav id="main-nav"[^>]*>[\s\S]*?<\/nav>/)[0];
+  for (const kind of ['guide', 'docs']) assert.ok(tags(nav, 'a').some(link => link.href === pathFor(kind, locale)), route + ': localized entry ' + kind);
+  if (page === 'guide') {
+    const toc = html.match(/<nav class="chapter-nav"[^>]*>[\s\S]*?<\/nav>/)?.[0];
+    assert.ok(toc, route + ': guide table of contents');
+    const headings = ['install','quick-start','proxy-modes','subscriptions','nodes','ai-tools','updates','troubleshooting'];
+    assert.deepEqual(tags(toc, 'a').map(link => link.href), headings.map(id => '#' + id), route + ': eight stable chapter links');
+    assert.ok(headings.every(id => ids.includes(id)), route + ': every chapter link has a target');
+    assert.ok(html.includes('<code dir="ltr">codex --enable respect_system_proxy</code>'));
+  }
+  if (legacy.has(locale.id) && page !== 'guide') {
+    const oldMarkup = await readFile(new URL('../public/' + entry.file, import.meta.url), 'utf8');
+    for (const [, oldId] of oldMarkup.matchAll(/id="([^"]+)"/g)) assert.ok(ids.includes(oldId), route + ': preserve old anchor ' + oldId);
   }
 }
-assert.deepEqual([...htmls.keys()].sort(), expectedRoutes, 'English and Chinese each have a homepage and four complete docs; one 404');
+assert.deepEqual([...htmls.keys()].sort(), expectedRoutes, 'Six canonical pages per locale and one genuine 404');
 for (const [route, html] of htmls) {
+  const entry = contentRoutes.get(route);
+  for (const link of tags(html, 'a')) {
+    if (!entry || !link.href || Object.hasOwn(link, 'data-language-link')) continue;
+    const destination = new URL(link.href, origin + route);
+    const targetEntry = destination.origin === origin && contentRoutes.get(destination.pathname);
+    if (targetEntry && targetEntry.locale.id !== entry.locale.id) {
+      assert.equal(link.hreflang, targetEntry.locale.lang, route + ': unlabelled cross-language link ' + link.href);
+      assert.ok(destination.hash, route + ': only explicitly linked archive details may switch language');
+    }
+  }
   for (const match of html.matchAll(/\b(?:href|src)="([^"]+)"/g)) {
     const href = match[1].replaceAll('&amp;', '&');
-    if (/^(https?:|mailto:)/.test(href)) continue;
     assert.ok(!href.startsWith('//'), `${route}: no external protocol-relative assets`);
     const target = new URL(href, origin + route);
+    if (target.origin !== origin) continue;
     if (/^\/download\/(windows|macos|linux)-(x64|arm64)$/.test(target.pathname)) {
       assert.equal(target.search, '', 'Download URLs must not receive language/theme/channel overrides');
       checkedLinks++; continue;
@@ -132,12 +178,11 @@ for (const prefix of ['', '/zh']) {
 }
 const sitemap = await readFile(join(root, 'sitemap.xml'), 'utf8');
 const listed = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(match => match[1]).sort();
-assert.deepEqual(listed, expectedRoutes.filter(route => route !== '/404').map(route => origin + route).sort(), 'Sitemap has all ten canonical content pages, no error/API/download routes');
+assert.deepEqual(listed, expectedRoutes.filter(route => route !== '/404').map(route => origin + route).sort(), 'Sitemap has all canonical content pages, no error/API/download routes');
 assert.match(sitemap, /xmlns:xhtml="http:\/\/www\.w3\.org\/1999\/xhtml"/);
 for (const block of sitemap.matchAll(/<url>([\s\S]*?)<\/url>/g)) {
   const route = block[1].match(/<loc>([^<]+)<\/loc>/)[1].slice(origin.length);
-  const english = route.startsWith('/zh/') ? route.slice(3) : route;
-  for (const [lang, path] of [['en', english], ['zh-CN', '/zh' + english], ['x-default', english]]) {
+  for (const [lang, path] of equivalents(contentRoutes.get(route).page)) {
     assert.ok(block[1].includes(`hreflang="${lang}" href="${origin}${path}"`), 'Sitemap alternates are reciprocal');
   }
 }
@@ -169,4 +214,4 @@ assert.equal(config.assets.not_found_handling, '404-page');
 assert.equal(config.workers_dev, false);
 assert.deepEqual(config.assets.run_worker_first, ['/api/*', '/download/*']);
 assert.equal(config.assets.binding, 'ASSETS');
-console.log(`PASS: ${htmls.size} static HTML pages, ${checkedLinks} local links/assets; bilingual canonical/hreflang/sitemap/JSON-LD, historical anchors, CSP, one-key theme privacy, and download-only network scope.`);
+console.log(`PASS: ${htmls.size} static HTML pages, ${checkedLinks} local links/assets; 11-language dropdown/TOC/canonical/hreflang/sitemap/JSON-LD, historical anchors, CSP, one-key theme privacy, and download-only network scope.`);

@@ -1,0 +1,60 @@
+Serylane — Open-Source-Desktop-Proxy auf Basis von Mihomo
+Ein Open-Source-Proxy für Windows, macOS und Linux. Abonnements, Knoten und Routing-Regeln verwalten sowie Verbindungen und Diagnosen prüfen.
+13	DESKTOP-PROXY MIT OFFENEM QUELLCODE
+14	Dein Netzwerk.
+15	Deine Regeln.
+16	Importiere deine Konfiguration und wähle deine Routen.
+17	Behalte deine Verbindungen im Blick.
+18	Mit Mihomo, für deinen Desktop.
+19	Serylane herunterladen
+20	Auf GitHub ansehen
+25	Deine Konfiguration
+26	Manuelle Knotenwahl
+27	Regelbasiertes Routing
+29	Standardmäßig aus
+30	Schema, kein Live-Datenverkehr
+32	01 / VOLLE KONTROLLE
+33	Du entscheidest.
+34	Die Details
+35	bleiben sichtbar.
+36	Ablauf ansehen
+38	VERWALTEN
+39	Kenne deine Konfiguration.
+40	Prüfe Verbrauch, Ablaufdatum und Aktualisierungsstatus deiner Abonnements.
+42	KONFIGURIEREN
+43	Setze klare Grenzen.
+44	Wähle deine Ausgänge. Aktiviere Domain-Routing nur bei Bedarf.
+46	BEOBACHTEN
+47	Prüfe jeden Schritt.
+48	Verfolge Verbindungen, Protokolle und einzelne Diagnoseergebnisse.
+49	Domain-Routing ist standardmäßig aus. Speichern und Anwenden sind getrennte Schritte.
+50	Technik und Lizenz
+51	Mihomo-Kern
+54	02 / FÜR DEINEN DESKTOP
+55	Wähle dein
+56	Betriebssystem.
+57	Das passende Paket.
+58	Ein Downloadcenter.
+59	Download prüfen
+67	Apple-Chip (M-Serie)
+73	Beim Download wird die neueste stabile Version geprüft. Bei Bedarf erneut versuchen.
+75	Öffne auf dem Mac das Apple-Menü → Über diesen Mac. Wähle bei der M-Serie Apple-Chip, sonst Intel.
+76	Jeder Paketlink prüft Version und Architektur im Downloadcenter. Die Links funktionieren auch ohne JavaScript.
+77	Alle Versionen und Prüfsummen
+78	Änderungsprotokoll
+79	03 / VOR DEM START
+80	Häufige
+81	Fragen.
+82	Sind Knoten oder Abonnements enthalten?
+83	Nein. Serylane ist ein Desktop-Client, kein Proxy-Dienst. Nutze ein eigenes Abonnement oder eine lokale Mihomo-Konfiguration.
+84	Aktiviert Serylane Routing oder Codex automatisch?
+85	Nein. Domain-Routing ist optional und standardmäßig aus. Werkzeuge und Ausgang wählen, Entwurf speichern und ausdrücklich anwenden. Neue Codex-Anbindungen und App-Proxys sind derzeit deaktiviert.
+86	Routing-Handbuch lesen
+87	Gibt es TUN auf jeder Plattform?
+88	macOS TUN braucht einen vollständigen Installer mit Developer-ID-Signatur und Apple-Notarisierung. v0.7.45 behebt veraltete Helferregistrierungen. Windows TUN ist experimentell und erfordert Administratorrechte. Linux TUN ist nicht implementiert. Ein Knotenwechsel setzt unterbrochene Streams nicht fort.
+89	Plattformgrenzen
+90	Klar.
+91	Gezielt.
+92	Fußnavigation
+96	GPL-3.0-only · Unabhängig von Mihomo, Clash und OpenAI.
+97	Nutze eigene Knoten oder ein eigenes Abonnement.
