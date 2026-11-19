@@ -9,9 +9,10 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 ## 下载与更新
 
 - [官网](https://serylane.cmmuu.com/) · **[下载中心](https://downloads.cmmuu.com/projects/serylane)** · [源码仓库](https://github.com/CMMUU/serylane)
-- 官网安装包由下载中心提供。应用内按 GitHub 直连、经已运行的 Serylane 本地代理访问 GitHub、下载中心的顺序检查正式版。
+- 官网安装包由下载中心提供。应用内按 GitHub 直连、GitHub 加速代理、经 Serylane 本地代理访问 GitHub、下载中心的顺序检查正式版。检查结果显示本次更新来源。
 - Windows、macOS、Linux 各提供 x64 / ARM64 入口；macOS 请区分 **Intel 芯片（x64）** 与 **Apple 芯片（M 系列，ARM64）**。
 - 自动检查开启时，应用在启动后于后台检查。发现新版本时，点击右下角卡片或侧栏版本号红点，进入「设置 → 软件更新」的下载操作。官网每次点击安装包都会核对下载中心的当前发行。
+- v0.7.44 若停在「正在检查」，退出旧版后可用 v0.7.46 或更新的完整安装包覆盖升级。 [官网下载](https://serylane.cmmuu.com/zh/#download)
 - 下载有界重试，可取消；签名和 SHA-256 通过后才允许确认安装。检查与下载不停止代理，确认安装和重启会短暂中断连接。Linux 内置更新适用于 AppImage。
 - **v0.7.24–v0.7.27 内置安装失败的用户**：首次从下载中心获取已正式发布的 v0.7.28 或更高修复版完整安装包，退出旧版后覆盖原位置并保留配置目录。旧更新器不会先执行新版修复代码。
 
@@ -31,7 +32,7 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 <!-- product-contract:start -->
 | 源码事实 | 当前值 |
 | --- | --- |
-| 源码版本 | 0.7.46（不代表已经发行） |
+| 源码版本 | 0.7.47（不代表已经发行） |
 | 官网安装包 | 下载中心 |
 | 应用内更新 | GitHub 直连 → GitHub 加速代理 → 经 Serylane 本地代理访问 GitHub → 下载中心 |
 | AI 合格节点范围 | 1–10 个；单节点没有备用 |

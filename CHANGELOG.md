@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.47 - 2026-11-20
+
+- Simplify Software Update preferences by removing the static list of routes. Check results show the source used.
+- Document full-installer recovery for v0.7.44 clients stuck while checking for updates.
+
 ## 0.7.46 - 2026-11-19
 
 - Open the macOS status menu in a non-activating AppKit panel in the current full-screen space. Recover the main window when WebKit terminates before its first page loads.
