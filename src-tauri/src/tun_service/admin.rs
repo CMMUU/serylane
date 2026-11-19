@@ -71,11 +71,17 @@ pub fn register() -> Result<TunHelperStatus, String> {
 /// observation is a hint. The signed, installed application must also have a
 /// registration recognized by Service Management.
 pub(crate) fn overwrite_source() -> Result<Option<String>, String> {
-    let Some(version) = launchd::stale_version_now() else {
+    let version = launchd::older_version_now();
+    record_recovery(
+        "overwrite_scan",
+        &format!("source={}", version.as_deref().unwrap_or("none")),
+    );
+    let Some(version) = version else {
         return Ok(None);
     };
     codesign::validate_installation()?;
     let status = recovery_service_status()?;
+    record_recovery("overwrite_permission", &format!("sm_status={status}"));
     Ok(matches!(
         status,
         macos_service::ENABLED | macos_service::REQUIRES_APPROVAL
@@ -90,27 +96,48 @@ pub(crate) fn recovery_service_status() -> Result<isize, String> {
 
 pub(crate) fn register_after_upgrade(attempted: &AtomicBool) -> Result<TunHelperStatus, String> {
     let _guard = mutation()?;
+    // A confirmed failed launch can hold XPC replies until timeout. Use
+    // fresh launchd evidence and consent before probing the replacement.
+    if let Some(repaired) = repair_stale_binding(attempted)? {
+        return Ok(repaired);
+    }
     let observed = register_inner(Registration::Upgrade)?;
     record_recovery("handshake", &format!("state={:?}", observed.state));
+    if matches!(
+        observed.state,
+        TunHelperState::NeedsRepair | TunHelperState::Checking
+    ) && !observed.runtime_running
+        && observed.runtime_pid.is_none()
+    {
+        if let Some(repaired) = repair_stale_binding(attempted)? {
+            return Ok(repaired);
+        }
+    }
+    Ok(observed)
+}
+
+fn repair_stale_binding(attempted: &AtomicBool) -> Result<Option<TunHelperStatus>, String> {
+    if attempted.load(Ordering::Acquire) || launchd::stale_version_now().is_none() {
+        return Ok(None);
+    }
+    codesign::validate_installation()?;
+    let status = recovery_service_status()?;
+    if status == macos_service::REQUIRES_APPROVAL {
+        record_recovery("permission", &format!("sm_status={status}"));
+        return Ok(Some(requires_approval()));
+    }
+    // Re-read launchd after verifying the signing identity and consent.
+    let version = launchd::stale_version_now();
+    record_recovery(
+        "stale_binding",
+        &format!(
+            "source={} sm_status={status}",
+            version.as_deref().unwrap_or("unknown")
+        ),
+    );
     retry_stale_binding_once(
-        observed,
+        version.is_some() && status == macos_service::ENABLED,
         attempted,
-        || {
-            // The initial diagnosis can have become stale while launchd was
-            // retrying. Authenticate the replacement before touching the old
-            // association and require it to still be enabled (not denied).
-            codesign::validate_installation()?;
-            let version = launchd::stale_version_now();
-            let status = recovery_service_status()?;
-            record_recovery(
-                "stale_binding",
-                &format!(
-                    "source={} sm_status={status}",
-                    version.as_deref().unwrap_or("unknown")
-                ),
-            );
-            Ok(version.is_some() && status == macos_service::ENABLED)
-        },
         || {
             rebind(|| {
                 record_recovery("unregister", "request");
@@ -123,21 +150,14 @@ pub(crate) fn register_after_upgrade(attempted: &AtomicBool) -> Result<TunHelper
 }
 
 fn retry_stale_binding_once(
-    observed: TunHelperStatus,
+    confirmed: bool,
     attempted: &AtomicBool,
-    confirm: impl FnOnce() -> Result<bool, String>,
     rebind: impl FnOnce() -> Result<TunHelperStatus, String>,
-) -> Result<TunHelperStatus, String> {
-    if observed.state == TunHelperState::NeedsRepair
-        && !observed.runtime_running
-        && observed.runtime_pid.is_none()
-        && !attempted.load(Ordering::Acquire)
-        && confirm()?
-        && !attempted.swap(true, Ordering::AcqRel)
-    {
-        return rebind();
+) -> Result<Option<TunHelperStatus>, String> {
+    if confirmed && !attempted.swap(true, Ordering::AcqRel) {
+        return rebind().map(Some);
     }
-    Ok(observed)
+    Ok(None)
 }
 
 fn mutation() -> Result<MutexGuard<'static, ()>, String> {
@@ -417,46 +437,13 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_never_detaches_a_healthy_busy_unconfirmed_or_disallowed_job() {
+    fn upgrade_requires_a_confirmed_failed_and_enabled_job() {
         let attempted = AtomicBool::new(false);
-        let mut busy = failed_handshake();
-        busy.runtime_pid = Some(321);
-        for state in [
-            busy,
-            requires_approval(),
-            status_from_probe(ProbeRead::Checking),
-            status_from_probe(ProbeRead::Complete(Err("timed out".into()))),
-            TunHelperStatus {
-                state: TunHelperState::Outdated,
-                ..not_installed()
-            },
-            TunHelperStatus {
-                state: TunHelperState::Ready,
-                ..not_installed()
-            },
-            TunHelperStatus {
-                state: TunHelperState::InvalidInstallation,
-                ..not_installed()
-            },
-        ] {
-            let expected = state.state;
-            let observed = retry_stale_binding_once(
-                state,
-                &attempted,
-                || panic!("ineligible stale job"),
-                || panic!("must not rebind"),
-            )
-            .unwrap();
-            assert_eq!(observed.state, expected);
-        }
-        let observation = retry_stale_binding_once(
-            failed_handshake(),
-            &attempted,
-            || Ok(false),
-            || panic!("no fresh evidence"),
-        )
-        .unwrap();
-        assert_eq!(observation.state, TunHelperState::NeedsRepair);
+        assert!(
+            retry_stale_binding_once(false, &attempted, || panic!("must not rebind"))
+                .unwrap()
+                .is_none()
+        );
         assert!(!attempted.load(Ordering::Acquire));
     }
 
@@ -464,33 +451,22 @@ mod tests {
     fn stale_job_is_rebound_at_most_once_even_after_an_error() {
         for fails in [true, false] {
             let attempted = AtomicBool::new(false);
-            let initial = failed_handshake();
-            let observed = retry_stale_binding_once(
-                initial,
-                &attempted,
-                || Ok(true),
-                || {
-                    if fails {
-                        Err("unregister failed".into())
-                    } else {
-                        // A successful SMAppService call is not a handshake.
-                        Ok(status_from_probe(ProbeRead::Checking))
-                    }
-                },
-            );
+            let observed = retry_stale_binding_once(true, &attempted, || {
+                if fails {
+                    Err("unregister failed".into())
+                } else {
+                    // A successful SMAppService call is not a handshake.
+                    Ok(status_from_probe(ProbeRead::Checking))
+                }
+            });
             assert_eq!(observed.is_err(), fails);
-            if let Ok(status) = observed {
+            if let Ok(Some(status)) = observed {
                 assert!(!status.ready());
             }
             assert!(attempted.load(Ordering::Acquire));
-            let status = retry_stale_binding_once(
-                failed_handshake(),
-                &attempted,
-                || panic!("already attempted"),
-                || panic!("must not repeat"),
-            )
-            .unwrap();
-            assert_eq!(status.state, TunHelperState::NeedsRepair);
+            let status =
+                retry_stale_binding_once(true, &attempted, || panic!("must not repeat")).unwrap();
+            assert!(status.is_none());
         }
     }
 

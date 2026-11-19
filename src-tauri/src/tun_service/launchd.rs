@@ -17,7 +17,7 @@ enum Observation {
     Absent,
     Present {
         failure: Option<Failure>,
-        stale_version: Option<String>,
+        older_version: Option<String>,
     },
 }
 
@@ -42,7 +42,17 @@ pub(super) fn failure() -> Option<Failure> {
 /// old job that launchd has already replaced or started.
 pub(super) fn stale_version_now() -> Option<String> {
     match inspect() {
-        Ok(Observation::Present { stale_version, .. }) => stale_version,
+        Ok(Observation::Present {
+            failure: Some(Failure::SpawnFailed),
+            older_version,
+        }) => older_version,
+        _ => None,
+    }
+}
+
+pub(super) fn older_version_now() -> Option<String> {
+    match inspect() {
+        Ok(Observation::Present { older_version, .. }) => older_version,
         _ => None,
     }
 }
@@ -148,8 +158,8 @@ fn parse(text: &str, current_version: &str) -> Observation {
     // even if it subsequently reports a launch constraint problem.
     Observation::Present {
         failure: failed.then_some(Failure::SpawnFailed),
-        stale_version: old_version
-            .filter(|_| failed && reports_our_binding)
+        older_version: old_version
+            .filter(|_| reports_our_binding)
             .map(str::to_owned),
     }
 }
@@ -179,7 +189,7 @@ mod tests {
     fn observed_macos_spawn_failure_requires_reassociation_not_more_authorization() {
         assert_eq!(
             parse(&job("\tstate = spawn scheduled\n\tactive count = 0\n\tlast exit code = 78: EX_CONFIG\n\tjob state = spawn failed"), "0.7.44"),
-            Observation::Present { failure: Some(Failure::SpawnFailed), stale_version: None }
+            Observation::Present { failure: Some(Failure::SpawnFailed), older_version: None }
         );
     }
 
@@ -194,7 +204,7 @@ mod tests {
             "\tjob state = spawn failed\n\tlast exit code = 1",
             "\tlaunch info = {\n\t\tstate = spawn scheduled\n\t\tactive count = 0\n\t}\n\tlast exit code = 78: EX_CONFIG\n\tjob state = spawn failed",
         ] {
-            assert_eq!(parse(&job(text), "0.7.44"), Observation::Present { failure: None, stale_version: None }, "{text}");
+            assert_eq!(parse(&job(text), "0.7.44"), Observation::Present { failure: None, older_version: None }, "{text}");
         }
     }
 
@@ -207,8 +217,8 @@ mod tests {
             matches!(
                 parse(text, ver),
                 Observation::Present {
-                    stale_version: Some(_),
-                    ..
+                    failure: Some(Failure::SpawnFailed),
+                    older_version: Some(_),
                 }
             )
         };
@@ -217,7 +227,7 @@ mod tests {
             parse(&fixture, "0.7.48"),
             Observation::Present {
                 failure: Some(Failure::SpawnFailed),
-                stale_version: Some("0.7.42".to_owned()),
+                older_version: Some("0.7.42".to_owned()),
             }
         );
         assert!(!eligible(&fixture, "0.7.42"));
