@@ -1,5 +1,5 @@
 // AppKit must run on the process main thread, not a Rust test worker. This
-// harness tests the production title and NSPanel with disposable status items;
+// harness tests the production title and NSMenu with disposable status items;
 // it never opens Serylane, reads user configuration or starts networking.
 #[cfg(target_os = "macos")]
 #[path = "../src/traffic_monitor/macos_layout.rs"]
@@ -287,8 +287,7 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     use block2::RcBlock;
     use macos_menu_panel::*;
     use objc2_app_kit::{
-        NSButton, NSControlStateValueOff, NSControlStateValueOn, NSTextField,
-        NSWindowCollectionBehavior, NSWindowStyleMask,
+        NSControlStateValueOff, NSControlStateValueOn, NSMenu, NSMenuDelegate, NSMenuItem,
     };
     use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSOperationQueue, NSRunLoop, NSString};
     use std::{
@@ -316,46 +315,29 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     )
     .is_err());
 
-    let panel = test_panel().expect("retained AppKit panel");
-    assert!(panel
-        .styleMask()
-        .contains(NSWindowStyleMask::NonactivatingPanel));
-    assert!(panel.collectionBehavior().contains(
-        NSWindowCollectionBehavior::CanJoinAllApplications
-            | NSWindowCollectionBehavior::FullScreenAuxiliary
-    ));
-    with_item(mtm, |item, _, traffic| {
+    let menu = with_item(mtm, |item, _, traffic| {
         traffic.setStringValue(&NSString::from_str("↑ 8.0 KiB/s    ↓ 16.0 KiB/s"));
+        let menu = item.menu(mtm).expect("actual AppKit status menu");
         macos_title::apply_to_item(item, 1200, 6500, mtm).unwrap();
-        assert!(
-            item.menu(mtm).is_none(),
-            "status item uses explicit presentation"
-        );
-        assert!(item.button(mtm).unwrap().action().is_some());
-        assert!(std::ptr::eq(&*test_panel().unwrap(), &*panel));
+        assert!(std::ptr::eq(&*item.menu(mtm).unwrap(), &*menu));
+        menu
     })
     .unwrap();
-    let content = panel.contentView().unwrap();
-    let row = |tag| {
-        content
-            .viewWithTag(tag)
-            .unwrap()
-            .downcast::<NSButton>()
-            .unwrap()
-    };
-    let label = |tag| {
-        content
-            .viewWithTag(tag)
-            .unwrap()
-            .downcast::<NSTextField>()
-            .unwrap()
-    };
-    let confirm = row(ROUTE_CONFIRM);
-    assert!(label(TRAFFIC)
-        .stringValue()
-        .to_string()
-        .contains("8.0 KiB/s"));
-    assert!(confirm.isHidden());
+    let row = |tag| menu.itemWithTag(tag).unwrap();
+    let route = row(ROUTE).submenu().unwrap();
+    let confirm = route.itemWithTag(ROUTE_CONFIRM).unwrap();
+    let delegate = menu.delegate().unwrap();
+    assert!(!menu.autoenablesItems());
+    assert!(!route.autoenablesItems());
+    assert!(row(SYSTEM).view().is_none(), "use a real AppKit menu row");
+    assert_eq!(
+        menu.itemArray()
+            .iter()
+            .filter(|r| r.isSeparatorItem())
+            .count(),
+        3
+    );
+    assert!(row(TRAFFIC).title().to_string().contains("8.0 KiB/s"));
     assert!(!row(TUN).isEnabled());
 
     let token = RouteToken {
@@ -385,13 +367,13 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
         ..Controls::default()
     };
     update_controls(mtm, view.clone());
-    assert!(label(STATUS_ROW)
-        .stringValue()
+    assert!(row(STATUS_ROW)
+        .title()
         .to_string()
         .contains("系统代理运行中"));
     assert_eq!(row(SYSTEM).state(), NSControlStateValueOn);
     assert_eq!(row(TUN).state(), NSControlStateValueOff);
-    assert!(row(ROUTE).title().to_string().contains("路由 · 待启动"));
+    assert_eq!(row(ROUTE).state(), NSControlStateValueOff);
     assert!(!row(START).isEnabled());
     assert!(row(STOP).isEnabled());
     assert!(confirm.isEnabled());
@@ -416,24 +398,14 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
         assert!(fence.load(Ordering::Acquire), "action queue fence");
         std::mem::take(&mut *actions.lock().unwrap())
     };
-    // SAFETY: the controls retain their assigned, live native action target
-    // for this fixture. No sender is required for performClick:.
-    let click = |tag| unsafe { row(tag).performClick(None) };
-    let toggle = || {
-        with_item(mtm, |item, _, _| unsafe {
-            item.button(mtm).unwrap().performClick(None)
-        })
-        .unwrap();
-    };
-    let open = || {
-        toggle();
-        assert!(panel.isVisible() && is_visible());
-        assert_eq!(take(1), [Action::Observe]);
+    let click = |menu: &NSMenu, item: &NSMenuItem| {
+        menu.performActionForItemAtIndex(menu.indexOfItem(item));
     };
 
-    open();
-    click(ROUTE);
-    assert!(!confirm.isHidden() && confirm.isEnabled());
+    delegate.menuNeedsUpdate(&menu);
+    delegate.menuWillOpen(&menu);
+    assert!(is_visible());
+    assert_eq!(take(1), [Action::Observe]);
     let mut changed = view.clone();
     changed.serial = 2;
     changed.system_proxy = false;
@@ -442,21 +414,20 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     update_controls(mtm, changed.clone());
     assert_eq!(row(TUN).state(), NSControlStateValueOn);
     assert!(!row(SYSTEM).isEnabled() && !row(TUN).isEnabled() && !confirm.isEnabled());
-    click(TUN);
-    click(ROUTE_CONFIRM);
+    click(&menu, &row(TUN));
+    click(&route, &confirm);
     assert!(
         take(0).is_empty(),
         "stale menu action must not reverse intent"
     );
-    toggle();
+    delegate.menuDidClose(&menu);
     assert!(!is_visible());
 
-    open();
-    assert!(confirm.isHidden());
-    click(ROUTE);
-    assert!(!confirm.isHidden() && confirm.isEnabled());
-    click(ROUTE_CONFIRM);
-    assert!(!is_visible() && !row(STOP).isEnabled());
+    delegate.menuNeedsUpdate(&menu);
+    assert!(confirm.isEnabled());
+    click(&route, &confirm);
+    assert!(!row(STOP).isEnabled());
+    click(&menu, &row(STOP));
     assert_eq!(
         take(1),
         [Action::Route(RouteToken {
@@ -474,16 +445,12 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     );
     reject_queued(mtm, 0, "操作未完成：隔离检验".into());
     assert!(row(STOP).isEnabled());
-    assert!(label(DETAIL)
-        .stringValue()
-        .to_string()
-        .contains("操作未完成"));
+    assert!(row(DETAIL).title().to_string().contains("操作未完成"));
 
     changed.serial = 4;
     changed.action_serial = 1;
     update_controls(mtm, changed.clone());
-    open();
-    click(TUN);
+    click(&menu, &row(TUN));
     assert_eq!(take(1), [Action::Tun(false)]);
     let mut pending = changed.clone();
     pending.serial = 5;
@@ -491,10 +458,7 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     pending.busy = Some("stopping");
     update_controls(mtm, pending);
     assert!(!row(REFRESH).isEnabled());
-    assert!(label(STATUS_ROW)
-        .stringValue()
-        .to_string()
-        .contains("正在关闭代理"));
+    assert!(row(STATUS_ROW).title().to_string().contains("正在关闭代理"));
     let mut stopped = changed;
     stopped.serial = 6;
     stopped.action_serial = 3;
@@ -504,26 +468,24 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     stopped.can_stop = false;
     update_controls(mtm, stopped.clone());
     assert!(row(START).isEnabled() && !row(STOP).isEnabled());
-    open();
-    click(START);
+    click(&menu, &row(START));
     assert_eq!(take(1), [Action::Start]);
     stopped.serial = 7;
     stopped.action_serial = 4;
     update_controls(mtm, stopped);
-    for (tag, action) in [
-        (REFRESH, Action::Refresh),
-        (ROUTE_SETTINGS, Action::OpenRoute),
-        (OPEN, Action::OpenWindow),
-        (QUIT, Action::Quit),
-    ] {
-        open();
-        if tag == ROUTE_SETTINGS {
-            click(ROUTE);
-        }
-        click(tag);
-        assert!(!panel.isVisible() && !is_visible());
-        assert_eq!(take(1), [action]);
-    }
+    click(&menu, &row(REFRESH));
+    click(&route, &route.itemWithTag(ROUTE_SETTINGS).unwrap());
+    click(&menu, &row(OPEN));
+    click(&menu, &row(QUIT));
+    assert_eq!(
+        take(4),
+        [
+            Action::Refresh,
+            Action::OpenRoute,
+            Action::OpenWindow,
+            Action::Quit
+        ]
+    );
     let previous_locale = i18n::active();
     i18n::activate(i18n::resolve_preference("en"));
     refresh_locale(mtm);
@@ -531,17 +493,16 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     i18n::activate(i18n::resolve_preference("ar"));
     refresh_locale(mtm);
     assert_eq!(
-        content.userInterfaceLayoutDirection(),
+        menu.userInterfaceLayoutDirection(),
         objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft
     );
     assert_eq!(row(OPEN).title().to_string(), "فتح النافذة الرئيسية");
     i18n::activate(previous_locale);
     uninstall(mtm);
     assert!(!is_visible());
-    assert!(test_panel().is_none());
     assert!(with_item(mtm, |_, _, _| ()).is_none());
     uninstall(mtm);
-    println!("native NSPanel: ownership, localized rows, shared readback, stale intents, queued actions and exact dispatch passed");
+    println!("native NSMenu: native ownership, rows, shared readback, stale intents, queued actions, AppKit delegation, and exact dispatch passed");
 }
 
 /// Disposable real WindowServer host; no product AppStorage or proxy runs.
