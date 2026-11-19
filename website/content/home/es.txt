@@ -1,0 +1,60 @@
+Serylane — Cliente proxy de escritorio de código abierto con Mihomo
+Cliente proxy de escritorio para Windows, macOS y Linux. Gestiona suscripciones, nodos y reglas, y consulta conexiones y diagnósticos.
+13	CLIENTE PROXY DE ESCRITORIO DE CÓDIGO ABIERTO
+14	Tu red.
+15	Tus reglas.
+16	Importa tu configuración y elige tus rutas.
+17	Consulta lo que ocurre.
+18	Con Mihomo, para tu escritorio.
+19	Descargar Serylane
+20	Ver en GitHub
+25	Tu configuración
+26	Selección manual de nodos
+27	Enrutamiento por reglas
+29	Desactivado por defecto
+30	Esquema conceptual; no es tráfico en directo
+32	01 / TÚ TIENES EL CONTROL
+33	Tú decides.
+34	Los detalles
+35	quedan a la vista.
+36	Ver el proceso
+38	GESTIONAR
+39	Conoce tu configuración.
+40	Consulta el consumo, la caducidad y el estado de actualización de tus suscripciones.
+42	CONFIGURAR
+43	Define límites claros.
+44	Elige tus salidas. Activa el enrutamiento por dominio solo si lo necesitas.
+46	OBSERVAR
+47	Comprueba cada paso.
+48	Accede a conexiones, registros y resultados de diagnóstico paso a paso.
+49	El enrutamiento por dominio está desactivado por defecto. Guardar y aplicar la configuración son pasos distintos.
+50	Tecnología y licencia
+51	Núcleo Mihomo
+54	02 / PARA TU ESCRITORIO
+55	Elige tu
+56	sistema.
+57	El paquete adecuado.
+58	Un centro de descargas.
+59	Verifica tu descarga
+67	Chip de Apple (serie M)
+73	La versión estable más reciente se comprueba al descargar. Si no está disponible, vuelve a intentarlo.
+75	En Mac, consulta el menú Apple → Acerca de este Mac. Para la serie M, elige Chip de Apple; para procesadores Intel, elige Intel.
+76	Cada enlace comprueba la versión estable y la arquitectura en el centro de descargas. Los enlaces funcionan sin JavaScript.
+77	Todas las versiones y sumas de verificación
+78	Registro de cambios
+79	03 / ANTES DE EMPEZAR
+80	Preguntas
+81	frecuentes.
+82	¿Incluye nodos o suscripciones?
+83	No. Serylane es un cliente de escritorio, no un servicio proxy. Usa tu propia suscripción o configuración local de Mihomo.
+84	¿Activa el enrutamiento o conecta Codex automáticamente?
+85	No. El enrutamiento por dominio es opcional y está desactivado por defecto. Elige las herramientas y la salida, guarda el borrador y aplícalo expresamente. Las nuevas integraciones con Codex y el proxy por aplicación están desactivados.
+86	Leer la guía de enrutamiento
+87	¿Está TUN disponible en todas las plataformas?
+88	En macOS, TUN requiere un instalador completo firmado con Developer ID y notarizado por Apple. La versión v0.7.45 corrige registros antiguos del servicio auxiliar. TUN en Windows es experimental y requiere permisos de administrador. En Linux no está implementado. Cambiar de nodo no reanuda un flujo interrumpido.
+89	Límites por plataforma
+90	Claro.
+91	Bajo tu control.
+92	Navegación al pie de página
+96	GPL-3.0-only · Proyecto independiente de Mihomo, Clash y OpenAI.
+97	Usa tus propios nodos o suscripción.

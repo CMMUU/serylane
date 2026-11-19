@@ -1,0 +1,60 @@
+Serylane — Cliente proxy de código aberto com Mihomo
+Cliente proxy de desktop para Windows, macOS e Linux. Gerencie assinaturas, nós e regras de roteamento e consulte conexões e diagnósticos.
+13	CLIENTE PROXY DE DESKTOP DE CÓDIGO ABERTO
+14	Sua rede.
+15	Suas regras.
+16	Importe suas configurações e escolha suas rotas.
+17	Acompanhe as conexões.
+18	Com Mihomo, feito para seu desktop.
+19	Baixar o Serylane
+20	Ver no GitHub
+25	Suas configurações
+26	Seleção manual de nós
+27	Roteamento por regras
+29	Desativado por padrão
+30	Diagrama conceitual, não é tráfego em tempo real
+32	01 / CONTROLE SUA REDE
+33	Você decide.
+34	Os detalhes
+35	ficam à vista.
+36	Descubra como usar
+38	GERENCIAR
+39	Entenda suas configurações.
+40	Veja o consumo, a validade e o status das atualizações das assinaturas.
+42	CONFIGURAR
+43	Defina os limites.
+44	Escolha as saídas. Ative o roteamento por domínio só quando precisar.
+46	OBSERVAR
+47	Confira cada etapa.
+48	Veja conexões, registros e resultados de diagnóstico.
+49	O roteamento por domínio vem desativado. Salvar e aplicar as configurações são etapas distintas.
+50	Tecnologia e licença
+51	Núcleo Mihomo
+54	02 / PARA SEU DESKTOP
+55	Escolha seu
+56	sistema.
+57	O pacote certo.
+58	Uma central de downloads.
+59	Verificar seu download
+67	Chip da Apple (série M)
+73	A versão estável mais recente é conferida ao baixar. Se estiver indisponível, tente de novo.
+75	No Mac, abra o menu Apple → Sobre Este Mac. Selecione Chip da Apple para a série M ou Intel para processadores Intel.
+76	Cada link verifica a versão estável e a arquitetura na central de downloads. Os links funcionam sem JavaScript.
+77	Todas as versões e somas de verificação
+78	Histórico de alterações
+79	03 / ANTES DE COMEÇAR
+80	Perguntas
+81	frequentes.
+82	Nós e assinaturas estão incluídos?
+83	Não. O Serylane é um cliente de desktop, não um serviço de proxy. Use a sua assinatura ou configuração local do Mihomo.
+84	O roteamento ou a integração com Codex começam automaticamente?
+85	Não. O roteamento por domínio é opcional e vem desativado. Escolha as ferramentas e a saída, salve o rascunho e aplique-o. Novas integrações com o Codex e o proxy por aplicativo estão desativados.
+86	Ler o guia de roteamento
+87	O TUN funciona em todas as plataformas?
+88	No macOS, o TUN exige um instalador completo assinado com Developer ID e autenticado pela Apple. A v0.7.45 corrige registros antigos do serviço auxiliar. No Windows, o TUN é experimental e exige privilégios de administrador. No Linux, não foi implementado. Trocar de nó não retoma um fluxo interrompido.
+89	Limites por plataforma
+90	Claro.
+91	Sob seu controle.
+92	Navegação do rodapé
+96	GPL-3.0-only · Projeto independente de Mihomo, Clash e OpenAI.
+97	Use seus próprios nós ou assinatura.

@@ -5,3 +5,5 @@ node_modules/
 dist/
 worker-configuration.d.ts
 public/build-info.json
+
+.site/

@@ -185,7 +185,7 @@ test('center failures produce retryable 503, no other source and no sensitive de
       assert.match(body, /重试/);
       if (path.startsWith('/download/')) {
         assert.match(reply.headers.get('content-type'), /^text\/html/);
-        assert.match(body, /<html lang="en" data-theme="dark">/);
+        assert.match(body, /<html lang="en" data-theme="system">/);
         assert.match(body, /The download center is temporarily unavailable\./);
         assert.match(body, /No download was started\./);
         assert.match(body, /<section lang="zh-CN"/);

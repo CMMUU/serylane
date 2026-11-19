@@ -8,7 +8,7 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 
 ## 下载与更新
 
-- [官网](https://serylane.cmmuu.com/) · **[下载中心](https://downloads.cmmuu.com/projects/serylane)** · [源码仓库](https://github.com/CMMUU/serylane)
+- [官网](https://serylane.cmmuu.com/) · [使用指南](https://serylane.cmmuu.com/zh/docs/guide/) · **[下载中心](https://downloads.cmmuu.com/projects/serylane)** · [源码仓库](https://github.com/CMMUU/serylane)
 - 官网安装包由下载中心提供。应用内按 GitHub 直连、GitHub 加速代理、经 Serylane 本地代理访问 GitHub、下载中心的顺序检查正式版。检查结果显示本次更新来源。
 - Windows、macOS、Linux 各提供 x64 / ARM64 入口；macOS 请区分 **Intel 芯片（x64）** 与 **Apple 芯片（M 系列，ARM64）**。
 - 自动检查开启时，应用在启动后于后台检查。发现新版本时，点击右下角卡片或侧栏版本号红点，进入「设置 → 软件更新」的下载操作。官网每次点击安装包都会核对下载中心的当前发行。
