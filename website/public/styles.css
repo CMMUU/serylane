@@ -485,3 +485,30 @@ html[data-motion="paused"] .route-flow { animation-play-state: paused; }
   [data-site-locale] .header-controls { order: 3; flex-basis: 100%; justify-content: space-between; margin: 0; }
   .language-current { max-inline-size: none; }
 }
+
+/* The Traditional Chinese docs index: chapters, article, then GitHub feedback. */
+.docs-feedback-main { max-width: 1280px; }
+.docs-feedback-layout { display: grid; grid-template-columns: minmax(145px, 190px) minmax(0, 1fr) minmax(238px, 292px);
+  align-items: start; gap: clamp(20px, 3vw, 38px); }
+.docs-feedback-layout .chapter-nav { position: sticky; top: 18px; }
+.docs-feedback-layout .chapter-nav a[aria-current="location"] { font-weight: 700; }
+.docs-feedback-layout .chapter-content > section:first-child > h2 { margin-top: 0; }
+.docs-comments { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-wrap: anywhere; }
+.docs-comments h2#docs-comments-title { margin: 0 0 9px; font-size: 17px; letter-spacing: 0; }
+.docs-comments > p { margin: 0 0 12px; font-size: 13px; }
+.docs-comments .comments-thread { display: inline-flex; min-height: 40px; margin-block-end: 13px; }
+.docs-comments .comments-status { color: var(--muted); font-size: 12px; }
+.docs-comments .comments-status:last-child, .docs-comments .comments-list:last-child { margin-block-end: 0; }
+.docs-comments .comments-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 11px; }
+.docs-comments .comments-list li { margin: 0; border-block-start: 1px solid var(--line-soft); padding-block-start: 9px; }
+.docs-comments .comment-meta { display: flex; gap: 4px 10px; flex-wrap: wrap; align-items: baseline; justify-content: space-between; font-size: 12px; }
+.docs-comments .comments-list p { margin: 4px 0 0; font-size: 13px; white-space: pre-wrap; }
+@media (max-width: 960px) {
+  .docs-feedback-layout { grid-template-columns: minmax(126px, 175px) minmax(0, 1fr); }
+  .docs-feedback-layout .docs-comments { grid-column: 2; }
+}
+@media (max-width: 640px) {
+  .docs-feedback-layout { grid-template-columns: minmax(0, 1fr); }
+  .docs-feedback-layout .chapter-nav { position: static; }
+  .docs-feedback-layout .docs-comments { grid-column: 1; }
+}
