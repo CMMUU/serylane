@@ -261,105 +261,19 @@ test('archive HEAD must confirm exact size and non-HTML file, with no redirects'
   }
 });
 
-test('only the fixed public GitHub thread is read; previews are bounded and share the edge cache', async () => {
-  const path = '/api/docs/comments';
-  const sampleDate = '2026-11-20T01:00:00Z';
-  const cached = new Map();
-  const background = [];
-  const edge = {
-    cache: {
-      match: async key => cached.get(key)?.clone(),
-      put: async (key, result) => { cached.set(key, result); },
-    },
-    waitUntil: task => background.push(task),
-  };
-  let reads = 0;
-  let proceed;
-  const wait = new Promise(resolve => { proceed = resolve; });
-  const fetcher = async (url, init) => {
-    reads++;
-    assert.equal(url, 'https://api.github.com/repos/CMMUU/serylane/issues/54/comments?per_page=6');
-    assert.equal(init.redirect, 'manual');
-    assert.equal(init.headers.Accept, 'application/vnd.github.text+json');
-    assert.equal(init.headers.Authorization, undefined);
-    assert.equal(init.headers.Cookie, undefined);
-    await wait;
-    return Response.json([
-      { id: 115, user: { login: 'docs-fixture' }, body_text: '<strong>字詞</strong>', created_at: sampleDate },
-      { id: 116, user: null, body_text: '說'.repeat(450), created_at: sampleDate },
-    ]);
-  };
-  const first = handle(new Request('https://serylane.cmmuu.com' + path, {
-    headers: { Authorization: 'Bearer fixture', Cookie: 'fixture=ignored' },
-  }), env, fetcher, edge);
-  const concurrent = handle(request(path), env, fetcher, edge);
-  proceed();
-  const [response, second] = await Promise.all([first, concurrent]);
-  assert.equal(reads, 1);
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get('cache-control'), /max-age=300/);
-  const payload = await response.json();
-  assert.deepEqual(await second.json(), payload);
-  assert.deepEqual(payload.comments[0], {
-    id: 115, author: 'docs-fixture', text: '<strong>字詞</strong>', createdAt: '2026-11-20T01:00:00.000Z',
-  });
-  assert.equal(payload.comments[1].text, '說'.repeat(420) + '…');
-  assert.equal(payload.comments[1].author, 'ghost');
-  await Promise.all(background);
-  const head = await handle(request('/api/docs/zh-hant/comments', 'HEAD'), env, fetcher, edge);
-  assert.equal(await head.text(), '');
-  assert.equal(head.status, 200);
-  assert.equal(reads, 1, 'The legacy alias shares the same thread and edge cache');
-});
-
-test('docs comment preview handles empty, upstream errors, and requests outside the fixed read contract', async () => {
-  const path = '/api/docs/comments';
-  const noFetch = () => assert.fail('A rejected comment request must not contact GitHub');
-  const post = await handle(request(path, 'POST'), env, noFetch);
-  assert.equal(post.status, 405);
-  assert.equal(post.headers.get('allow'), 'GET, HEAD');
-  assert.equal((await handle(request(path + '?page=2'), env, noFetch)).status, 400);
-  assert.equal((await handle(request(path + '/extra'), env, noFetch)).status, 404);
-  const empty = await handle(request(path), env, async () => Response.json([]));
-  assert.deepEqual(await empty.json(), { comments: [] });
-  for (const fetcher of [
-    async () => new Response(null, { status: 429 }),
-    async () => Response.redirect('https://example.test/unrelated'),
-    async () => new Response('too big', { headers: { 'Content-Length': '1048577' } }),
-    async () => Response.json({ invalid: true }),
-    async () => Response.json([{ id: undefined, body: 'unrecognized' }]),
-  ]) {
-    const failure = await handle(request(path), env, fetcher);
-    assert.equal(failure.status, 503);
-    assert.equal(failure.headers.get('cache-control'), 'no-store');
-    assert.deepEqual(await failure.json(), { error: 'COMMENTS_UNAVAILABLE' });
-  }
-});
-
-test('long discussions use the last limited page without following an upstream URL', async () => {
-  const calls = [];
-  const result = await handle(request('/api/docs/comments'), env, async (url, options) => {
-    calls.push([url, options.signal]);
-    if (calls.length === 1) return Response.json([], {
-      headers: { Link: '<https://api.github.com/repositories/42/issues/54/comments?per_page=6&page=3>; rel="last"' },
-    });
-    return Response.json([{ id: 12, user: { login: 'contributor' }, body_text: '更新說明', created_at: '2026-11-20T01:00:00Z' }]);
-  });
-  assert.equal(result.status, 200);
-  assert.equal((await result.json()).comments[0].id, 12);
-  assert.deepEqual(calls.map(call => call[0]), [
-    'https://api.github.com/repos/CMMUU/serylane/issues/54/comments?per_page=6',
-    'https://api.github.com/repos/CMMUU/serylane/issues/54/comments?per_page=6&page=3',
-  ]);
-  assert.equal(calls[0][1], calls[1][1], 'One timeout covers both requests');
-});
-
-
-test('a deleted or inaccessible feedback thread is distinguished from a temporary failure', async () => {
-  for (const status of [404, 410]) {
-    const res = await handle(request('/api/docs/comments'), env, async () => new Response(null, { status }));
-    assert.equal(res.status, 410);
-    assert.deepEqual(await res.json(), { error: 'THREAD_UNAVAILABLE' });
-    assert.equal(res.headers.get('cache-control'), 'no-store');
+test('retired comment routes return no-store 404 without contacting GitHub or the edge cache', async () => {
+  const noFetch = () => assert.fail('Retired comments must not make any upstream request');
+  const unusedCache = () => assert.fail('Retired comments must not read or update the edge cache');
+  const edge = { cache: { match: unusedCache, put: unusedCache }, waitUntil: unusedCache };
+  for (const base of ['/api/docs/comments', '/api/docs/zh-hant/comments']) {
+    for (const path of [base, base + '?page=2', base + '/']) {
+      for (const method of ['GET', 'HEAD', 'POST']) {
+        const reply = await handle(request(path, method), env, noFetch, edge);
+        assert.equal(reply.status, 404, method + ' ' + path);
+        assert.match(reply.headers.get('cache-control'), /no-store/);
+        if (method === 'HEAD') assert.equal(await reply.text(), '');
+        else assert.deepEqual(await reply.json(), { error: 'NOT_FOUND' });
+      }
+    }
   }
 });

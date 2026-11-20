@@ -30,7 +30,7 @@ test('static byte proof includes every canonical locale page and shared theme re
   assert.equal(contentRoutes.size, 66);
   for (const page of contentRoutes.keys()) assert.ok(Object.hasOwn(STATIC_ASSETS, page));
   assert.ok(Object.hasOwn(STATIC_ASSETS, '/language.js'));
-  assert.ok(Object.hasOwn(STATIC_ASSETS, '/docs-comments.js'));
+  assert.ok(!Object.hasOwn(STATIC_ASSETS, '/docs-comments.js'));
   assert.ok(Object.hasOwn(STATIC_ASSETS, '/theme.js'));
   assert.ok(Object.hasOwn(STATIC_ASSETS, '/assets/serylane-mark.png'));
   assert.ok(!Object.keys(STATIC_ASSETS).some(path => /index\.html|\/404/.test(path)));
