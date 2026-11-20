@@ -56,6 +56,8 @@ extern "C" {
     pub fn xpc_dictionary_get_uint64(dictionary: XpcObject, key: *const c_char) -> u64;
     pub fn xpc_dictionary_set_bool(dictionary: XpcObject, key: *const c_char, value: bool);
     pub fn xpc_dictionary_get_bool(dictionary: XpcObject, key: *const c_char) -> bool;
+    pub fn xpc_dictionary_set_fd(dictionary: XpcObject, key: *const c_char, fd: libc::c_int);
+    pub fn xpc_dictionary_dup_fd(dictionary: XpcObject, key: *const c_char) -> libc::c_int;
     pub fn xpc_dictionary_set_data(
         dictionary: XpcObject,
         key: *const c_char,

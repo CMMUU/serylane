@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.49 - 2026-11-20
+
+- Hot-switch between System Proxy and TUN on macOS after the approved helper prepares a TUN interface. Keep the same ordinary-user core and local ports through both directions.
+- Apply System Proxy settings together and restore the previous route and proxy settings if activation fails.
+- Complete TUN startup when the first general connectivity probe succeeds. Finish optional diagnostics in the background.
+
 ## 0.7.48 - 2026-11-20
 
 - Restore the standard AppKit status menu with macOS appearance, checkmarks and dismissal for icon-only and traffic status items.

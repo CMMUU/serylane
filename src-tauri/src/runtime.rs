@@ -12,7 +12,10 @@ use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+#[cfg(not(target_os = "macos"))]
 use std::net::TcpListener;
+#[cfg(target_os = "macos")]
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 #[cfg(not(windows))]
 use std::process::Child;
@@ -97,11 +100,113 @@ pub struct MihomoRuntime {
     tun_heartbeat_state: Arc<Mutex<HeartbeatState>>,
     #[cfg(target_os = "macos")]
     tun_ports: Mutex<Option<TunPorts>>,
+    #[cfg(target_os = "macos")]
+    device_config: Mutex<Option<serde_yaml::Value>>,
+    #[cfg(target_os = "macos")]
+    device_proxy_owned: AtomicBool,
 }
 
 impl MihomoRuntime {
     pub fn start(&self, app: &AppHandle, source: &str) -> AppResult<RuntimeStatus> {
-        self.start_attempt(|| self.start_process(app, source))
+        self.start_attempt(|| {
+            self.start_process(
+                app,
+                source,
+                #[cfg(target_os = "macos")]
+                None,
+            )
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn start_with_device(
+        &self,
+        app: &AppHandle,
+        source: &str,
+        tun_source: &str,
+    ) -> AppResult<RuntimeStatus> {
+        let base: serde_yaml::Value = serde_yaml::from_str(tun_source)
+            .map_err(|error| AppError::Config(error.to_string()))?;
+        let mut device = base
+            .get("tun")
+            .cloned()
+            .filter(serde_yaml::Value::is_mapping)
+            .ok_or_else(|| AppError::Config("缺少 TUN 配置".into()))?;
+        let ipv6 = device
+            .get("inet6-address")
+            .and_then(serde_yaml::Value::as_sequence)
+            .is_some_and(|addresses| !addresses.is_empty());
+        device["stack"] = serde_yaml::Value::String("gvisor".into());
+        device["auto-route"] = serde_yaml::Value::Bool(false);
+        self.start_attempt(|| {
+            let lease = new_tun_lease();
+            let descriptor = tun_service::open_device(&lease, ipv6).map_err(AppError::Platform)?;
+            device["file-descriptor"] = serde_yaml::Value::Number(descriptor.as_raw_fd().into());
+            let result = with_device_config(source, &device)
+                .and_then(|yaml| self.start_process(app, &yaml, Some(&descriptor)));
+            let status = match result {
+                Ok(status) => status,
+                Err(error) => {
+                    let _ = tun_service::stop_lease(&lease);
+                    return Err(error);
+                }
+            };
+            *lock(&self.tun_lease, "tun lease")? = Some(lease.clone());
+            *lock(&self.device_config, "delegated device config")? = Some(device);
+            self.start_tun_heartbeat(lease);
+            if let Err(error) = self.set_device_route(false) {
+                self.stop(Some(app))?;
+                return Err(error);
+            }
+            Ok(status)
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn device_config(&self) -> Option<serde_yaml::Value> {
+        self.device_config.lock().ok()?.clone()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn device_descriptor(&self) -> Option<i64> {
+        self.device_config
+            .lock()
+            .ok()?
+            .as_ref()?
+            .get("file-descriptor")?
+            .as_i64()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn set_device_route(&self, enabled: bool) -> AppResult<()> {
+        let pid = self
+            .running_identity()
+            .map(|identity| identity.0)
+            .ok_or_else(|| AppError::Runtime("TUN 核心未运行".into()))?;
+        let lease = lock(&self.tun_lease, "tun lease")?
+            .clone()
+            .ok_or_else(|| AppError::Runtime("TUN 会话已失效".into()))?;
+        tun_service::set_device_route(&lease, pid, enabled).map_err(AppError::Platform)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn device_proxy_owned(&self) -> bool {
+        self.device_proxy_owned.load(Ordering::Acquire)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn set_device_proxy(&self, proxy: Option<(u16, &str)>) -> AppResult<()> {
+        let lease = lock(&self.tun_lease, "tun lease")?
+            .clone()
+            .ok_or_else(|| AppError::Runtime("TUN 会话已失效".into()))?;
+        if proxy.is_some() {
+            self.device_proxy_owned.store(true, Ordering::Release);
+        }
+        tun_service::set_device_proxy(&lease, proxy).map_err(AppError::Platform)?;
+        if proxy.is_none() {
+            self.device_proxy_owned.store(false, Ordering::Release);
+        }
+        Ok(())
     }
 
     fn start_attempt<T>(&self, operation: impl FnOnce() -> AppResult<T>) -> AppResult<T> {
@@ -144,7 +249,12 @@ impl MihomoRuntime {
         result
     }
 
-    fn start_process(&self, app: &AppHandle, source: &str) -> AppResult<RuntimeStatus> {
+    fn start_process(
+        &self,
+        app: &AppHandle,
+        source: &str,
+        #[cfg(target_os = "macos")] descriptor: Option<&OwnedFd>,
+    ) -> AppResult<RuntimeStatus> {
         let binary = resolve_binary(Some(app))
             .ok_or_else(|| AppError::Runtime("未找到 Mihomo sidecar".to_string()))?;
         preflight_ports(source)?;
@@ -167,6 +277,14 @@ impl MihomoRuntime {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(target_os = "macos")]
+        if let Some(descriptor) = descriptor {
+            use std::os::unix::process::CommandExt;
+            let raw = descriptor.as_raw_fd();
+            unsafe {
+                command.pre_exec(move || inherit_device(raw));
+            }
+        }
         // Timestamp the run before the core can emit any startup diagnostics.
         let started_at = Utc::now();
         let mut child = spawn_core_command(&mut command, None, Purpose::Runtime)
@@ -217,15 +335,11 @@ impl MihomoRuntime {
             return Err(AppError::Platform(helper.message));
         }
         let ports = preflight_ports(source)?;
+        #[cfg(not(target_os = "macos"))]
         validate_source(app, source)?;
         self.set_phase(RuntimePhase::Starting);
 
-        let mut lease_bytes = [0_u8; 32];
-        rand::rng().fill_bytes(&mut lease_bytes);
-        let lease = lease_bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let lease = new_tun_lease();
         let started_at = Utc::now();
         let started = tun_service::start(source, &lease)?;
         let config_path = PathBuf::from(&started.config_path);
@@ -267,6 +381,11 @@ impl MihomoRuntime {
         }
         self.set_phase(RuntimePhase::Stopping);
         self.stop_tun_heartbeat();
+        #[cfg(target_os = "macos")]
+        {
+            lock(&self.device_config, "delegated device config")?.take();
+            self.device_proxy_owned.store(false, Ordering::Release);
+        }
         let lease = lock(&self.tun_lease, "tun lease")?.take();
         #[cfg(target_os = "macos")]
         let had_lease = lease.is_some();
@@ -512,7 +631,7 @@ impl MihomoRuntime {
     }
 
     fn is_running(&self) -> AppResult<bool> {
-        if lock(&self.tun_lease, "tun lease")?.is_some()
+        if lock(&self.tun_pid, "tun pid")?.is_some()
             && self
                 .tun_heartbeat_state
                 .lock()
@@ -610,6 +729,48 @@ impl MihomoRuntime {
             }
         }
     }
+}
+
+#[cfg(not(windows))]
+fn new_tun_lease() -> String {
+    let mut lease_bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut lease_bytes);
+    lease_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn inherit_device(raw: RawFd) -> std::io::Result<()> {
+    if unsafe { libc::fcntl(raw, libc::F_SETFD, 0) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn with_device_config(source: &str, device: &serde_yaml::Value) -> AppResult<String> {
+    let mut root: serde_yaml::Value =
+        serde_yaml::from_str(source).map_err(|error| AppError::Config(error.to_string()))?;
+    let ipv6 = root
+        .get("ipv6")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(true);
+    let configured_ipv6 = device
+        .get("inet6-address")
+        .and_then(serde_yaml::Value::as_sequence)
+        .is_some_and(|addresses| !addresses.is_empty());
+    if ipv6 != configured_ipv6 {
+        return Err(AppError::Conflict(
+            "配置的 IPv6 设置已变化，请停止代理后重新应用配置".into(),
+        ));
+    }
+    let mapping = root
+        .as_mapping_mut()
+        .ok_or_else(|| AppError::Config("配置根节点必须是 YAML 对象".into()))?;
+    mapping.insert(serde_yaml::Value::String("tun".into()), device.clone());
+    serde_yaml::to_string(&root).map_err(|error| AppError::Config(error.to_string()))
 }
 
 static VERSION_CACHE: OnceLock<crate::binary_probe::ProbeCache> = OnceLock::new();
@@ -868,7 +1029,50 @@ fn preflight_ports(source: &str) -> AppResult<ProxyPorts> {
 }
 
 fn bind_local_port(port: u16) -> std::io::Result<()> {
-    TcpListener::bind(("127.0.0.1", port)).map(drop)
+    #[cfg(not(target_os = "macos"))]
+    return TcpListener::bind(("127.0.0.1", port)).map(drop);
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::FromRawFd;
+        let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, libc::IPPROTO_TCP) };
+        if socket < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(socket) };
+        let reuse: libc::c_int = 1;
+        let address = libc::sockaddr_in {
+            sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,
+            sin_family: libc::AF_INET as u8,
+            sin_port: port.to_be(),
+            sin_addr: libc::in_addr {
+                s_addr: libc::INADDR_LOOPBACK.to_be(),
+            },
+            sin_zero: [0; 8],
+        };
+        let raw = fd.as_raw_fd();
+        // Match Mihomo's macOS TCP listener options for same-owner restarts.
+        // SO_REUSEPORT is deliberately absent, so a live listener still fails.
+        if unsafe {
+            libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC) < 0
+                || libc::setsockopt(
+                    raw,
+                    libc::SOL_SOCKET,
+                    libc::SO_REUSEADDR,
+                    (&reuse as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&reuse) as u32,
+                ) < 0
+                || libc::bind(
+                    raw,
+                    (&address as *const libc::sockaddr_in).cast(),
+                    address.sin_len.into(),
+                ) < 0
+                || libc::listen(raw, 1) < 0
+        } {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 
 fn port_startup_error(label: &str, port: u16, error: std::io::Error) -> AppError {

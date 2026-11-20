@@ -297,6 +297,29 @@ pub async fn acquire_manual_configuration(
     wait_for_manual_configuration(restoring, || crate::user_rules::acquire_configuration(app)).await
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) async fn acquire_mode_configuration(
+    app: &AppHandle,
+) -> AppResult<crate::user_rules::ConfigurationMutationPermit> {
+    let restoring = app.state::<SessionResumeManager>().cancel_pending(app);
+    if restoring {
+        return wait_for_manual_configuration(true, || {
+            crate::user_rules::acquire_configuration(app)
+        })
+        .await;
+    }
+    // A finished action's diagnostic readback briefly shares this lock.
+    // Bound the wait so a real concurrent write still returns a conflict.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(150);
+    loop {
+        match crate::user_rules::acquire_configuration(app) {
+            Ok(permit) => return Ok(permit),
+            Err(error) if tokio::time::Instant::now() >= deadline => return Err(error),
+            Err(_) => tokio::time::sleep(Duration::from_millis(15)).await,
+        }
+    }
+}
+
 // Privileged TUN preparation may still include two bounded validation passes.
 // Keep enough margin for their cancellation boundary without blocking the UI.
 const MANUAL_WAIT_ATTEMPTS: usize = 1_400;

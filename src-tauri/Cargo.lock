@@ -3752,11 +3752,12 @@ dependencies = [
 
 [[package]]
 name = "serylane"
-version = "0.7.48"
+version = "0.7.49"
 dependencies = [
  "block2",
  "bytes",
  "chrono",
+ "core-foundation",
  "fluent-bundle",
  "fontdue",
  "futures-util",

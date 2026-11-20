@@ -64,6 +64,8 @@ pub struct MihomoApiClient {
     client: reqwest::Client,
     base_url: Url,
     secret: String,
+    #[cfg(target_os = "macos")]
+    device_config: Option<serde_yaml::Value>,
 }
 
 /// The controller transport is not the tested node. Only its documented
@@ -88,6 +90,22 @@ pub enum ProxyWriteState {
 impl MihomoApiClient {
     pub fn new(settings: &AppSettings) -> AppResult<Self> {
         Self::from_endpoint(settings.controller_port, settings.controller_secret.clone())
+    }
+
+    pub(crate) fn for_reload(settings: &AppSettings, _app: &tauri::AppHandle) -> AppResult<Self> {
+        let client = Self::new(settings)?;
+        #[cfg(target_os = "macos")]
+        {
+            use tauri::Manager;
+            Ok(Self {
+                device_config: _app
+                    .state::<crate::runtime::MihomoRuntime>()
+                    .device_config(),
+                ..client
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        Ok(client)
     }
 
     pub fn from_endpoint(controller_port: u16, secret: String) -> AppResult<Self> {
@@ -131,6 +149,8 @@ impl MihomoApiClient {
             client,
             base_url,
             secret,
+            #[cfg(target_os = "macos")]
+            device_config: None,
         })
     }
 
@@ -443,6 +463,15 @@ impl MihomoApiClient {
     }
 
     pub async fn reload_config(&self, payload: &str) -> AppResult<()> {
+        #[cfg(target_os = "macos")]
+        let generated;
+        #[cfg(target_os = "macos")]
+        let payload = if let Some(config) = &self.device_config {
+            generated = crate::runtime::with_device_config(payload, config)?;
+            generated.as_str()
+        } else {
+            payload
+        };
         let mut url = self.path_url(&["configs"])?;
         url.query_pairs_mut().append_pair("force", "true");
         let response = self
