@@ -134,7 +134,20 @@ jobs:
           }
           await verifyMain();
           const active = (await api('/deployments')).deployments[0];
-          const candidate = await api('/versions/' + uploaded);
+          let candidate;
+          for (let attempt = 1; attempt <= 4; attempt++) {
+            try {
+              candidate = await api('/versions/' + uploaded);
+              break;
+            } catch (err) {
+              if (!String(err).includes('100146') || attempt === 4) throw err;
+              const list = await api('/versions?deployable=true');
+              const onList = list.items.some(v => v.id === uploaded && v.annotations?.['workers/message'] === 'Website source ' + source);
+              console.log('Read-only propagation check', attempt, 'candidate listed:', onList);
+              await new Promise(resolve => setTimeout(resolve, 8000));
+            }
+          }
+          assert.ok(candidate, 'Uploaded version is not visible; no activation attempted');
           assert.equal(candidate.id, uploaded);
           assert.equal(candidate.annotations['workers/message'], 'Website source ' + source, 'Uploaded version is not the passing main build');
           const live = await fetch(marker, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
