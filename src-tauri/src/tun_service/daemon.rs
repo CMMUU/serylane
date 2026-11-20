@@ -1,5 +1,7 @@
 use super::codesign;
+use super::device::Device;
 use super::protocol::*;
+use super::proxy_preferences::ProxyLease;
 use super::xpc::*;
 use super::TunRuntimeLog;
 use block2::RcBlock;
@@ -9,6 +11,7 @@ use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -37,6 +40,7 @@ struct RuntimeSnapshot {
 
 struct HelperRuntime {
     child: Option<Child>,
+    delegated: Option<DelegatedTun>,
     owner_uid: Option<u32>,
     lease: Option<String>,
     last_heartbeat: Option<Instant>,
@@ -50,6 +54,7 @@ impl Default for HelperRuntime {
     fn default() -> Self {
         Self {
             child: None,
+            delegated: None,
             owner_uid: None,
             lease: None,
             last_heartbeat: None,
@@ -58,6 +63,63 @@ impl Default for HelperRuntime {
             last_error: None,
             logs: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+}
+
+struct DelegatedTun {
+    device: Device,
+    process: Option<CoreIdentity>,
+    proxy: ProxyLease,
+}
+
+#[derive(PartialEq, Eq)]
+struct CoreIdentity {
+    pid: u32,
+    uid: u32,
+    start: (u64, u64),
+}
+
+impl CoreIdentity {
+    fn from_pid(pid: u32) -> Option<Self> {
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::proc_pidinfo(
+                pid as i32,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        (result == size).then_some(Self {
+            pid,
+            uid: info.pbi_uid,
+            start: (info.pbi_start_tvsec, info.pbi_start_tvusec),
+        })
+    }
+
+    fn validate(pid: u32, uid: u32) -> Result<Self, String> {
+        let identity = Self::from_pid(pid)
+            .filter(|identity| identity.uid == uid)
+            .ok_or("TUN 核心进程身份无法确认")?;
+        let mut path = [0u8; 4096];
+        let length =
+            unsafe { libc::proc_pidpath(pid as i32, path.as_mut_ptr().cast(), path.len() as u32) };
+        if length <= 0 {
+            return Err("TUN 核心路径无法确认".into());
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let end = path
+            .iter()
+            .position(|&value| value == 0)
+            .unwrap_or(path.len());
+        let observed = Path::new(std::ffi::OsStr::from_bytes(&path[..end]));
+        let expected = codesign::sibling_executable(CORE_BINARY_NAME)?;
+        if observed != expected || Self::from_pid(pid).as_ref() != Some(&identity) {
+            return Err("TUN 核心不属于当前签名应用".into());
+        }
+        Ok(identity)
     }
 }
 
@@ -144,7 +206,33 @@ unsafe fn handle_request(event: XpcObject) {
     };
     let operation = read_cstr(event, KEY_OP).unwrap_or(c"");
 
-    let result = if operation == OP_STATUS {
+    let result = if operation == OP_OPEN_DEVICE {
+        read_operation_lease(event).and_then(|lease| {
+            let ipv6 = xpc_dictionary_get_bool(event, KEY_IPV6.as_ptr());
+            let fd = runtime_open_device(uid, lease, ipv6)?;
+            xpc_dictionary_set_fd(reply, KEY_DEVICE_FD.as_ptr(), fd.as_raw_fd());
+            runtime_status(uid).map(|snapshot| (snapshot, None))
+        })
+    } else if operation == OP_SET_DEVICE_ROUTE {
+        read_operation_lease(event).and_then(|lease| {
+            let raw_pid = xpc_dictionary_get_uint64(event, KEY_PID.as_ptr());
+            let pid = u32::try_from(raw_pid)
+                .ok()
+                .filter(|&pid| pid > 1 && pid <= i32::MAX as u32)
+                .ok_or("无效的 TUN 核心 PID")?;
+            let enabled = xpc_dictionary_get_bool(event, KEY_RUNNING.as_ptr());
+            runtime_set_device_route(uid, &lease, pid, enabled)?;
+            runtime_status(uid).map(|snapshot| (snapshot, None))
+        })
+    } else if operation == OP_SET_DEVICE_PROXY {
+        read_operation_lease(event).and_then(|lease| {
+            let port = u16::try_from(xpc_dictionary_get_uint64(event, KEY_PROXY_PORT.as_ptr()))
+                .map_err(|_| "无效的系统代理端口")?;
+            let service = read_string(event, KEY_PROXY_SERVICE).unwrap_or_default();
+            runtime_set_device_proxy(uid, &lease, port, &service)?;
+            runtime_status(uid).map(|snapshot| (snapshot, None))
+        })
+    } else if operation == OP_STATUS {
         runtime_status(uid).map(|snapshot| (snapshot, None))
     } else if operation == OP_PREPARE {
         read_config(event).and_then(|config| {
@@ -212,9 +300,70 @@ fn runtime_prepare(uid: u32, source: &[u8]) -> Result<(), String> {
     prepare_locked(&mut guard, uid, source)
 }
 
+unsafe fn read_operation_lease(event: XpcObject) -> Result<String, String> {
+    let lease = read_string(event, KEY_LEASE).ok_or("缺少 TUN 运行 lease")?;
+    validate_lease(&lease)?;
+    Ok(lease)
+}
+
+fn runtime_open_device(uid: u32, lease: String, ipv6: bool) -> Result<OwnedFd, String> {
+    let mut guard = runtime().lock().map_err(|_| "TUN Helper 运行时锁损坏")?;
+    guard.refresh_child();
+    ensure_prepare_allowed(guard.has_session(), guard.owner_uid, uid)?;
+    let device = Device::open(ipv6)?;
+    let fd = device.descriptor().map_err(|error| error.to_string())?;
+    guard.delegated = Some(DelegatedTun {
+        device,
+        process: None,
+        proxy: ProxyLease::default(),
+    });
+    guard.owner_uid = Some(uid);
+    guard.lease = Some(lease);
+    guard.last_heartbeat = Some(Instant::now());
+    guard.last_error = None;
+    Ok(fd)
+}
+
+fn runtime_set_device_route(uid: u32, lease: &str, pid: u32, enabled: bool) -> Result<(), String> {
+    let mut guard = runtime().lock().map_err(|_| "TUN Helper 运行时锁损坏")?;
+    guard.refresh_child();
+    if !owns_lease(guard.owner_uid, guard.lease.as_deref(), uid, lease) {
+        return Err("TUN lease 已失效".into());
+    }
+    let state = guard.delegated.as_mut().ok_or("TUN 接口尚未准备")?;
+    let process = CoreIdentity::validate(pid, uid)?;
+    if state
+        .process
+        .as_ref()
+        .is_some_and(|current| current != &process)
+    {
+        return Err("TUN 会话所用的核心已经变化".into());
+    }
+    state.process = Some(process);
+    state.device.set_active(enabled)
+}
+
+fn runtime_set_device_proxy(uid: u32, lease: &str, port: u16, service: &str) -> Result<(), String> {
+    let mut guard = runtime().lock().map_err(|_| "TUN Helper 运行时锁损坏")?;
+    guard.refresh_child();
+    if !owns_lease(guard.owner_uid, guard.lease.as_deref(), uid, lease) {
+        return Err("TUN lease 已失效".into());
+    }
+    let state = guard
+        .delegated
+        .as_mut()
+        .filter(|state| state.process.is_some())
+        .ok_or("TUN 接口所用的核心尚未就绪")?;
+    if port == 0 {
+        state.proxy.restore()
+    } else {
+        state.proxy.enable(port, service)
+    }
+}
+
 fn prepare_locked(guard: &mut HelperRuntime, uid: u32, source: &[u8]) -> Result<(), String> {
     guard.refresh_child();
-    ensure_prepare_allowed(guard.child.is_some(), guard.owner_uid, uid)?;
+    ensure_prepare_allowed(guard.has_session(), guard.owner_uid, uid)?;
     let directory = secure_runtime_directory(uid)?;
     seed_runtime_assets(uid, &directory)?;
     let core = stage_core(&directory)?;
@@ -301,7 +450,7 @@ fn runtime_heartbeat(uid: u32, lease: &str) -> Result<(), String> {
         .lock()
         .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
     guard.refresh_child();
-    if guard.child.is_none() {
+    if !guard.has_session() {
         return Err(guard
             .last_error
             .clone()
@@ -319,9 +468,10 @@ fn runtime_stop(uid: u32) -> Result<(), String> {
         .lock()
         .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
     guard.refresh_child();
-    if guard.child.is_some() && guard.owner_uid != Some(uid) {
+    if guard.has_session() && guard.owner_uid != Some(uid) {
         return Err("另一个用户正在使用 TUN Helper".to_string());
     }
+    guard.clear_device_routes()?;
     guard.stop_child("应用请求停止 TUN");
     Ok(())
 }
@@ -331,12 +481,13 @@ fn runtime_stop_lease(uid: u32, lease: &str) -> Result<(), String> {
         .lock()
         .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
     guard.refresh_child();
-    if guard.child.is_none() {
+    if !guard.has_session() {
         return Ok(());
     }
     if !owns_lease(guard.owner_uid, guard.lease.as_deref(), uid, lease) {
         return Err("TUN 会话已变化，已忽略旧会话的停止请求".to_string());
     }
+    guard.clear_device_routes()?;
     guard.stop_child("拥有该会话的应用请求停止 TUN");
     Ok(())
 }
@@ -360,7 +511,7 @@ fn runtime_status(uid: u32) -> Result<RuntimeSnapshot, String> {
         .lock()
         .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
     guard.refresh_child();
-    if guard.child.is_some() && guard.owner_uid != Some(uid) {
+    if guard.has_session() && guard.owner_uid != Some(uid) {
         return Err("另一个用户正在使用 TUN Helper".to_string());
     }
     Ok(guard.snapshot())
@@ -370,7 +521,7 @@ fn runtime_logs(uid: u32, limit: usize) -> Result<Vec<TunRuntimeLog>, String> {
     let guard = runtime()
         .lock()
         .map_err(|_| "TUN Helper 运行时锁损坏".to_string())?;
-    if guard.child.is_some() && guard.owner_uid != Some(uid) {
+    if guard.has_session() && guard.owner_uid != Some(uid) {
         return Err("另一个用户正在使用 TUN Helper".to_string());
     }
     let logs = guard
@@ -389,10 +540,29 @@ fn runtime_logs(uid: u32, limit: usize) -> Result<Vec<TunRuntimeLog>, String> {
 }
 
 impl HelperRuntime {
+    fn has_session(&self) -> bool {
+        self.child.is_some() || self.delegated.is_some()
+    }
+
+    fn clear_device_routes(&mut self) -> Result<(), String> {
+        if let Some(state) = &mut self.delegated {
+            let proxy = state.proxy.restore();
+            let routes = state.device.set_active(false);
+            proxy?;
+            routes?;
+        }
+        Ok(())
+    }
+
     fn snapshot(&self) -> RuntimeSnapshot {
+        let delegated_pid = self
+            .delegated
+            .as_ref()
+            .filter(|state| state.device.active())
+            .and_then(|state| state.process.as_ref().map(|process| process.pid));
         RuntimeSnapshot {
-            running: self.child.is_some(),
-            pid: self.child.as_ref().map(Child::id),
+            running: self.child.is_some() || delegated_pid.is_some(),
+            pid: self.child.as_ref().map(Child::id).or(delegated_pid),
             version: self.version.clone(),
             config_path: self
                 .config_path
@@ -403,6 +573,14 @@ impl HelperRuntime {
     }
 
     fn refresh_child(&mut self) {
+        if self
+            .delegated
+            .as_ref()
+            .and_then(|state| state.process.as_ref())
+            .is_some_and(|process| CoreIdentity::from_pid(process.pid).as_ref() != Some(process))
+        {
+            self.stop_child("普通用户 TUN 核心已退出");
+        }
         let Some(child) = self.child.as_mut() else {
             return;
         };
@@ -429,6 +607,7 @@ impl HelperRuntime {
     }
 
     fn stop_child(&mut self, reason: &str) {
+        self.delegated = None;
         if let Some(child) = self.child.as_mut() {
             let pid = child.id();
             let _ = child.kill();
@@ -466,11 +645,24 @@ fn start_watchdog() {
             continue;
         };
         guard.refresh_child();
-        if guard.child.is_some()
+        if guard.has_session()
             && guard
                 .last_heartbeat
                 .is_some_and(|heartbeat| heartbeat.elapsed() > LEASE_TIMEOUT)
         {
+            if let Some(process) = guard
+                .delegated
+                .as_ref()
+                .and_then(|state| state.process.as_ref())
+            {
+                if CoreIdentity::from_pid(process.pid).as_ref() == Some(process) {
+                    // If the app died without reaping its own ordinary-user
+                    // core, release the ports and the loaned descriptor too.
+                    unsafe {
+                        libc::kill(process.pid as i32, libc::SIGTERM);
+                    }
+                }
+            }
             guard.last_error = Some("TUN 控制端心跳超时，已安全停止内核".to_string());
             guard.stop_child("TUN 控制端心跳超时");
         }

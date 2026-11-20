@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::models::AppSettings;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
@@ -196,15 +197,8 @@ pub async fn verify_tun_route() -> AppResult<NetworkSafetyReport> {
 pub async fn verify_tun_route_with_progress(
     on_attempt: impl FnMut(u8, bool),
 ) -> AppResult<NetworkSafetyReport> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .connect_timeout(Duration::from_secs(6))
-        .timeout(Duration::from_secs(12))
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .build()
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
     inspect_tun_with_retry(
-        &client,
+        &tun_client()?,
         SAFETY_TARGETS,
         TunRetryPolicy::default(),
         on_attempt,
@@ -212,11 +206,63 @@ pub async fn verify_tun_route_with_progress(
     .await
 }
 
+#[cfg(target_os = "macos")]
+pub async fn verify_tun_startup(
+    on_attempt: impl FnMut(u8, bool),
+) -> AppResult<NetworkSafetyReport> {
+    inspect_tun_with_retry(
+        &tun_client()?,
+        SAFETY_TARGETS,
+        TunRetryPolicy {
+            first_connection: true,
+            ..TunRetryPolicy::default()
+        },
+        on_attempt,
+    )
+    .await
+}
+
+#[cfg(target_os = "macos")]
+pub async fn finish_tun_diagnostics(report: NetworkSafetyReport) -> AppResult<NetworkSafetyReport> {
+    let client = tun_client()?;
+    let mut checks = report.checks;
+    let missing = SAFETY_TARGETS
+        .into_iter()
+        .filter(|target| !checks.iter().any(|check| check.target == target.name));
+    let remaining =
+        futures_util::future::join_all(missing.map(|target| check_target(&client, target))).await;
+    for check in remaining {
+        log_check(&check);
+        checks.push(check);
+    }
+    checks.sort_by_key(|check| {
+        SAFETY_TARGETS
+            .iter()
+            .position(|target| target.name == check.target)
+    });
+    Ok(assemble_report(
+        report.proxy_endpoint,
+        checks,
+        SAFETY_TARGETS,
+    ))
+}
+
+fn tun_client() -> AppResult<reqwest::Client> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(6))
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|error| AppError::Runtime(error.to_string()))
+}
+
 #[derive(Clone, Copy)]
 struct TunRetryPolicy {
     max_attempts: u8,
     total: Duration,
     retry_delay: Duration,
+    first_connection: bool,
 }
 
 impl Default for TunRetryPolicy {
@@ -225,6 +271,7 @@ impl Default for TunRetryPolicy {
             max_attempts: 3,
             total: Duration::from_secs(30),
             retry_delay: Duration::from_secs(1),
+            first_connection: false,
         }
     }
 }
@@ -236,7 +283,7 @@ async fn inspect_tun_with_retry(
     mut on_attempt: impl FnMut(u8, bool),
 ) -> AppResult<NetworkSafetyReport> {
     let deadline = tokio::time::Instant::now() + policy.total;
-    let mut checks: Vec<NetworkSafetyCheck> = Vec::new();
+    let mut checks: [Option<NetworkSafetyCheck>; 3] = [None, None, None];
     let mut attempts = 0;
     for attempt in 1..=policy.max_attempts {
         if attempt > 1 {
@@ -268,38 +315,47 @@ async fn inspect_tun_with_retry(
             .filter(|(index, target)| {
                 attempt == 1
                     || (target.purpose == CheckPurpose::Connectivity
-                        && checks.get(*index).is_some_and(|check| {
+                        && checks[*index].as_ref().is_some_and(|check| {
                             !check.success
                                 && check.failure_kind.is_some_and(TransportFailure::transient)
                         }))
             });
-        let results = futures_util::future::join_all(pending.map(|(index, target)| async move {
-            let check = match tokio::time::timeout_at(deadline, check_target(client, target)).await
-            {
-                Ok(check) => check,
-                Err(_) => NetworkSafetyCheck {
-                    target: target.name.into(),
-                    url: target.url.into(),
-                    success: false,
-                    expected_status: target.expected_status,
-                    actual_status: None,
-                    latency_ms: policy.total.as_millis(),
-                    detail: "TUN 外网检查总时限已到；未继续重试".into(),
-                    failure_kind: Some(TransportFailure::Timeout),
-                },
-            };
-            (index, check)
-        }))
-        .await;
-        for (index, check) in results {
+        let mut results: FuturesUnordered<_> = pending
+            .map(|(index, target)| async move {
+                let check =
+                    match tokio::time::timeout_at(deadline, check_target(client, target)).await {
+                        Ok(check) => check,
+                        Err(_) => NetworkSafetyCheck {
+                            target: target.name.into(),
+                            url: target.url.into(),
+                            success: false,
+                            expected_status: target.expected_status,
+                            actual_status: None,
+                            latency_ms: policy.total.as_millis(),
+                            detail: "TUN 外网检查总时限已到；未继续重试".into(),
+                            failure_kind: Some(TransportFailure::Timeout),
+                        },
+                    };
+                (index, check)
+            })
+            .collect();
+        while let Some((index, check)) = results.next().await {
+            let connected = check.success && targets[index].purpose == CheckPurpose::Connectivity;
             log_check(&check);
-            if index == checks.len() {
-                checks.push(check);
-            } else {
-                checks[index] = check;
+            checks[index] = Some(check);
+            if policy.first_connection && connected {
+                return Ok(assemble_report(
+                    "system-tun".into(),
+                    checks.into_iter().flatten().collect(),
+                    targets,
+                ));
             }
         }
-        let report = assemble_report("system-tun".into(), checks.clone(), targets);
+        let report = assemble_report(
+            "system-tun".into(),
+            checks.iter().flatten().cloned().collect(),
+            targets,
+        );
         if report.success {
             return Ok(report);
         }
@@ -307,7 +363,11 @@ async fn inspect_tun_with_retry(
             break;
         }
     }
-    let report = assemble_report("system-tun".into(), checks, targets);
+    let report = assemble_report(
+        "system-tun".into(),
+        checks.into_iter().flatten().collect(),
+        targets,
+    );
     require_connectivity(
         report,
         &format!(
@@ -352,22 +412,26 @@ fn assemble_report(
 ) -> NetworkSafetyReport {
     // OpenAI can reject an otherwise working route because of its own service
     // policy. Only the general connectivity targets decide whether it is usable.
+    let purpose = |check: &NetworkSafetyCheck| {
+        targets
+            .iter()
+            .find(|target| target.name == check.target)
+            .map(|target| target.purpose)
+    };
     let success = checks
         .iter()
-        .zip(targets)
-        .any(|(check, target)| target.purpose == CheckPurpose::Connectivity && check.success);
+        .any(|check| check.success && purpose(check) == Some(CheckPurpose::Connectivity));
     let warnings = checks
         .iter()
-        .zip(targets)
-        .filter(|(check, _)| !check.success)
-        .map(|(check, target)| match target.purpose {
-            CheckPurpose::Connectivity => {
+        .filter(|check| !check.success)
+        .map(|check| match purpose(check) {
+            Some(CheckPurpose::Connectivity) | None => {
                 format!(
                     "基础连通性检测目标 {} 未通过: {}",
                     check.target, check.detail
                 )
             }
-            CheckPurpose::OpenAi => format!(
+            Some(CheckPurpose::OpenAi) => format!(
                 "OpenAI 专项检测未通过: {}；不影响基础连通性判定",
                 check.detail
             ),
@@ -689,7 +753,52 @@ mod tests {
             max_attempts: 3,
             total: Duration::from_secs(3),
             retry_delay: Duration::from_millis(10),
+            first_connection: false,
         }
+    }
+
+    #[tokio::test]
+    async fn tun_startup_accepts_a_fast_connectivity_result_with_slow_diagnostics() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buffer = [0; 2048];
+                    let count = stream.read(&mut buffer).await.unwrap_or_default();
+                    let request = String::from_utf8_lossy(&buffer[..count]);
+                    if request.starts_with("GET /1 ") {
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 204 OK\r\nConnection: close\r\n\r\n")
+                            .await;
+                    } else {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                });
+            }
+        });
+        let urls = [0, 1, 2].map(|index| format!("http://{address}/{index}"));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let report = tokio::time::timeout(
+            Duration::from_millis(800),
+            inspect_tun_with_retry(
+                &client,
+                loopback_targets(&urls),
+                TunRetryPolicy {
+                    first_connection: true,
+                    ..quick_policy()
+                },
+                |_, _| {},
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(report.success);
+        assert_eq!(report.checks.len(), 1);
+        assert_eq!(report.checks[0].target, "cloudflare");
+        server.abort();
     }
 
     #[tokio::test]

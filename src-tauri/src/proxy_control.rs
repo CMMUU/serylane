@@ -450,6 +450,11 @@ async fn read(app: &AppHandle, detail: ReadDetail<'_>) -> Snapshot {
         let previous = service.state();
         next.tun_supported = previous.tun_supported;
         next.tun_hint = previous.tun_hint.clone();
+        #[cfg(target_os = "macos")]
+        if app.state::<MihomoRuntime>().device_config().is_some() {
+            next.tun_supported = true;
+            next.tun_hint.clear();
+        }
     }
     next
 }
@@ -525,7 +530,11 @@ pub(crate) async fn execute(app: &AppHandle, request: Request) -> Result<Snapsho
     } else {
         // Hold the existing configuration permit across both the mutation
         // and its local readback; no other config writer can interleave.
-        match session_resume::acquire_manual_configuration(app).await {
+        #[cfg(target_os = "macos")]
+        let configuration = session_resume::acquire_mode_configuration(app).await;
+        #[cfg(not(target_os = "macos"))]
+        let configuration = session_resume::acquire_manual_configuration(app).await;
+        match configuration {
             Ok(_configuration) => {
                 let result = perform_network(app, request).await;
                 (result, read(app, ReadDetail::Quick(None)).await)
@@ -662,7 +671,7 @@ fn transition_steps(before: NetworkMode, after: NetworkMode, transition: &Transi
     steps
 }
 
-async fn check_tun(app: &AppHandle) -> Result<(), AppErrorDto> {
+async fn check_tun(app: &AppHandle, _stopping_previous: bool) -> Result<(), AppErrorDto> {
     let mut helper = crate::read_tun_helper_status().await?;
     if cfg!(target_os = "macos") && helper.state == TunHelperState::NotInstalled {
         helper = tauri::async_runtime::spawn_blocking(tun_service::install)
@@ -697,6 +706,13 @@ async fn check_tun(app: &AppHandle) -> Result<(), AppErrorDto> {
             error.user_message.details = crate::app_log::sanitize(&detail);
         }
         return Err(error);
+    }
+    // An idle start validates the actual prepared descriptor and the final
+    // configuration before installing any route. Preflight before Stop is
+    // still required when an existing route could be interrupted.
+    #[cfg(target_os = "macos")]
+    if !_stopping_previous {
+        return Ok(());
     }
     crate::prepare_tun_with_permit(app.clone())
         .await
@@ -788,6 +804,12 @@ async fn perform_network(app: &AppHandle, request: Request) -> Result<Expected, 
         error.user_message.action = "profiles".into();
         return Err(error);
     }
+    #[cfg(target_os = "macos")]
+    if let Request::Switch { mode } = request {
+        if crate::try_delegated_switch(app, &core, before, mode).await? {
+            return Ok(Expected::Active(mode));
+        }
+    }
     let system_active = before == NetworkMode::SystemProxy
         && phase == RuntimePhase::Running
         && crate::system_proxy_status(app.clone()).await?.active;
@@ -814,7 +836,7 @@ impl NetworkDriver for NativeDriver<'_> {
 
     async fn step(&mut self, step: Step) -> Result<(), AppErrorDto> {
         match step {
-            Step::PreflightTun => check_tun(self.0).await?,
+            Step::PreflightTun => check_tun(self.0, self.phase() == RuntimePhase::Running).await?,
             Step::StopPrevious => {
                 stop_with_permit(self.0, false).await?;
             }

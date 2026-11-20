@@ -1004,7 +1004,7 @@ async fn apply_profile_config_inner(
     }
     let reloader = (context.active && context.running)
         .then(|| {
-            MihomoApiClient::new(&context.settings).map(|client| ProfileReloader {
+            MihomoApiClient::for_reload(&context.settings, app).map(|client| ProfileReloader {
                 client,
                 verify_routing: operation.is_some(),
                 operation,
@@ -1228,7 +1228,7 @@ async fn save_with_permit(
         .map_err(|error| AppError::Runtime(error.to_string()))??;
     let result = state_for(&next, &context)?;
     let reloader = (context.active && context.running)
-        .then(|| MihomoApiClient::new(&context.settings))
+        .then(|| MihomoApiClient::for_reload(&context.settings, app))
         .transpose()?;
     transact(
         reloader.as_ref(),

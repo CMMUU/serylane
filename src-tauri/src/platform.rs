@@ -229,6 +229,27 @@ fn enable_system_proxy_guarded(
     #[cfg(not(windows))]
     {
         let snapshot_path = snapshot_path(app)?;
+        #[cfg(target_os = "macos")]
+        if expected.is_none() {
+            if let Some(runtime) = app.try_state::<crate::runtime::MihomoRuntime>() {
+                if runtime.device_config().is_some() {
+                    let (service, original) =
+                        crate::tun_service::proxy_preferences::capture_primary_proxy()
+                            .map_err(AppError::Platform)?;
+                    if !snapshot_path.exists() {
+                        write_snapshot(
+                            &snapshot_path,
+                            &SystemProxySnapshot::Macos {
+                                services: vec![original],
+                            },
+                        )?;
+                    }
+                    *mutation_started = true;
+                    runtime.set_device_proxy(Some((port, &service)))?;
+                    return Ok(status(app));
+                }
+            }
+        }
         if expected.is_some() || !snapshot_path.exists() {
             let snapshot = capture_system_proxy()?;
             check_resume_baseline(&snapshot, expected)?;
@@ -242,6 +263,21 @@ fn enable_system_proxy_guarded(
 
 pub fn verify_system_proxy(port: u16) -> AppResult<()> {
     verify_system_proxy_inner(port)
+}
+
+pub(crate) fn verify_system_proxy_for_app(_app: &AppHandle, port: u16) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    if _app
+        .try_state::<crate::runtime::MihomoRuntime>()
+        .is_some_and(|runtime| runtime.device_proxy_owned())
+    {
+        return if crate::tun_service::proxy_preferences::loopback_is_active(port) {
+            Ok(())
+        } else {
+            Err(AppError::Platform("macOS 未应用当前系统代理".into()))
+        };
+    }
+    verify_system_proxy(port)
 }
 
 /// Deletion must not overwrite an external proxy change using a legacy Unix
@@ -326,7 +362,17 @@ pub fn restore_system_proxy(app: &AppHandle) -> AppResult<SystemProxyStatus> {
     {
         let snapshot: SystemProxySnapshot = serde_json::from_slice(&fs::read(&path)?)
             .map_err(|error| AppError::Platform(error.to_string()))?;
-        restore_snapshot(&snapshot)?;
+        #[cfg(target_os = "macos")]
+        let restored = app
+            .try_state::<crate::runtime::MihomoRuntime>()
+            .is_some_and(|runtime| {
+                runtime.device_proxy_owned() && runtime.set_device_proxy(None).is_ok()
+            });
+        #[cfg(not(target_os = "macos"))]
+        let restored = false;
+        if !restored {
+            restore_snapshot(&snapshot)?;
+        }
     }
     #[cfg(windows)]
     {
@@ -367,6 +413,21 @@ pub fn status(app: &AppHandle) -> SystemProxyStatus {
 /// Ownership checks still read the OS directly, with no cached authorization.
 pub fn checked_status(app: &AppHandle) -> AppResult<SystemProxyStatus> {
     let path = snapshot_path(app)?;
+    #[cfg(target_os = "macos")]
+    if path.exists()
+        && app
+            .try_state::<crate::runtime::MihomoRuntime>()
+            .is_some_and(|runtime| runtime.device_proxy_owned())
+    {
+        let port = crate::storage::AppStorage::from_app(app)?
+            .settings()?
+            .mixed_port;
+        return Ok(SystemProxyStatus {
+            active: crate::tun_service::proxy_preferences::loopback_is_active(port),
+            snapshot_path: Some(path.display().to_string()),
+            platform: std::env::consts::OS.to_string(),
+        });
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _deadline = CommandDeadline::new(std::time::Duration::from_secs(2));
     let active = if !path.exists() {

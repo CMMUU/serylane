@@ -622,13 +622,36 @@ async fn start_runtime_inner(
             settings.network_mode, settings.mixed_port, settings.controller_port
         ),
     );
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     if settings.network_mode == NetworkMode::Tun {
         runtime::validate_source(app, &effective.yaml).map_err(dto)?;
     }
+    #[cfg(target_os = "macos")]
+    let device_source = if settings.network_mode == NetworkMode::Tun
+        || (settings.network_mode == NetworkMode::SystemProxy && tun_service::status().ready())
+    {
+        let mut tun = settings.clone();
+        tun.network_mode = NetworkMode::Tun;
+        active_effective_config(app, &tun)
+            .ok()
+            .map(|effective| effective.yaml)
+    } else {
+        None
+    };
     app.state::<session_resume::SessionResumeManager>()
         .while_open(|| {
             storage.mark_clean_shutdown(false)?;
+            #[cfg(target_os = "macos")]
+            if let Some(tun_source) = device_source {
+                if let Ok(status) = state.start_with_device(app, &effective.yaml, &tun_source) {
+                    return Ok(status);
+                }
+                app_log::record(
+                    1,
+                    app_log::Area::Runtime,
+                    "TUN 热切换会话准备未完成，使用单模式启动",
+                );
+            }
             if settings.network_mode == NetworkMode::Tun {
                 state.start_tun(app, &effective.yaml)
             } else {
@@ -699,6 +722,17 @@ async fn finish_runtime_start(
             None,
         )));
     }
+    #[cfg(target_os = "macos")]
+    let delegated = state.device_config().is_some();
+    #[cfg(not(target_os = "macos"))]
+    let delegated = false;
+    #[cfg(target_os = "macos")]
+    if delegated {
+        ensure_delegated_tun(&api, state).await?;
+        if settings.network_mode == NetworkMode::Tun {
+            set_delegated_route(app, true).await?;
+        }
+    }
     if settings.network_mode == NetworkMode::SystemProxy {
         let feedback = app.state::<ConnectionFeedback>();
         feedback.advance(
@@ -711,7 +745,9 @@ async fn finish_runtime_start(
             .while_open(|| match automatic_proxy {
                 Some(guard) => {
                     platform::enable_automatic_system_proxy(app, settings.mixed_port, guard)?;
-                    if let Err(error) = platform::verify_system_proxy(settings.mixed_port) {
+                    if let Err(error) =
+                        platform::verify_system_proxy_for_app(app, settings.mixed_port)
+                    {
                         let restored = platform::restore_system_proxy(app).is_ok();
                         return Err(AppError::startup(
                             StartupReason::ProxyApply,
@@ -723,7 +759,7 @@ async fn finish_runtime_start(
                 }
                 None => platform::proxy_transaction(app, || {
                     platform::enable_system_proxy(app, settings.mixed_port)?;
-                    platform::verify_system_proxy(settings.mixed_port)
+                    platform::verify_system_proxy_for_app(app, settings.mixed_port)
                 }),
             });
         if let Err(error) = proxy_result {
@@ -735,7 +771,7 @@ async fn finish_runtime_start(
         let feedback = app.state::<ConnectionFeedback>();
         let operation = feedback.snapshot().operation;
         #[cfg(not(windows))]
-        {
+        if !delegated {
             // Concurrent readers share the same probe. Pending is not a
             // failed Helper; give it a bounded chance to finish before rollback.
             let mut helper = read_tun_helper_status().await?;
@@ -756,6 +792,7 @@ async fn finish_runtime_start(
         }
         #[cfg(windows)]
         {
+            let _ = delegated;
             let status = state.status(Some(app));
             if status.phase != models::RuntimePhase::Running {
                 return Err(dto(AppError::Runtime(status.message)));
@@ -818,11 +855,12 @@ async fn finish_runtime_start(
             require_ipv6
         };
         feedback.advance(app, operation, ConnectionPhase::TunInternet);
-        match network_safety::verify_tun_route_with_progress(|_, retrying| {
-            feedback.tun_attempt(app, operation, retrying);
-        })
-        .await
-        {
+        let progress = |_, retrying| feedback.tun_attempt(app, operation, retrying);
+        #[cfg(target_os = "macos")]
+        let verification = network_safety::verify_tun_startup(progress).await;
+        #[cfg(not(target_os = "macos"))]
+        let verification = network_safety::verify_tun_route_with_progress(progress).await;
+        match verification {
             Ok(report) => {
                 #[cfg(windows)]
                 tokio::time::timeout(
@@ -852,6 +890,8 @@ async fn finish_runtime_start(
                 .map_err(dto)?;
                 feedback.tun_report(app, operation, &report);
                 let _ = app.emit("network-safety-report", &report);
+                #[cfg(target_os = "macos")]
+                feedback.probe_tun_diagnostics(app, operation, settings.clone(), report);
             }
             Err(error) => {
                 return Err(dto(AppError::TunStartup {
@@ -1155,6 +1195,190 @@ fn can_switch_without_restart(previous: NetworkMode, next: NetworkMode) -> bool 
     previous != NetworkMode::Tun && next != NetworkMode::Tun
 }
 
+#[cfg(target_os = "macos")]
+async fn ensure_delegated_tun(
+    api: &MihomoApiClient,
+    state: &MihomoRuntime,
+) -> Result<(), AppErrorDto> {
+    let descriptor = state
+        .device_descriptor()
+        .ok_or_else(|| dto(AppError::Runtime("TUN 接口尚未准备".into())))?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if timeout.is_zero() {
+            return Err(dto(AppError::Runtime(
+                "Mihomo 未确认预备的 TUN 接口".into(),
+            )));
+        }
+        if let Ok(config) = api.runtime_config(timeout).await {
+            if config["tun"]["enable"].as_bool() == Some(true)
+                && config["tun"]["file-descriptor"].as_i64() == Some(descriptor)
+            {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn set_delegated_route(app: &AppHandle, enabled: bool) -> Result<(), AppErrorDto> {
+    let handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        handle
+            .state::<session_resume::SessionResumeManager>()
+            .while_open(|| handle.state::<MihomoRuntime>().set_device_route(enabled))
+    })
+    .await
+    .map_err(|error| dto(AppError::Runtime(error.to_string())))?
+    .map_err(dto)
+}
+
+#[cfg(target_os = "macos")]
+fn set_delegated_system_proxy(
+    app: &AppHandle,
+    enabled: bool,
+    port: u16,
+) -> Result<(), AppErrorDto> {
+    app.state::<session_resume::SessionResumeManager>()
+        .while_open(|| {
+            if enabled {
+                // The mode transaction restores both the route and this
+                // lease together. Enabling already saves the native snapshot.
+                platform::enable_system_proxy(app, port)?;
+                platform::verify_system_proxy_for_app(app, port)
+            } else {
+                platform::restore_system_proxy(app).map(|_| ())
+            }
+        })
+        .map_err(dto)
+}
+
+#[cfg(target_os = "macos")]
+async fn switch_delegated_system_proxy(
+    app: &AppHandle,
+    enabled: bool,
+    port: u16,
+) -> Result<(), AppErrorDto> {
+    let handle = app.clone();
+    tokio::task::spawn_blocking(move || set_delegated_system_proxy(&handle, enabled, port))
+        .await
+        .map_err(|error| dto(AppError::Runtime(error.to_string())))?
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn try_delegated_switch(
+    app: &AppHandle,
+    runtime: &MihomoRuntime,
+    from: NetworkMode,
+    to: NetworkMode,
+) -> Result<bool, AppErrorDto> {
+    if !matches!(
+        (from, to),
+        (NetworkMode::SystemProxy, NetworkMode::Tun) | (NetworkMode::Tun, NetworkMode::SystemProxy)
+    ) || runtime.running_identity().is_none()
+    {
+        return Ok(false);
+    }
+    let Some(device) = runtime.device_config() else {
+        return Ok(false);
+    };
+    let storage = AppStorage::from_app(app).map_err(dto)?;
+    let previous = storage.settings().map_err(dto)?;
+    let was_system_proxy = previous.network_mode == NetworkMode::SystemProxy
+        && platform::checked_status(app).map_err(dto)?.active;
+    let mut next = previous.clone();
+    next.network_mode = to;
+    let build = |settings: &AppSettings| {
+        let effective = active_effective_config(app, settings)?;
+        runtime::with_device_config(&effective.yaml, &device)
+    };
+    let new_source = build(&next).map_err(dto)?;
+    let old_source = build(&previous).map_err(dto)?;
+    let api = MihomoApiClient::new(&next).map_err(dto)?;
+    let feedback = app.state::<ConnectionFeedback>();
+    let operation = feedback.begin(app, to, ConnectionPhase::Applying);
+    let tun = to == NetworkMode::Tun;
+    let mut report = None;
+    let port = next.mixed_port;
+    let attempt = async {
+        if new_source != old_source {
+            api.reload_config(&new_source).await.map_err(dto)?;
+        }
+        ensure_delegated_tun(&api, runtime).await?;
+        if tun {
+            set_delegated_route(app, true).await?;
+            switch_delegated_system_proxy(app, false, port).await?;
+            feedback.advance(app, operation, ConnectionPhase::TunInternet);
+            report = Some(
+                network_safety::verify_tun_startup(|_, retrying| {
+                    feedback.tun_attempt(app, operation, retrying);
+                })
+                .await
+                .map_err(|error| {
+                    dto(AppError::TunStartup {
+                        stage: error::TunStage::Internet,
+                        retryable: error.retryable(),
+                        detail: error.to_string(),
+                    })
+                })?,
+            );
+        } else {
+            switch_delegated_system_proxy(app, true, port).await?;
+            set_delegated_route(app, false).await?;
+        }
+        app.state::<session_resume::SessionResumeManager>()
+            .while_open(|| storage.save_settings(&next))
+            .map_err(dto)
+    }
+    .await;
+    if let Err(mut error) = attempt {
+        let manager = app.state::<session_resume::SessionResumeManager>();
+        if !manager.is_shutting_down() {
+            let (proxy, route) = if tun {
+                let proxy = if was_system_proxy {
+                    switch_delegated_system_proxy(app, true, port).await
+                } else {
+                    Ok(())
+                };
+                (proxy, set_delegated_route(app, false).await)
+            } else {
+                let route = set_delegated_route(app, true).await;
+                (switch_delegated_system_proxy(app, false, port).await, route)
+            };
+            let config = if new_source != old_source {
+                api.reload_config(&old_source).await.map_err(dto)
+            } else {
+                Ok(())
+            };
+            let saved = manager
+                .while_open(|| storage.save_settings(&previous))
+                .map_err(dto);
+            for restore in [proxy, route, config, saved]
+                .into_iter()
+                .filter_map(Result::err)
+            {
+                error
+                    .user_message
+                    .details
+                    .push_str(&format!("\n恢复原模式失败：{}", restore.message));
+            }
+        }
+        feedback.fail(app, operation, &error);
+        return Err(error);
+    }
+    feedback.advance(app, operation, ConnectionPhase::Enabled);
+    if let Some(report) = report {
+        feedback.tun_report(app, operation, &report);
+        let _ = app.emit("network-safety-report", &report);
+        feedback.probe_tun_diagnostics(app, operation, next, report);
+    } else {
+        feedback.probe(app, operation, next);
+    }
+    Ok(true)
+}
+
 #[tauri::command]
 async fn set_network_mode(
     app: AppHandle,
@@ -1174,6 +1398,10 @@ async fn set_network_mode_with_permit(
 ) -> Result<PublicAppSettings, AppErrorDto> {
     let storage = AppStorage::from_app(app).map_err(dto)?;
     let current = storage.settings().map_err(dto)?;
+    #[cfg(target_os = "macos")]
+    if try_delegated_switch(app, state, current.network_mode, mode).await? {
+        return Ok(PublicAppSettings::from(&storage.settings().map_err(dto)?));
+    }
     if state.running_identity().is_some() {
         if !can_switch_without_restart(current.network_mode, mode) {
             return Err(dto(AppError::Conflict(

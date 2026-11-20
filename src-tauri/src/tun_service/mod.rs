@@ -11,14 +11,21 @@ pub(crate) mod codesign;
 #[cfg(target_os = "macos")]
 pub mod daemon;
 #[cfg(target_os = "macos")]
+mod device;
+#[cfg(target_os = "macos")]
 mod launchd;
 pub(crate) mod lifecycle;
 #[cfg(target_os = "macos")]
 mod protocol;
+#[cfg(target_os = "macos")]
+pub(crate) mod proxy_preferences;
 #[cfg(windows)]
 mod windows;
 #[cfg(target_os = "macos")]
 mod xpc;
+
+#[cfg(target_os = "macos")]
+pub(crate) use client::{open_device, set_device_proxy, set_device_route};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

@@ -5,6 +5,7 @@ use super::xpc::*;
 use super::{TunRuntimeLog, TunRuntimeStart};
 use block2::RcBlock;
 use std::ffi::{c_void, CStr, CString};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -46,6 +47,61 @@ pub fn prepare(source: &str) -> Result<(), String> {
         );
     })
     .map(|_| ())
+}
+
+pub(crate) fn open_device(lease: &str, ipv6: bool) -> Result<OwnedFd, String> {
+    let lease = CString::new(lease).map_err(|_| "TUN lease 格式无效".to_string())?;
+    with_connection(|connection| unsafe {
+        let message = new_message(OP_OPEN_DEVICE)?;
+        xpc_dictionary_set_string(message, KEY_LEASE.as_ptr(), lease.as_ptr());
+        xpc_dictionary_set_bool(message, KEY_IPV6.as_ptr(), ipv6);
+        send_bounded(connection, message, Duration::from_secs(5), |reply| {
+            ensure_success(reply)?;
+            let fd = xpc_dictionary_dup_fd(reply, KEY_DEVICE_FD.as_ptr());
+            if fd < 0 {
+                return Err("辅助服务没有返回 TUN 接口描述符".into());
+            }
+            let owned = OwnedFd::from_raw_fd(fd);
+            if fd <= libc::STDERR_FILENO {
+                let duplicate = libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, libc::STDERR_FILENO + 1);
+                return if duplicate < 0 {
+                    Err(std::io::Error::last_os_error().to_string())
+                } else {
+                    Ok(OwnedFd::from_raw_fd(duplicate))
+                };
+            }
+            if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            Ok(owned)
+        })
+    })
+}
+
+pub(crate) fn set_device_route(lease: &str, pid: u32, enabled: bool) -> Result<(), String> {
+    let lease = CString::new(lease).map_err(|_| "TUN lease 格式无效".to_string())?;
+    let snapshot = request(OP_SET_DEVICE_ROUTE, |message| unsafe {
+        xpc_dictionary_set_string(message, KEY_LEASE.as_ptr(), lease.as_ptr());
+        xpc_dictionary_set_uint64(message, KEY_PID.as_ptr(), pid.into());
+        xpc_dictionary_set_bool(message, KEY_RUNNING.as_ptr(), enabled);
+    })?;
+    reset_probe_gate();
+    if snapshot.running != enabled || (enabled && snapshot.pid != Some(pid)) {
+        return Err("辅助服务未确认当前核心的 TUN 路由".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn set_device_proxy(lease: &str, proxy: Option<(u16, &str)>) -> Result<(), String> {
+    let lease = CString::new(lease).map_err(|_| "TUN lease 格式无效".to_string())?;
+    let (port, service) = proxy.unwrap_or_default();
+    let service = CString::new(service).map_err(|_| "网络服务标识无效".to_string())?;
+    request(OP_SET_DEVICE_PROXY, |message| unsafe {
+        xpc_dictionary_set_string(message, KEY_LEASE.as_ptr(), lease.as_ptr());
+        xpc_dictionary_set_uint64(message, KEY_PROXY_PORT.as_ptr(), port.into());
+        xpc_dictionary_set_string(message, KEY_PROXY_SERVICE.as_ptr(), service.as_ptr());
+    })?;
+    Ok(())
 }
 
 pub fn start(source: &str, lease: &str) -> Result<TunRuntimeStart, String> {

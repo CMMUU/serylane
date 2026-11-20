@@ -302,6 +302,32 @@ impl ConnectionFeedback {
         self.snapshot()
     }
     pub fn probe(&self, app: &AppHandle, operation: u64, settings: AppSettings) {
+        #[cfg(target_os = "macos")]
+        self.probe_with(app, operation, settings, None);
+        #[cfg(not(target_os = "macos"))]
+        self.probe_with(app, operation, settings);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn probe_tun_diagnostics(
+        &self,
+        app: &AppHandle,
+        operation: u64,
+        settings: AppSettings,
+        report: NetworkSafetyReport,
+    ) {
+        if report.checks.len() < 3 {
+            self.probe_with(app, operation, settings, Some(report));
+        }
+    }
+
+    fn probe_with(
+        &self,
+        app: &AppHandle,
+        operation: u64,
+        settings: AppSettings,
+        #[cfg(target_os = "macos")] tun_report: Option<NetworkSafetyReport>,
+    ) {
         if app.state::<SessionResumeManager>().is_shutting_down() {
             return;
         }
@@ -312,7 +338,9 @@ impl ConnectionFeedback {
         {
             let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if !state.update(operation, |s| {
-                s.phase = Phase::Enabled;
+                if s.mode != NetworkMode::Tun {
+                    s.phase = Phase::Enabled;
+                }
                 s.health = Health::Checking;
             }) {
                 return;
@@ -323,7 +351,13 @@ impl ConnectionFeedback {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             let manager = app.state::<ConnectionFeedback>();
+            #[cfg(target_os = "macos")]
+            let completing_tun = tun_report.is_some();
             let work = async {
+                #[cfg(target_os = "macos")]
+                if let Some(report) = tun_report {
+                    return network_safety::finish_tun_diagnostics(report).await;
+                }
                 let mut result = network_safety::inspect_local_proxy(&settings).await;
                 if result.as_ref().is_ok_and(network_safety::should_retry) {
                     manager
@@ -361,6 +395,10 @@ impl ConnectionFeedback {
                 manager.invalidate_if(&app, operation);
                 return;
             }
+            #[cfg(target_os = "macos")]
+            let completed_tun = completing_tun
+                .then(|| result.as_ref().ok().cloned())
+                .flatten();
             let changed = manager
                 .inner
                 .lock()
@@ -380,6 +418,10 @@ impl ConnectionFeedback {
                 });
             if changed {
                 manager.emit(&app);
+                #[cfg(target_os = "macos")]
+                if let Some(report) = completed_tun {
+                    let _ = app.emit("network-safety-report", report);
+                }
             }
         });
     }

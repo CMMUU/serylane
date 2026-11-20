@@ -32,7 +32,7 @@ Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux �
 <!-- product-contract:start -->
 | 源码事实 | 当前值 |
 | --- | --- |
-| 源码版本 | 0.7.48（不代表已经发行） |
+| 源码版本 | 0.7.49（不代表已经发行） |
 | 官网安装包 | 下载中心 |
 | 应用内更新 | GitHub 直连 → GitHub 加速代理 → 经 Serylane 本地代理访问 GitHub → 下载中心 |
 | AI 合格节点范围 | 1–10 个；单节点没有备用 |

@@ -203,6 +203,19 @@ pub(super) async fn read_ingress(
     } else {
         None
     };
+    #[cfg(target_os = "macos")]
+    let tun_enabled = if app
+        .state::<crate::runtime::MihomoRuntime>()
+        .device_descriptor()
+        .is_some_and(|descriptor| config["tun"]["file-descriptor"].as_i64() == Some(descriptor))
+        && tun_verified == Some(false)
+        && settings.network_mode != NetworkMode::Tun
+    {
+        // A reserved adapter without its own routes only handles no traffic.
+        Some(false)
+    } else {
+        tun_enabled
+    };
     classify_ingress(settings.network_mode, proxy, tun_enabled, tun_verified)
 }
 

@@ -5,8 +5,8 @@ pub const PLIST_NAME: &CStr = c"com.cmmuu.mihomodesktop.tun-helper.plist";
 pub const APP_BINARY_NAME: &str = "serylane";
 pub const HELPER_BINARY_NAME: &str = "mihomo-tun-helper";
 pub const CORE_BINARY_NAME: &str = "mihomo";
-// v2 requires lease-scoped stop and refuses preparation over an active core.
-pub const PROTOCOL_VERSION: u32 = 2;
+// v3 can loan a descriptor to the ordinary user and manage its routes by lease.
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_LOG_LINES: usize = 2_000;
 
@@ -24,6 +24,10 @@ pub const KEY_VERSION: &CStr = c"version";
 pub const KEY_CONFIG_PATH: &CStr = c"config_path";
 pub const KEY_LAST_ERROR: &CStr = c"last_error";
 pub const KEY_LOGS: &CStr = c"logs";
+pub const KEY_IPV6: &CStr = c"ipv6";
+pub const KEY_DEVICE_FD: &CStr = c"device_fd";
+pub const KEY_PROXY_PORT: &CStr = c"proxy_port";
+pub const KEY_PROXY_SERVICE: &CStr = c"proxy_service";
 
 pub const OP_STATUS: &CStr = c"status";
 pub const OP_PREPARE: &CStr = c"prepare";
@@ -32,6 +36,9 @@ pub const OP_HEARTBEAT: &CStr = c"heartbeat";
 pub const OP_STOP: &CStr = c"stop";
 pub const OP_STOP_LEASE: &CStr = c"stop_lease";
 pub const OP_LOGS: &CStr = c"logs";
+pub const OP_OPEN_DEVICE: &CStr = c"open_device";
+pub const OP_SET_DEVICE_ROUTE: &CStr = c"set_device_route";
+pub const OP_SET_DEVICE_PROXY: &CStr = c"set_device_proxy";
 
 pub const STATUS_OK: i64 = 0;
 pub const STATUS_ERROR: i64 = 1;
