@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { DOCS_COMMENTS_PAGE, DOCS_COMMENTS_API, DOCS_COMMENTS_THREAD } from '../src/docs-comments.ts';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { contentRoutes, equivalents, locales, origin, outputPath as root, pathFor, readUI } from './site-locales.mjs';
@@ -122,6 +123,18 @@ for (const path of files.filter(path => path.endsWith('.html'))) {
   assert.ok(mobile && tags(mobile, 'summary').length === 1, route + ': native mobile navigation');
   assert.deepEqual(tags(mobile, 'a').map(link => link.href), tags(nav, 'a').map(link => link.href), route + ': same links in mobile and desktop');
   for (const kind of ['guide', 'docs']) assert.ok(tags(nav, 'a').some(link => link.href === pathFor(kind, locale)), route + ': localized entry ' + kind);
+  const comments = route === DOCS_COMMENTS_PAGE;
+  assert.equal(tags(html, 'script').filter(tag => tag.src === '/docs-comments.js').length, Number(comments));
+  assert.equal(html.includes('class="docs-feedback-layout"'), comments);
+  assert.equal(html.includes('data-docs-comments='), comments);
+  if (comments) {
+    const toc = html.match(/<nav class="chapter-nav"[^>]*>[\s\S]*?<\/nav>/)?.[0];
+    assert.ok(toc, 'Traditional Chinese docs show a chapter menu');
+    assert.deepEqual(tags(toc, 'a').map(link => link.href), ['#start', '#current-capabilities', '#tun-compatibility', '#download-center', '#history']);
+    assert.ok(html.indexOf(toc) < html.indexOf('class="chapter-content"') && html.indexOf('class="chapter-content"') < html.indexOf('data-docs-comments='));
+    assert.ok(html.includes('data-docs-comments="' + DOCS_COMMENTS_API + '"'));
+    assert.ok(tags(html, 'a').some(link => link.href === DOCS_COMMENTS_THREAD && link.rel === 'noopener noreferrer'));
+  }
   if (page === 'guide') {
     const toc = html.match(/<nav class="chapter-nav"[^>]*>[\s\S]*?<\/nav>/)?.[0];
     assert.ok(toc, route + ': guide table of contents');
@@ -208,6 +221,10 @@ for (const path of files.filter(path => path.endsWith('.js'))) {
     assert.doesNotMatch(narrowed, /localStorage|\bfetch\s*\(/, 'Theme persistence is not a blanket storage/network exemption');
   } else assert.doesNotMatch(source, /localStorage/, `${path}: no other script may persist data`);
 }
+const commentsScript = await readFile(join(root, 'docs-comments.js'), 'utf8');
+assert.equal([...commentsScript.matchAll(/\bfetch\s*\(/g)].length, 1);
+assert.match(commentsScript, /fetch\(panel\.dataset\.docsComments,\s*\{ credentials: "omit"/);
+assert.doesNotMatch(commentsScript, /innerHTML|outerHTML|insertAdjacentHTML/);
 const headers = await readFile(join(root, '_headers'), 'utf8');
 assert.match(headers, /script-src 'self'; style-src 'self'/);
 assert.doesNotMatch(headers, /unsafe-inline|unsafe-eval/);
@@ -217,4 +234,4 @@ assert.equal(config.assets.not_found_handling, '404-page');
 assert.equal(config.workers_dev, false);
 assert.deepEqual(config.assets.run_worker_first, ['/api/*', '/download/*']);
 assert.equal(config.assets.binding, 'ASSETS');
-console.log(`PASS: ${htmls.size} static HTML pages, ${checkedLinks} local links/assets; 11-language dropdown/TOC/canonical/hreflang/sitemap/JSON-LD, historical anchors, CSP, one-key theme privacy, and download-only network scope.`);
+console.log(`PASS: ${htmls.size} static HTML pages, ${checkedLinks} local links/assets; 11-language dropdown/TOC/canonical/hreflang/sitemap/JSON-LD, historical anchors, CSP, one-key theme privacy, and allowlisted download/comments network scope.`);

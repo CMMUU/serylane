@@ -3,6 +3,7 @@ import type { Fetcher, Target } from './releases.ts';
 import { centerCatalog, verifyCenterAsset } from './center.ts';
 import { GITHUB_UPDATE_PATH, githubUpdate } from './github-updates.ts';
 import type { GithubUpdateCache } from './github-updates.ts';
+import { DOCS_COMMENTS_API, docsComments } from './docs-comments.ts';
 
 const HEADERS = {
   'Cache-Control': 'no-store, max-age=0', 'CDN-Cache-Control': 'no-store',
@@ -22,6 +23,7 @@ function unavailable(isAPI: boolean, code: string) {
 
 export async function handle(request: Request, env: Pick<Env, 'ASSETS'>, fetcher: Fetcher = fetch, edge?: GithubUpdateCache): Promise<Response> {
   const url = new URL(request.url);
+  if (url.pathname === DOCS_COMMENTS_API) return docsComments(request, url, fetcher, edge);
   if (url.pathname.startsWith(GITHUB_UPDATE_PATH)) return githubUpdate(request, url, fetcher, edge);
   if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/download/')) return env.ASSETS.fetch(request);
   const isAPI = url.pathname === '/api/releases/latest';

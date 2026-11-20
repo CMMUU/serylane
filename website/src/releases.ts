@@ -13,12 +13,12 @@ function requireValid(value: unknown): asserts value {
   if (!value) throw new ReleaseError('INVALID_RELEASE_METADATA');
 }
 async function dispose(response: Response) { await response.body?.cancel(); }
-export async function boundedText(response: Response): Promise<string> {
+export async function boundedText(response: Response, limit = LIMIT): Promise<string> {
   if (response.status !== 200) {
     await dispose(response);
     throw new ReleaseError(`METADATA_HTTP_${response.status}`);
   }
-  if (Number(response.headers.get('content-length')) > LIMIT) {
+  if (Number(response.headers.get('content-length')) > limit) {
     await dispose(response);
     throw new ReleaseError('RELEASE_METADATA_TOO_LARGE');
   }
@@ -31,7 +31,7 @@ export async function boundedText(response: Response): Promise<string> {
       const { value, done } = await reader.read();
       if (done) break;
       length += value.length;
-      if (length > LIMIT) throw new ReleaseError('RELEASE_METADATA_TOO_LARGE');
+      if (length > limit) throw new ReleaseError('RELEASE_METADATA_TOO_LARGE');
       chunks.push(value);
     }
   } finally { await reader.cancel(); reader.releaseLock(); }

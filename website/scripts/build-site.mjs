@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { DOCS_COMMENTS_PAGE, DOCS_COMMENTS_API, DOCS_COMMENTS_THREAD } from '../src/docs-comments.ts';
 import { contentRoutes, english, equivalents, locales, origin, output, outputPath, pathFor, readUI } from './site-locales.mjs';
 
 const source = new URL('../public/', import.meta.url);
@@ -233,25 +234,35 @@ const related = (page, locale, ui) => '<nav class="document-nav" aria-label="' +
   ['docs', 'guide', 'routing', 'verification', 'privacy'].filter(key => key !== page).map(key =>
     '<a href="' + pathFor(key, locale) + '">' + esc(ui[key]) + '</a>').join('') + '</nav>';
 
+function commentsPanel() {
+  return '<aside class="docs-comments" data-docs-comments="' + DOCS_COMMENTS_API + '" aria-labelledby="docs-comments-title">' +
+    '<h2 id="docs-comments-title">GitHub 留言</h2><p>分享本頁的更正建議或使用心得。留言是公開的，請勿附上訂閱網址或帳密。</p>' +
+    '<a class="button button-secondary comments-thread" href="' + DOCS_COMMENTS_THREAD + '" data-comments-thread target="_blank" rel="noopener noreferrer">前往 GitHub 留言</a>' +
+    '<p class="comments-status" data-comments-status role="status">完整留言可在 GitHub 查看。</p><ul class="comments-list" data-comments-list hidden></ul>' +
+    '<button class="text-link" type="button" data-comments-retry hidden>重新讀取留言</button></aside>';
+}
+
 function articleFor(markdown, page, locale, ui) {
   const { title, description, sections } = parseArticle(markdown);
   assert.deepEqual(sections.map(item => item.id), page === 'guide' ? guideChapters : pageChapters[page], locale.id + ':' + page + ' chapter IDs');
   const toc = '<nav class="chapter-nav" aria-label="' + esc(ui.toc) + '" data-chapter-nav><h2>' + esc(ui.toc) + '</h2><ol>' +
     sections.map(section => '<li><a href="#' + section.id + '">' + esc(section.label) + '</a></li>').join('') + '</ol></nav>';
   const guide = page === 'guide';
+  const feedback = pathFor(page, locale) === DOCS_COMMENTS_PAGE;
   const sectionsHtml = sections.map(({ id, label, lines }) => '<section id="' + id + '" data-chapter><h2>' +
     esc(label) + '</h2>\n' + renderBlocks(lines, locale) + '\n</section>').join('\n');
   return [
     '<!doctype html>', '<html lang="' + locale.lang + '" data-theme="system"' + htmlData(locale, ui) + '>', '<head>',
-    head(page, locale, title.includes('Serylane') ? title : title + ' — Serylane', description), '</head>', '<body class="document-page">',
-    docsHeader(locale, page, ui), '<main id="main" class="document-main page-width' + (guide ? ' guide-main' : '') + '">',
+    head(page, locale, title.includes('Serylane') ? title : title + ' — Serylane', description),
+    feedback ? '<script src="/docs-comments.js" defer></script>' : '', '</head>', '<body class="document-page">',
+    docsHeader(locale, page, ui), '<main id="main" class="document-main page-width' + (guide ? ' guide-main' : feedback ? ' docs-feedback-main' : '') + '">',
     '<p class="breadcrumb"><a href="' + pathFor('home', locale) + '">Serylane</a> / ' +
       (page !== 'docs' ? '<a href="' + pathFor('docs', locale) + '">' + esc(ui.docs) + '</a> / ' : '') +
       '<span aria-current="page">' + esc(ui[page]) + '</span></p>',
     '<h1>' + esc(title) + '</h1>', '<p class="lead">' + esc(description) + '</p>',
     (page === 'docs' ? '<p class="guide-entry">' + guideLink(locale, ui) + '</p>' : ''),
-    '<div class="' + (guide ? 'guide-layout' : 'article-layout') + '">' + toc +
-      '<div class="chapter-content">' + sectionsHtml + '</div></div>',
+    '<div class="' + (guide ? 'guide-layout' : feedback ? 'docs-feedback-layout' : 'article-layout') + '">' + toc +
+      '<div class="chapter-content">' + sectionsHtml + '</div>' + (feedback ? commentsPanel() : '') + '</div>',
     related(page, locale, ui), '</main>',
     '<footer class="document-footer"><div class="page-width"><a href="' + pathFor('home', locale) + '">Serylane</a> · ' +
       '<a href="' + pathFor('docs', locale) + '">' + esc(ui.docs) + '</a> · ' +
