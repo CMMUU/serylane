@@ -99,10 +99,12 @@ impl ProxyLease {
         let protocol = prefs.proxy_protocol(id)?;
         let saved = deserialize(original)?;
         let current = configuration(&protocol);
-        if current == deserialize(applied)? {
-            prefs.write(&protocol, &saved)?;
+        let applied = deserialize(applied)?;
+        let restored = restore_owned_fields(&current, &applied, &saved);
+        if current != restored {
+            prefs.write(&protocol, &restored)?;
             if primary_service().as_ref() == Some(id) {
-                wait_effective(|effective| same_proxy_fields(effective, &saved))?;
+                wait_effective(|effective| same_proxy_fields(effective, &restored))?;
             }
         }
         self.saved = None;
@@ -257,6 +259,36 @@ fn copy_dict(dict: &Dict) -> CFMutableDictionary<CFString, CFType> {
     CFMutableDictionary::from_CFType_pairs(&pairs)
 }
 
+fn restore_owned_fields(current: &Dict, applied: &Dict, original: &Dict) -> Dict {
+    if current == applied {
+        return original.clone();
+    }
+    let mut restored = copy_dict(current);
+    let unchanged = |key: &CFString| {
+        current.find(key.clone()).as_deref() == applied.find(key.clone()).as_deref()
+    };
+    let mut restore = |key: CFString| match original.find(key.clone()) {
+        Some(value) => restored.set(key, (*value).clone()),
+        None => restored.remove(key),
+    };
+    // Treat an enabled flag and its address as one setting. Keep a proxy
+    // independently replaced during the session while releasing our own.
+    for kind in ["HTTP", "HTTPS", "SOCKS"] {
+        let keys =
+            ["Enable", "Proxy", "Port"].map(|suffix| CFString::new(&format!("{kind}{suffix}")));
+        if keys.iter().all(unchanged) {
+            for key in keys {
+                restore(key);
+            }
+        }
+    }
+    let exceptions = CFString::new("ExceptionsList");
+    if unchanged(&exceptions) {
+        restore(exceptions);
+    }
+    restored.to_immutable()
+}
+
 fn serialized(dict: &Dict) -> Result<Vec<u8>, String> {
     propertylist::create_data(dict.as_CFTypeRef(), kCFPropertyListBinaryFormat_v1_0)
         .map(|data| data.bytes().to_vec())
@@ -364,4 +396,48 @@ fn sc_error(action: &str) -> String {
     format!("{action}失败（SystemConfiguration {}）", unsafe {
         SCError()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn releases_our_proxy_while_preserving_other_live_preferences() {
+        let original = Dict::from_CFType_pairs(&[]);
+        let mut applied = copy_dict(&original);
+        for kind in ["HTTP", "HTTPS", "SOCKS"] {
+            applied.set(
+                CFString::new(&format!("{kind}Enable")),
+                CFNumber::from(1).as_CFType(),
+            );
+            applied.set(
+                CFString::new(&format!("{kind}Port")),
+                CFNumber::from(7890).as_CFType(),
+            );
+            applied.set(
+                CFString::new(&format!("{kind}Proxy")),
+                CFString::new("127.0.0.1").as_CFType(),
+            );
+        }
+        let applied = applied.to_immutable();
+        let mut current = copy_dict(&applied);
+        current.set(
+            CFString::new("SOCKSProxy"),
+            CFString::new("user-proxy.invalid").as_CFType(),
+        );
+        current.set(
+            CFString::new("ProxyAutoDiscoveryEnable"),
+            CFNumber::from(1).as_CFType(),
+        );
+        let restored = restore_owned_fields(&current.to_immutable(), &applied, &original);
+        assert_eq!(number(&restored, "HTTPEnable"), 0);
+        assert_eq!(number(&restored, "HTTPSEnable"), 0);
+        assert_eq!(number(&restored, "SOCKSEnable"), 1);
+        assert_eq!(
+            string(&restored, "SOCKSProxy").as_deref(),
+            Some("user-proxy.invalid")
+        );
+        assert_eq!(number(&restored, "ProxyAutoDiscoveryEnable"), 1);
+    }
 }
