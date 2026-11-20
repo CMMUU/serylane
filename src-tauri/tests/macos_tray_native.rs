@@ -30,6 +30,14 @@ fn main() {
     };
     use objc2_foundation::{NSDictionary, NSPoint, NSSize};
 
+    if macos_menu_panel::is_worker() {
+        macos_menu_panel::run_worker(
+            || Ok(image_from_rgba(macos_layout::brand_icon())),
+            check_relay_frame,
+        )
+        .unwrap();
+        return;
+    }
     let mtm = MainThreadMarker::new().expect("native test main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
@@ -280,6 +288,7 @@ fn main() {
     bar.removeStatusItem(&item);
     println!("native tray: fixed-width two-row title, unit changes, clear and re-enable passed");
     check_menu(mtm);
+    check_menu_relay();
 }
 
 #[cfg(target_os = "macos")]
@@ -298,13 +307,19 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
         time::{Duration, Instant},
     };
 
-    let actions = Arc::new(Mutex::new(Vec::new()));
+    let actions = Arc::new(Mutex::new(Vec::<MenuCommand>::new()));
     let recorded = Arc::clone(&actions);
+    let visibility = Arc::new(Mutex::new(Vec::new()));
+    let visible_events = Arc::clone(&visibility);
     install(
         mtm,
         image_from_rgba(macos_layout::brand_icon()),
         true,
-        move |action| recorded.lock().unwrap().push(action),
+        move |event| match event {
+            Event::Command(command) => recorded.lock().unwrap().push(command),
+            Event::Visible(visible) => visible_events.lock().unwrap().push(visible),
+            Event::Ready => unreachable!(),
+        },
     )
     .unwrap();
     assert!(install(
@@ -349,7 +364,7 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     let view = Controls {
         serial: 1,
         action_serial: 0,
-        status: "系统代理运行中",
+        status: "系统代理运行中".into(),
         system_proxy: true,
         can_start: false,
         can_stop: true,
@@ -357,7 +372,7 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
         tun_supported: true,
         route: Some(RouteRow {
             token,
-            label: "路由 · 待启动",
+            label: "路由 · 待启动".into(),
             message: "已开启".into(),
             can_toggle: true,
             active: false,
@@ -380,7 +395,7 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
 
     // Drain in the same mode as AppKit dispatch. A fixed sleep is insufficient
     // on the Intel runner and clicking a disabled row must emit no action.
-    let take = |expected| {
+    let take_commands = |expected| {
         let fence = Arc::new(AtomicBool::new(false));
         let fence_block = Arc::clone(&fence);
         let block = RcBlock::new(move || fence_block.store(true, Ordering::Release));
@@ -398,6 +413,12 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
         assert!(fence.load(Ordering::Acquire), "action queue fence");
         std::mem::take(&mut *actions.lock().unwrap())
     };
+    let take = |expected| {
+        take_commands(expected)
+            .into_iter()
+            .map(|command| command.action)
+            .collect::<Vec<_>>()
+    };
     let click = |menu: &NSMenu, item: &NSMenuItem| {
         menu.performActionForItemAtIndex(menu.indexOfItem(item));
     };
@@ -405,7 +426,7 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     delegate.menuNeedsUpdate(&menu);
     delegate.menuWillOpen(&menu);
     assert!(is_visible());
-    assert_eq!(take(1), [Action::Observe]);
+    assert_eq!(*visibility.lock().unwrap(), [true]);
     let mut changed = view.clone();
     changed.serial = 2;
     changed.system_proxy = false;
@@ -422,19 +443,23 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     );
     delegate.menuDidClose(&menu);
     assert!(!is_visible());
+    assert_eq!(*visibility.lock().unwrap(), [true, false]);
 
     delegate.menuNeedsUpdate(&menu);
     assert!(confirm.isEnabled());
     click(&route, &confirm);
     assert!(!row(STOP).isEnabled());
     click(&menu, &row(STOP));
+    let [command] = take_commands(1).try_into().expect("one route command");
+    let command: MenuCommand = command;
     assert_eq!(
-        take(1),
-        [Action::Route(RouteToken {
+        command.action,
+        Action::Route(RouteToken {
             revision: 8,
             ..token
-        })]
+        })
     );
+    assert_eq!(command.action_serial, 0);
     let mut quiet = changed.clone();
     quiet.serial = 3;
     update_controls(mtm, quiet);
@@ -443,7 +468,9 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
         !row(STOP).isEnabled(),
         "old read may not undo local busy lock"
     );
-    reject_queued(mtm, 0, "操作未完成：隔离检验".into());
+    reject_queued(mtm, uuid::Uuid::new_v4(), "迟到的拒绝".into());
+    assert!(!row(STOP).isEnabled());
+    reject_queued(mtm, command.id, "操作未完成：隔离检验".into());
     assert!(row(STOP).isEnabled());
     assert!(row(DETAIL).title().to_string().contains("操作未完成"));
 
@@ -455,14 +482,14 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
     let mut pending = changed.clone();
     pending.serial = 5;
     pending.action_serial = 2;
-    pending.busy = Some("stopping");
+    pending.busy = Some("stopping".into());
     update_controls(mtm, pending);
     assert!(!row(REFRESH).isEnabled());
     assert!(row(STATUS_ROW).title().to_string().contains("正在关闭代理"));
     let mut stopped = changed;
     stopped.serial = 6;
     stopped.action_serial = 3;
-    stopped.status = "已关闭";
+    stopped.status = "已关闭".into();
     stopped.tun = false;
     stopped.can_start = true;
     stopped.can_stop = false;
@@ -533,9 +560,14 @@ fn real_space_host(
         source.width(),
         source.height(),
     ));
-    macos_menu_panel::install(mtm, brand, true, move |action| {
+    macos_menu_panel::install(mtm, brand, true, move |event| {
+        let value = match event {
+            macos_menu_panel::Event::Visible(true) => "Observe".into(),
+            macos_menu_panel::Event::Command(command) => format!("{:?}", command.action),
+            _ => return,
+        };
         let mut events = observed.lock().unwrap();
-        events.push(format!("{action:?}"));
+        events.push(value);
         let tmp = event_path.with_extension("tmp");
         std::fs::write(&tmp, json!(*events).to_string()).unwrap();
         std::fs::rename(tmp, &event_path).unwrap();
@@ -559,7 +591,7 @@ fn real_space_host(
         mtm,
         Controls {
             serial: 1,
-            status: "已关闭",
+            status: "已关闭".into(),
             can_switch: true,
             can_start: true,
             tun_supported: true,
@@ -594,7 +626,7 @@ fn real_space_host(
                     Controls {
                         serial: writes as u64 + 1,
                         action_serial: writes as u64,
-                        status: "系统代理运行中",
+                        status: "系统代理运行中".into(),
                         can_switch: true,
                         can_stop: true,
                         system_proxy: true,
@@ -654,4 +686,90 @@ fn image_from_rgba(rgba: &tauri::image::Image<'_>) -> objc2::rc::Retained<objc2_
 #[cfg(not(target_os = "macos"))]
 fn main() {
     println!("native macOS tray integration is not applicable on this platform");
+}
+
+#[cfg(target_os = "macos")]
+fn check_relay_frame(mtm: objc2::MainThreadMarker, sample: macos_menu_panel::Traffic) {
+    use macos_menu_panel::{with_item, OPEN, STATUS_ROW};
+
+    with_item(mtm, |item, _, _| {
+        if sample.enabled {
+            macos_title::apply_to_item(item, sample.upload, sample.download, mtm).unwrap();
+        } else {
+            macos_title::clear_item(item, mtm).unwrap();
+        }
+        if sample.upload == 55 {
+            let menu = item.menu(mtm).unwrap();
+            assert_eq!(item.length(), macos_layout::item_width());
+            assert!(menu
+                .itemWithTag(STATUS_ROW)
+                .unwrap()
+                .title()
+                .to_string()
+                .contains(&i18n::text("已关闭")));
+            let open = menu.itemWithTag(OPEN).unwrap();
+            assert_eq!(open.title().to_string(), "Open main window");
+            menu.performActionForItemAtIndex(menu.indexOfItem(&open));
+        }
+    })
+    .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+fn check_menu_relay() {
+    use macos_menu_panel::{Action, Controls, Event, MenuProcess, Traffic};
+    use std::{
+        process::Command,
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    let menu = MenuProcess::default();
+    let (send, receive) = mpsc::channel();
+    menu.start(true, move |event| {
+        let _ = send.send(event);
+    })
+    .unwrap();
+    let next = || receive.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(next(), Event::Ready);
+    let first = menu.worker_id().unwrap();
+    let previous_locale = i18n::active();
+    i18n::activate(i18n::resolve_preference("en"));
+    menu.refresh_locale();
+    menu.update_controls(Controls {
+        serial: 7,
+        action_serial: 3,
+        status: "已关闭".into(),
+        ..Controls::default()
+    });
+    assert!(menu.set_traffic(Traffic {
+        enabled: true,
+        upload: 55,
+        download: 109,
+    }));
+    let Event::Command(command) = next() else {
+        panic!("expected command from the AppKit menu worker");
+    };
+    assert_eq!(command.action, Action::OpenWindow);
+    assert_eq!(command.action_serial, 3);
+    assert!(!menu.is_visible());
+    menu.reject(command.id, "late reply".into());
+    menu.set_traffic(Traffic::default());
+    assert!(Command::new("/bin/kill")
+        .args(["-TERM", &first.to_string()])
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(next(), Event::Ready);
+    assert_ne!(menu.worker_id().unwrap(), first);
+    assert!(receive.recv_timeout(Duration::from_millis(150)).is_err());
+    menu.stop();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while menu.worker_id().is_some() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert!(menu.worker_id().is_none(), "worker must be reaped on exit");
+    i18n::activate(previous_locale);
+    println!("native NSMenu relay: accessory process, locale/state/traffic, dispatch, restart and shutdown passed");
 }

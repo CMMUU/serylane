@@ -15,6 +15,7 @@ use objc2_app_kit::{
     NSUserInterfaceLayoutDirection, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSOperationQueue, NSString};
+use serde::{Deserialize, Serialize};
 use std::{
     cell::{Cell, RefCell},
     sync::{
@@ -26,7 +27,30 @@ use uuid::Uuid;
 
 static MENU_VISIBLE: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) use process::{is_worker, run_worker, MenuProcess};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Traffic {
+    pub enabled: bool,
+    pub upload: u64,
+    pub download: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct MenuCommand {
+    pub action: Action,
+    pub action_serial: u64,
+    pub id: Uuid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum Event {
+    Ready,
+    Visible(bool),
+    Command(MenuCommand),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct RouteToken {
     pub enabled: bool,
     pub revision: u64,
@@ -34,10 +58,10 @@ pub(super) struct RouteToken {
     pub profile_revision: Option<Uuid>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct RouteRow {
     pub token: RouteToken,
-    pub label: &'static str,
+    pub label: String,
     pub message: String,
     pub can_toggle: bool,
     pub active: bool,
@@ -45,12 +69,12 @@ pub(super) struct RouteRow {
     pub target: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct Controls {
     pub serial: u64,
     pub action_serial: u64,
-    pub busy: Option<&'static str>,
-    pub status: &'static str,
+    pub busy: Option<String>,
+    pub status: String,
     pub can_switch: bool,
     pub can_start: bool,
     pub can_stop: bool,
@@ -62,9 +86,8 @@ pub(super) struct Controls {
     pub detail: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Action {
-    Observe,
     SystemProxy(bool),
     Tun(bool),
     Route(RouteToken),
@@ -104,8 +127,8 @@ struct MenuState {
     traffic: Retained<NSTextField>,
     controls: RefCell<Controls>,
     presented: Cell<Presented>,
-    queued: Cell<bool>,
-    on_action: Arc<dyn Fn(Action) + Send + Sync>,
+    queued: Cell<Option<Uuid>>,
+    on_event: Arc<dyn Fn(Event) + Send + Sync>,
     alive: Arc<AtomicBool>,
 }
 
@@ -129,15 +152,15 @@ define_class!(
         #[unsafe(method(menuWillOpen:))]
         fn menu_will_open(&self, _: &NSMenu) {
             if !MENU_VISIBLE.swap(true, Ordering::AcqRel) {
-                // Observe only schedules the existing asynchronous controller.
-                // No window activation or system status I/O in menu tracking.
-                (self.ivars().on_action)(Action::Observe);
+                (self.ivars().on_event)(Event::Visible(true));
             }
         }
 
         #[unsafe(method(menuDidClose:))]
         fn menu_did_close(&self, _: &NSMenu) {
-            MENU_VISIBLE.store(false, Ordering::Release);
+            if MENU_VISIBLE.swap(false, Ordering::AcqRel) {
+                (self.ivars().on_event)(Event::Visible(false));
+            }
         }
     }
 
@@ -154,7 +177,7 @@ define_class!(
                 OPEN => Action::OpenWindow,
                 QUIT => Action::Quit,
                 ROUTE_SETTINGS => Action::OpenRoute,
-                _ if state.queued.get() || view.busy.is_some() => return,
+                _ if state.queued.get().is_some() || view.busy.is_some() => return,
                 SYSTEM if view.can_switch && shown.system_proxy == view.system_proxy =>
                     Action::SystemProxy(!shown.system_proxy),
                 TUN if view.can_switch && view.tun_supported && shown.tun == view.tun =>
@@ -170,16 +193,21 @@ define_class!(
                 STOP if view.can_stop => Action::Stop,
                 _ => return,
             };
+            let command = MenuCommand {
+                action,
+                action_serial: view.action_serial,
+                id: Uuid::new_v4(),
+            };
             drop(view);
             if !matches!(action, Action::OpenWindow | Action::OpenRoute | Action::Quit) {
-                state.queued.set(true);
+                state.queued.set(Some(command.id));
                 render(self, false);
             }
-            let handler = Arc::clone(&state.on_action);
+            let handler = Arc::clone(&state.on_event);
             let alive = Arc::clone(&state.alive);
             let block = RcBlock::new(move || {
                 if alive.load(Ordering::Acquire) {
-                    handler(action);
+                    handler(Event::Command(command));
                 }
             });
             // SAFETY: all captures are Send + Sync. Defer selection until the
@@ -272,17 +300,17 @@ fn render(target: &Target, update_presented: bool) {
         });
     }
     let shown = state.presented.get();
-    let busy = view.busy.is_some() || state.queued.get();
-    let status = match view.busy {
+    let busy = view.busy.is_some() || state.queued.get().is_some();
+    let status = match view.busy.as_deref() {
         Some("starting") => "正在开启代理…",
         Some("switching") => "正在切换网络…",
         Some("stopping") => "正在关闭代理…",
         Some("routing") => "正在应用路由…",
         Some("refreshing") => "正在刷新状态…",
         Some(_) => "正在处理…",
-        None if state.queued.get() => "正在提交…",
+        None if state.queued.get().is_some() => "正在提交…",
         None if view.status.is_empty() => "正在读取代理状态…",
-        None => view.status,
+        None => view.status.as_str(),
     };
     let menu = &state.menu;
     let direction = if i18n::right_to_left() {
@@ -328,7 +356,7 @@ fn render(target: &Target, update_presented: bool) {
         &route_item,
         route.map_or("路由 · 待核对", |r| {
             if r.can_toggle {
-                r.label
+                r.label.as_str()
             } else {
                 "路由 · 待配置"
             }
@@ -414,7 +442,7 @@ pub(super) fn install(
     mtm: MainThreadMarker,
     brand: Retained<NSImage>,
     traffic_enabled: bool,
-    on_action: impl Fn(Action) + Send + Sync + 'static,
+    on_event: impl Fn(Event) + Send + Sync + 'static,
 ) -> Result<(), &'static str> {
     if STATUS.with_borrow(Option::is_some) {
         return Err("已登记状态项");
@@ -438,8 +466,8 @@ pub(super) fn install(
         ),
         controls: RefCell::new(Controls::default()),
         presented: Cell::new(Presented::default()),
-        queued: Cell::new(false),
-        on_action: Arc::new(on_action),
+        queued: Cell::new(None),
+        on_event: Arc::new(on_event),
         alive: Arc::new(AtomicBool::new(true)),
     };
     let target: Retained<Target> =
@@ -493,7 +521,7 @@ pub(super) fn update_controls(_: MainThreadMarker, view: Controls) {
             }
             // Quiet reads must not unlock an action queued on the main run loop.
             if view.action_serial > current.action_serial {
-                state.queued.set(false);
+                state.queued.set(None);
             }
             *current = view;
         }
@@ -501,14 +529,15 @@ pub(super) fn update_controls(_: MainThreadMarker, view: Controls) {
     }
 }
 
-pub(super) fn reject_queued(_: MainThreadMarker, action_serial: u64, detail: String) {
+pub(super) fn reject_queued(_: MainThreadMarker, command: Uuid, detail: String) {
     let target = STATUS.with_borrow(|owned| owned.as_ref().map(|s| s.target.clone()));
     if let Some(target) = target {
         let state = target.ivars();
         let mut view = state.controls.borrow_mut();
-        if view.action_serial != action_serial || !state.queued.replace(false) {
+        if state.queued.get() != Some(command) {
             return;
         }
+        state.queued.set(None);
         if view.detail.is_empty() && view.busy.is_none() {
             view.detail = detail;
         }
@@ -541,4 +570,356 @@ pub(super) fn uninstall(_: MainThreadMarker) {
         owned.bar.removeStatusItem(&owned.item);
     }
     MENU_VISIBLE.store(false, Ordering::Release);
+}
+
+// This process owns presentation only. The parent keeps the controller and
+// Dock identity, and transfers verified state over the child's private pipes.
+mod process {
+    use super::{
+        i18n, install, reject_queued, update_controls, Controls, Event, MainThreadMarker,
+        NSOperationQueue, RcBlock, Traffic, Uuid,
+    };
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSImage};
+    use serde::{de::DeserializeOwned, Deserialize, Serialize};
+    use std::{
+        io::{self, BufRead, BufReader, Write},
+        path::Path,
+        process::{Child, Command, Stdio},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc::{self, SyncSender},
+            Arc, Mutex,
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    const WORKER_ARG: &str = "--serylane-status-menu-worker";
+    const MAX_RESTARTS: u32 = 2;
+
+    #[derive(Clone, Serialize, Deserialize)]
+    struct Rejection {
+        command: Uuid,
+        detail: String,
+    }
+
+    #[derive(Clone, Default, Serialize, Deserialize)]
+    struct Snapshot {
+        locale: String,
+        controls: Controls,
+        traffic: Traffic,
+        rejection: Option<Rejection>,
+    }
+
+    #[derive(Default)]
+    struct State {
+        snapshot: Snapshot,
+        wake: Option<SyncSender<()>>,
+        child: Option<Child>,
+        started: bool,
+        stopping: bool,
+    }
+
+    impl State {
+        fn notify(&self) {
+            if let Some(wake) = &self.wake {
+                let _ = wake.try_send(());
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Shared {
+        state: Mutex<State>,
+        visible: AtomicBool,
+    }
+
+    #[derive(Default)]
+    pub(crate) struct MenuProcess {
+        shared: Arc<Shared>,
+    }
+
+    impl MenuProcess {
+        pub(crate) fn start(
+            &self,
+            traffic_enabled: bool,
+            on_event: impl Fn(Event) + Send + 'static,
+        ) -> io::Result<()> {
+            let mut state = self.shared.state.lock().expect("status menu relay");
+            if state.started || state.stopping {
+                return Err(io::Error::other(
+                    "status menu relay already started or stopped",
+                ));
+            }
+            let executable = std::env::current_exe()?;
+            let child = spawn(&executable)?;
+            state.snapshot.locale = i18n::active().language.to_owned();
+            state.snapshot.traffic.enabled = traffic_enabled;
+            state.started = true;
+            let shared = Arc::clone(&self.shared);
+            thread::spawn(move || supervise(&executable, child, &shared, on_event));
+            Ok(())
+        }
+
+        pub(crate) fn update_controls(&self, controls: Controls) {
+            let mut state = self.shared.state.lock().expect("status menu relay");
+            if controls.serial > state.snapshot.controls.serial {
+                state.snapshot.controls = controls;
+                state.notify();
+            }
+        }
+
+        pub(crate) fn set_traffic(&self, traffic: Traffic) -> bool {
+            let mut state = self.shared.state.lock().expect("status menu relay");
+            if state.snapshot.traffic != traffic {
+                state.snapshot.traffic = traffic;
+                state.notify();
+            }
+            state.started
+        }
+
+        pub(crate) fn refresh_locale(&self) {
+            let mut state = self.shared.state.lock().expect("status menu relay");
+            state.snapshot.locale = i18n::active().language.to_owned();
+            state.notify();
+        }
+
+        pub(crate) fn reject(&self, command: Uuid, detail: String) {
+            let mut state = self.shared.state.lock().expect("status menu relay");
+            state.snapshot.rejection = Some(Rejection { command, detail });
+            state.notify();
+        }
+
+        pub(crate) fn is_visible(&self) -> bool {
+            self.shared.visible.load(Ordering::Acquire)
+        }
+
+        pub(crate) fn stop(&self) {
+            let mut state = self.shared.state.lock().expect("status menu relay");
+            state.stopping = true;
+            self.shared.visible.store(false, Ordering::Release);
+            state.wake = None;
+            if let Some(child) = state.child.as_mut() {
+                // The supervisor reaps it. Close even if AppKit is tracking
+                // a menu or the child is unresponsive.
+                let _ = child.kill();
+            }
+        }
+
+        #[cfg(test)]
+        #[allow(dead_code, reason = "used by the standalone AppKit test executable")]
+        pub(crate) fn worker_id(&self) -> Option<u32> {
+            self.shared
+                .state
+                .lock()
+                .unwrap()
+                .child
+                .as_ref()
+                .map(Child::id)
+        }
+    }
+
+    fn spawn(executable: &Path) -> io::Result<Child> {
+        Command::new(executable)
+            .arg(WORKER_ARG)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+    }
+
+    fn send(output: &mut impl Write, message: &impl Serialize) -> io::Result<()> {
+        serde_json::to_writer(&mut *output, message)?;
+        output.write_all(b"\n")?;
+        output.flush()
+    }
+
+    fn receive<T: DeserializeOwned>(input: &mut impl BufRead) -> io::Result<Option<T>> {
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_str(&line)?))
+    }
+
+    fn supervise(
+        executable: &Path,
+        mut child: Child,
+        shared: &Arc<Shared>,
+        on_event: impl Fn(Event),
+    ) {
+        let mut restarts = 0;
+        loop {
+            let started = Instant::now();
+            serve_connection(child, shared, &on_event);
+            // One broken connection cannot create a tight restart loop. A
+            // healthy session restores the recovery budget for a later crash.
+            if started.elapsed() >= Duration::from_secs(30) {
+                restarts = 0;
+            }
+            let state = shared.state.lock().expect("status menu relay");
+            if state.stopping {
+                return;
+            }
+            if restarts == MAX_RESTARTS {
+                eprintln!("macOS status menu stopped after repeated worker exits");
+                return;
+            }
+            drop(state);
+            restarts += 1;
+            thread::sleep(Duration::from_millis(250 * u64::from(restarts)));
+            if shared.state.lock().expect("status menu relay").stopping {
+                return;
+            }
+            match spawn(executable) {
+                Ok(restarted) => child = restarted,
+                Err(error) => {
+                    eprintln!("macOS status menu restart failed: {error}");
+                    return;
+                }
+            }
+        }
+    }
+
+    fn serve_connection(mut child: Child, shared: &Arc<Shared>, on_event: &impl Fn(Event)) {
+        let mut output = child.stdin.take().expect("status menu stdin");
+        let mut input = BufReader::new(child.stdout.take().expect("status menu stdout"));
+        let (wake, updates) = mpsc::sync_channel(1);
+        {
+            let mut state = shared.state.lock().expect("status menu relay");
+            if state.stopping {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+            state.child = Some(child);
+            state.wake = Some(wake);
+        }
+        let writer_state = Arc::clone(shared);
+        let writer = thread::spawn(move || loop {
+            let next = {
+                let mut state = writer_state.state.lock().expect("status menu relay");
+                let mut snapshot = state.snapshot.clone();
+                snapshot.rejection = state.snapshot.rejection.take();
+                snapshot
+            };
+            if send(&mut output, &next).is_err() || updates.recv().is_err() {
+                break;
+            }
+        });
+        while let Ok(Some(event)) = receive::<Event>(&mut input) {
+            let state = shared.state.lock().expect("status menu relay");
+            if state.stopping {
+                break;
+            }
+            if let Event::Visible(visible) = event {
+                shared.visible.store(visible, Ordering::Release);
+            }
+            drop(state);
+            on_event(event);
+        }
+        let child = {
+            let mut state = shared.state.lock().expect("status menu relay");
+            shared.visible.store(false, Ordering::Release);
+            state.wake = None;
+            state.child.take()
+        };
+        if let Some(mut child) = child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = writer.join();
+    }
+
+    pub(crate) fn is_worker() -> bool {
+        std::env::args_os()
+            .nth(1)
+            .is_some_and(|arg| arg == WORKER_ARG)
+    }
+
+    pub(crate) fn run_worker(
+        brand: impl FnOnce() -> Result<objc2::rc::Retained<NSImage>, &'static str>,
+        paint_traffic: fn(MainThreadMarker, Traffic),
+    ) -> io::Result<()> {
+        let Some(initial) = receive::<Snapshot>(&mut io::stdin().lock())? else {
+            return Ok(());
+        };
+        let mtm =
+            MainThreadMarker::new().ok_or_else(|| io::Error::other("status menu main thread"))?;
+        let app = NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        app.finishLaunching();
+        if app.activationPolicy() != NSApplicationActivationPolicy::Accessory {
+            return Err(io::Error::other("status menu accessory activation policy"));
+        }
+        i18n::activate(i18n::resolve_preference(&initial.locale));
+        install(
+            mtm,
+            brand().map_err(io::Error::other)?,
+            initial.traffic.enabled,
+            |event| {
+                if send(&mut io::stdout().lock(), &event).is_err() {
+                    std::process::exit(0);
+                }
+            },
+        )
+        .map_err(io::Error::other)?;
+        let mut traffic = None;
+        apply_snapshot(mtm, initial, &mut traffic, paint_traffic);
+        send(&mut io::stdout().lock(), &Event::Ready)?;
+
+        // Keep only the latest frame while AppKit is in menu tracking. A
+        // disconnected parent must dismiss the UI even in a nested run loop.
+        let pending = Arc::new(Mutex::new(None::<Snapshot>));
+        let traffic = Arc::new(Mutex::new(traffic));
+        thread::spawn(move || {
+            let mut input = io::stdin().lock();
+            while let Ok(Some(mut next)) = receive::<Snapshot>(&mut input) {
+                let mut frame = pending.lock().expect("status menu frame");
+                let schedule = frame.is_none();
+                if next.rejection.is_none() {
+                    next.rejection = frame.as_mut().and_then(|old| old.rejection.take());
+                }
+                *frame = Some(next);
+                drop(frame);
+                if schedule {
+                    let frame = Arc::clone(&pending);
+                    let traffic = Arc::clone(&traffic);
+                    let block = RcBlock::new(move || {
+                        let next = frame.lock().expect("status menu frame").take();
+                        if let (Some(mtm), Some(next)) = (MainThreadMarker::new(), next) {
+                            let mut traffic = traffic.lock().expect("status menu traffic");
+                            apply_snapshot(mtm, next, &mut traffic, paint_traffic);
+                        }
+                    });
+                    // SAFETY: the block only shares Send + Sync data and
+                    // touches AppKit on the application main thread.
+                    unsafe { NSOperationQueue::mainQueue().addOperationWithBlock(&block) };
+                }
+            }
+            std::process::exit(0);
+        });
+        app.run();
+        super::uninstall(mtm);
+        Ok(())
+    }
+
+    fn apply_snapshot(
+        mtm: MainThreadMarker,
+        frame: Snapshot,
+        traffic: &mut Option<Traffic>,
+        paint_traffic: fn(MainThreadMarker, Traffic),
+    ) {
+        if i18n::active().language != frame.locale {
+            i18n::activate(i18n::resolve_preference(&frame.locale));
+            super::refresh_locale(mtm);
+        }
+        update_controls(mtm, frame.controls);
+        if *traffic != Some(frame.traffic) {
+            *traffic = Some(frame.traffic);
+            paint_traffic(mtm, frame.traffic);
+        }
+        if let Some(rejection) = frame.rejection {
+            reject_queued(mtm, rejection.command, rejection.detail);
+        }
+    }
 }

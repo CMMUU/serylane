@@ -83,3 +83,12 @@
 - 端口处理限于 `src-tauri/src/{runtime,proxy_control}.rs` 及其中的回归测试。实体 Mac 日志两次记录混合端口 7895 返回 `EADDRINUSE`。隔离机在已确认退出的 TUN 内核端口上观察到 `TIME_WAIT`，且无监听进程。清理后系统代理使用同一端口启动。
 - 网络和覆盖实测均使用隔离 macOS。内置屏菜单使用独立候选，在可以专用于验收的时段核对 28 pt 图标、64 pt 流量、左右键和普通桌面及原生全屏。标准菜单外观、点外部或 Esc 收起、长时间保持及确切的一次动作都需有记录。全屏失败先记录复现并暂停发布。本机正式应用及代理不参与测试。
 - 相关说明、发行门禁及 `CMMUU/project-docs` 随 v0.7.48 同步。时间盒为一个工作日。任何一项验收未通过都保留独立提交和实测记录。
+
+## v0.7.48 AppKit 菜单独立进程
+
+- 2026-11-20（Asia/Shanghai），用户确认先完成菜单方案。实体内置屏双版本对照记录在 PR #49，Codex 全屏时常规 AppKit 应用创建了菜单窗口，系统窗口列表标为不可见。同一可执行文件的独立菜单进程原型通过隔离全屏及主窗口派发验证。
+- 本轮改动范围包括 `src-tauri/src/{lib,macos_menu_panel,traffic_monitor}.rs`、`src-tauri/tests/macos_tray_native.rs` 和本门禁。主应用以常规 AppKit 进程保有 Dock、控制器和主窗口，独立辅助进程持有唯一的 `NSStatusItem` 与系统 `NSMenu`。通过匿名管道同步语言、已核对状态和流量，按操作标识识别拒绝反馈。父进程保管子进程生命周期和命令派发。
+- L1 `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` 及 `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 通过。在隔离 macOS 执行 `macos_tray_native`，通过原生绘制、语言、状态、旧操作拒绝、准确派发、独立进程启动、崩溃重启和退出。
+- L1 Apple 芯片 macOS 27.2.1（26B131）安装 Developer ID 签名并公证的完整候选，Gatekeeper 与 SIP 均开启。SHA-256 为 `47309ed8f56b4af21d29a5cdffbe1280747c0df2f073bc52c13074b99fe21b09`。普通桌面与真实 TextEdit 全屏，两种宽度的八次左右键点击均由系统创建可见菜单，TextEdit 保持前台。菜单保持可见约八秒，期间流量行更新。Esc 与点击外部按原生行为收起，系统浅色和深色均显示原生外观。
+- L1 从全屏菜单选择「打开主窗口」显示并切到原应用进程。普通桌面点击 Dock 也切到同一个常规主进程。试验中手动模式菜单启动只出现一个 Mihomo 进程，系统代理菜单显示标准勾选并成功接管隔离机。停止后系统代理和默认路由与基线一致。结束菜单进程后，同一主进程重建菜单。通过菜单退出及在跟踪菜单时结束主进程，均核对两个进程退出。
+- 主窗口完整网页画面仍需实体内置屏复验。隔离 macOS 中，本次候选首次显示窗口及从菜单打开后均观察到空白 WebView，先前隔离候选也复现。下一轮采用准备好的独立标识、独立数据的界面候选，核对两种宽度、主窗口渲染、Dock 与外观。真机门槛通过后才推进发行及集中验收同步。
