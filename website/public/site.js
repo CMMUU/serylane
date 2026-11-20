@@ -4,7 +4,7 @@
 // access a subscription, save a proxy configuration, or connect to Codex.
 (() => {
   const chinese = /^zh(?:-|$)/i.test(document.documentElement.lang);
-  const copy = chinese ? {
+  const fallback = chinese ? {
     openMenu: "打开导航", closeMenu: "关闭导航", retry: "重新查询版本",
     loading: "正在查询最新正式版…",
     latest: version => `当前最新正式版 ${version}。点击下载时再次核对版本。`,
@@ -22,8 +22,20 @@
     failed: "The download center could not verify this package. Click the download again to retry. No download was started.",
   };
 
-  // Navigation also runs on documentation and error pages without a download section.
-  const menuButton = document.querySelector(".menu-toggle");
+  const data = document.documentElement.dataset ?? {};
+  const format = (template, values) => template.replace(/\{(version|target)\}/g, (_, key) => values[key]);
+  const copy = {
+    openMenu: data.navOpen ?? fallback.openMenu, closeMenu: data.navClose ?? fallback.closeMenu,
+    retry: data.releaseRetry ?? fallback.retry, loading: data.releaseLoading ?? fallback.loading,
+    latest: version => data.releaseLatest ? format(data.releaseLatest, { version }) : fallback.latest(version),
+    unavailable: data.releaseUnavailable ?? fallback.unavailable,
+    checking: target => data.releaseChecking ? format(data.releaseChecking, { target }) : fallback.checking(target),
+    started: (version, target) => data.releaseStarted ? format(data.releaseStarted, { version, target }) : fallback.started(version, target),
+    failed: data.releaseFailed ?? fallback.failed,
+  };
+
+  // The generated site uses native details. Keep the standalone 404 and raw sources working.
+  const menuButton = data.siteLocale ? null : document.querySelector(".menu-toggle");
   const menu = document.querySelector("#main-nav");
   function setMenu(open, returnFocus = false) {
     if (!menu || !menuButton) return;
@@ -40,7 +52,7 @@
   document.addEventListener("click", event => {
     if (menuButton?.getAttribute("aria-expanded") === "true" && !event.target.closest(".site-header")) setMenu(false);
   });
-  window.matchMedia("(min-width: 641px)").addEventListener("change", event => { if (event.matches) setMenu(false); });
+  if (menuButton) window.matchMedia("(min-width: 641px)").addEventListener("change", event => { if (event.matches) setMenu(false); });
 
   const links = [...document.querySelectorAll(".download-target[data-download-target]")];
   if (!links.length) return;

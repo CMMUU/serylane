@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
+import { contentRoutes, output } from './site-locales.mjs';
 import { retryRead, sourceAssetBytes, uploadedVersion, verifyStatic, verifyDownloads, verifyGithubAccelerator, STATIC_ASSETS, staticAssetManifest, verifyNotFound } from './deploy-site.mjs';
 
 test('accelerator is verified by streaming the exact GitHub release package', async () => {
@@ -26,26 +27,29 @@ test('accelerator is verified by streaming the exact GitHub release package', as
 });
 
 test('static byte proof includes every canonical locale page and shared theme resource', async () => {
-  const pages = ['/', '/docs/', '/docs/routing', '/docs/privacy', '/docs/verification'];
-  for (const page of [...pages, ...pages.map(path => '/zh' + path)]) assert.ok(Object.hasOwn(STATIC_ASSETS, page));
+  assert.equal(contentRoutes.size, 66);
+  for (const page of contentRoutes.keys()) assert.ok(Object.hasOwn(STATIC_ASSETS, page));
+  assert.ok(Object.hasOwn(STATIC_ASSETS, '/language.js'));
+  assert.ok(!Object.hasOwn(STATIC_ASSETS, '/docs-comments.js'));
   assert.ok(Object.hasOwn(STATIC_ASSETS, '/theme.js'));
   assert.ok(Object.hasOwn(STATIC_ASSETS, '/assets/serylane-mark.png'));
   assert.ok(!Object.keys(STATIC_ASSETS).some(path => /index\.html|\/404/.test(path)));
   const manifest = await staticAssetManifest();
   assert.deepEqual(Object.keys(manifest).sort(), Object.keys(STATIC_ASSETS).sort());
   for (const [route, file] of Object.entries(STATIC_ASSETS)) {
-    const expected = createHash('sha256').update(await readFile(new URL('../public/' + file, import.meta.url))).digest('hex');
+    const expected = createHash('sha256').update(await readFile(new URL(file, output))).digest('hex');
     assert.equal(manifest[route], expected);
   }
   const marker = { sourceCommit: 'a'.repeat(40), websiteTree: 'b'.repeat(40), files: manifest };
   const fetcher = changed => async url => {
     if (url.endsWith('/build-info.json')) return Response.json(marker, { headers: { 'cache-control': 'no-store' } });
     const path = new URL(url).pathname;
-    return new Response(changed === path ? 'stale localized page or theme' : await readFile(new URL('../public/' + STATIC_ASSETS[path], import.meta.url)));
+    return new Response(changed === path ? 'stale localized page or theme' : await readFile(new URL(STATIC_ASSETS[path], output)));
   };
   await verifyStatic(marker, fetcher(null));
   await assert.rejects(verifyStatic(marker, fetcher('/zh/')));
   await assert.rejects(verifyStatic(marker, fetcher('/zh/docs/routing')));
+  await assert.rejects(verifyStatic(marker, fetcher('/ar/docs/guide/')));
   await assert.rejects(verifyStatic(marker, fetcher('/theme.js')));
 });
 

@@ -3,9 +3,9 @@ name: Website checks and deployment
 on:
   push:
     branches: [main]
-    paths: ['website/**', '.github/workflows/website.yml']
+    paths: ['website/**', 'locales/manifest.json', '.github/workflows/website.yml']
   pull_request:
-    paths: ['website/**', '.github/workflows/website.yml']
+    paths: ['website/**', 'locales/manifest.json', '.github/workflows/website.yml']
   workflow_call:
     inputs:
       deploy:

@@ -1,0 +1,434 @@
+[
+  {
+    "source": "Skip to content",
+    "id": 0,
+    "ui": "skip"
+  },
+  {
+    "source": "Serylane home",
+    "id": 1,
+    "ui": "home"
+  },
+  {
+    "source": "Serylane",
+    "id": 2,
+    "invariant": true
+  },
+  {
+    "source": "Main navigation",
+    "id": 3,
+    "ui": "nav"
+  },
+  {
+    "source": "Capabilities",
+    "id": 4,
+    "ui": "capabilities"
+  },
+  {
+    "source": "Docs",
+    "id": 5,
+    "ui": "docs"
+  },
+  {
+    "source": "GitHub",
+    "id": 6,
+    "invariant": true
+  },
+  {
+    "source": "Download",
+    "id": 7,
+    "ui": "download"
+  },
+  {
+    "source": "Appearance",
+    "id": 8,
+    "ui": "appearance"
+  },
+  {
+    "source": "Dark mode",
+    "id": 9,
+    "ui": "dark"
+  },
+  {
+    "source": "Light mode",
+    "id": 10,
+    "ui": "light"
+  },
+  {
+    "source": "Follow system",
+    "id": 11,
+    "ui": "system"
+  },
+  {
+    "source": "Open navigation",
+    "id": 12,
+    "ui": "open"
+  },
+  {
+    "source": "AN OPEN-SOURCE DESKTOP PROXY CLIENT",
+    "id": 13
+  },
+  {
+    "source": "Your network.",
+    "id": 14
+  },
+  {
+    "source": "Your rules.",
+    "id": 15
+  },
+  {
+    "source": "Bring your config. Choose your routes.",
+    "id": 16
+  },
+  {
+    "source": "See what’s happening.",
+    "id": 17
+  },
+  {
+    "source": "Powered by Mihomo. Built for your desktop.",
+    "id": 18
+  },
+  {
+    "source": "Download Serylane",
+    "id": 19
+  },
+  {
+    "source": "View on GitHub",
+    "id": 20
+  },
+  {
+    "source": "Windows",
+    "id": 21,
+    "invariant": true
+  },
+  {
+    "source": "/",
+    "id": 22,
+    "invariant": true
+  },
+  {
+    "source": "macOS",
+    "id": 23,
+    "invariant": true
+  },
+  {
+    "source": "Linux",
+    "id": 24,
+    "invariant": true
+  },
+  {
+    "source": "Your config",
+    "id": 25
+  },
+  {
+    "source": "Manual nodes",
+    "id": 26
+  },
+  {
+    "source": "Rule-based routing",
+    "id": 27
+  },
+  {
+    "source": "Domain routing",
+    "id": 28,
+    "ui": "routing"
+  },
+  {
+    "source": "Off by default",
+    "id": 29
+  },
+  {
+    "source": "Concept diagram — not live traffic",
+    "id": 30
+  },
+  {
+    "source": "Pause animation",
+    "id": 31,
+    "ui": "pause"
+  },
+  {
+    "source": "01 / PURPOSEFUL CONTROL",
+    "id": 32
+  },
+  {
+    "source": "You decide.",
+    "id": 33
+  },
+  {
+    "source": "The details",
+    "id": 34
+  },
+  {
+    "source": "stay visible.",
+    "id": 35
+  },
+  {
+    "source": "Explore the workflow",
+    "id": 36
+  },
+  {
+    "source": "01",
+    "id": 37,
+    "invariant": true
+  },
+  {
+    "source": "CONTROL",
+    "id": 38
+  },
+  {
+    "source": "Know your config.",
+    "id": 39
+  },
+  {
+    "source": "Review subscription usage, expiry and refresh state, without losing the details.",
+    "id": 40
+  },
+  {
+    "source": "02",
+    "id": 41,
+    "invariant": true
+  },
+  {
+    "source": "CONFIGURE",
+    "id": 42
+  },
+  {
+    "source": "Set clear boundaries.",
+    "id": 43
+  },
+  {
+    "source": "Choose your exits. Enable domain routing only when you need it.",
+    "id": 44
+  },
+  {
+    "source": "03",
+    "id": 45,
+    "invariant": true
+  },
+  {
+    "source": "OBSERVE",
+    "id": 46
+  },
+  {
+    "source": "Inspect each step.",
+    "id": 47
+  },
+  {
+    "source": "Explore connections, logs and step-by-step diagnostic results.",
+    "id": 48
+  },
+  {
+    "source": "Domain routing is off by default. Saving settings and applying them are separate actions.",
+    "id": 49
+  },
+  {
+    "source": "Technology and license",
+    "id": 50
+  },
+  {
+    "source": "Mihomo core",
+    "id": 51
+  },
+  {
+    "source": "Rust + Tauri 2",
+    "id": 52,
+    "invariant": true
+  },
+  {
+    "source": "GPL-3.0-only",
+    "id": 53,
+    "invariant": true
+  },
+  {
+    "source": "02 / MADE FOR YOUR DESKTOP",
+    "id": 54
+  },
+  {
+    "source": "Choose your",
+    "id": 55
+  },
+  {
+    "source": "platform.",
+    "id": 56
+  },
+  {
+    "source": "The right package.",
+    "id": 57
+  },
+  {
+    "source": "One Download Center.",
+    "id": 58
+  },
+  {
+    "source": "Verify your download",
+    "id": 59
+  },
+  {
+    "source": "EXE",
+    "id": 60,
+    "invariant": true
+  },
+  {
+    "source": "Download latest Serylane Windows x64 EXE from Download Center; verify release on click",
+    "id": 61,
+    "package": "Windows x64 EXE"
+  },
+  {
+    "source": "x64",
+    "id": 62,
+    "invariant": true
+  },
+  {
+    "source": "Download latest Serylane Windows ARM64 EXE from Download Center; verify release on click",
+    "id": 63,
+    "package": "Windows ARM64 EXE"
+  },
+  {
+    "source": "ARM64",
+    "id": 64,
+    "invariant": true
+  },
+  {
+    "source": "DMG",
+    "id": 65,
+    "invariant": true
+  },
+  {
+    "source": "Download latest Serylane macOS Apple silicon (M series) DMG from Download Center; verify release on click",
+    "id": 66,
+    "package": "mac-arm"
+  },
+  {
+    "source": "Apple silicon (M series)",
+    "id": 67
+  },
+  {
+    "source": "Download latest Serylane macOS Intel DMG from Download Center; verify release on click",
+    "id": 68,
+    "package": "macOS Intel DMG"
+  },
+  {
+    "source": "Intel",
+    "id": 69,
+    "invariant": true
+  },
+  {
+    "source": "AppImage",
+    "id": 70,
+    "invariant": true
+  },
+  {
+    "source": "Download latest Serylane Linux x64 AppImage from Download Center; verify release on click",
+    "id": 71,
+    "package": "Linux x64 AppImage"
+  },
+  {
+    "source": "Download latest Serylane Linux ARM64 AppImage from Download Center; verify release on click",
+    "id": 72,
+    "package": "Linux ARM64 AppImage"
+  },
+  {
+    "source": "Latest release checked at download. If unavailable, retry.",
+    "id": 73
+  },
+  {
+    "source": "Retry version check",
+    "id": 74,
+    "ui": "retry"
+  },
+  {
+    "source": "On a Mac, check Apple menu → About This Mac. Choose Apple silicon for M-series chips, or Intel for Intel processors.",
+    "id": 75
+  },
+  {
+    "source": "Each package link verifies the latest release and architecture at Download Center. JavaScript is not required to follow these links.",
+    "id": 76
+  },
+  {
+    "source": "All versions & checksums",
+    "id": 77
+  },
+  {
+    "source": "Changelog",
+    "id": 78
+  },
+  {
+    "source": "03 / BEFORE YOU START",
+    "id": 79
+  },
+  {
+    "source": "A few clear",
+    "id": 80
+  },
+  {
+    "source": "answers.",
+    "id": 81
+  },
+  {
+    "source": "Are nodes or subscriptions included?",
+    "id": 82
+  },
+  {
+    "source": "No. Serylane is a desktop client, not a proxy service. Bring your own subscription or local Mihomo configuration.",
+    "id": 83
+  },
+  {
+    "source": "Will it enable routing or connect Codex automatically?",
+    "id": 84
+  },
+  {
+    "source": "No. Domain routing is optional and off by default. Choose tools and an exit, save your draft, then explicitly apply it. New Codex attachment and application-based proxying are currently disabled.",
+    "id": 85
+  },
+  {
+    "source": "Read the routing guide",
+    "id": 86
+  },
+  {
+    "source": "Is TUN ready on every platform?",
+    "id": 87
+  },
+  {
+    "source": "macOS TUN requires a complete Developer ID-signed and Apple-notarized installer. The v0.7.45 release addresses stale helper registrations. Windows TUN is experimental and requires an administrator session; Linux TUN is not implemented. Switching nodes does not resume an interrupted stream.",
+    "id": 88
+  },
+  {
+    "source": "Platform limitations",
+    "id": 89
+  },
+  {
+    "source": "Clear.",
+    "id": 90
+  },
+  {
+    "source": "Intentional.",
+    "id": 91
+  },
+  {
+    "source": "Footer navigation",
+    "id": 92
+  },
+  {
+    "source": "Verification",
+    "id": 93,
+    "ui": "verification"
+  },
+  {
+    "source": "Privacy",
+    "id": 94,
+    "ui": "privacy"
+  },
+  {
+    "source": "Source on GitHub",
+    "id": 95,
+    "ui": "source"
+  },
+  {
+    "source": "GPL-3.0-only · Independent of Mihomo, Clash and OpenAI.",
+    "id": 96
+  },
+  {
+    "source": "Bring your own nodes or subscription.",
+    "id": 97
+  }
+]

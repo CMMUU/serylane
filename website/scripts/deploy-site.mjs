@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { contentRoutes, output } from './site-locales.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const repository = 'CMMUU/serylane';
@@ -48,18 +49,14 @@ async function currentMain() {
 // Canonical routes only: Static Assets redirects /zh/index.html to /zh/.
 // Keep all localized content and critical shared resources in the byte proof.
 export const STATIC_ASSETS = Object.freeze({
-  '/': 'index.html', '/zh/': 'zh/index.html',
-  '/docs/': 'docs/index.html', '/zh/docs/': 'zh/docs/index.html',
-  '/docs/routing': 'docs/routing.html', '/zh/docs/routing': 'zh/docs/routing.html',
-  '/docs/verification': 'docs/verification.html', '/zh/docs/verification': 'zh/docs/verification.html',
-  '/docs/privacy': 'docs/privacy.html', '/zh/docs/privacy': 'zh/docs/privacy.html',
-  '/site.js': 'site.js', '/theme.js': 'theme.js', '/styles.css': 'styles.css',
+  ...Object.fromEntries([...contentRoutes].map(([route, { file }]) => [route, file])),
+  '/site.js': 'site.js', '/language.js': 'language.js', '/theme.js': 'theme.js', '/styles.css': 'styles.css',
   '/robots.txt': 'robots.txt', '/sitemap.xml': 'sitemap.xml',
   '/assets/serylane-mark.png': 'assets/serylane-mark.png', '/favicon.png': 'favicon.png',
 });
 export async function staticAssetManifest() {
   return Object.fromEntries(await Promise.all(Object.entries(STATIC_ASSETS)
-    .map(async ([route, path]) => [route, sha256(await readFile(root + 'public/' + path))])));
+    .map(async ([route, path]) => [route, sha256(await readFile(new URL(path, output)))])));
 }
 export async function verifyNotFound(fetcher = request) {
   for (const path of ['/__serylane_missing_page__', '/zh/__serylane_missing_page__']) {
@@ -173,7 +170,7 @@ export async function main() {
   const files = await staticAssetManifest();
   const expected = { sourceCommit: commit, websiteTree: git('rev-parse', 'HEAD:website'), files };
   // Generated deployment artifact; ignored by Git, no credentials or user data.
-  await writeFile(root + 'public/build-info.json', JSON.stringify(expected) + '\n');
+  await writeFile(new URL('build-info.json', output), JSON.stringify(expected) + '\n');
   const run = args => {
     try {
       return execFileSync(process.execPath, [root + 'node_modules/wrangler/bin/wrangler.js', ...args], {

@@ -185,7 +185,7 @@ test('center failures produce retryable 503, no other source and no sensitive de
       assert.match(body, /重试/);
       if (path.startsWith('/download/')) {
         assert.match(reply.headers.get('content-type'), /^text\/html/);
-        assert.match(body, /<html lang="en" data-theme="dark">/);
+        assert.match(body, /<html lang="en" data-theme="system">/);
         assert.match(body, /The download center is temporarily unavailable\./);
         assert.match(body, /No download was started\./);
         assert.match(body, /<section lang="zh-CN"/);
@@ -258,5 +258,22 @@ test('archive HEAD must confirm exact size and non-HTML file, with no redirects'
     assert.equal(await reply.text(), '');
     assert.equal(calls.length, 2);
     assert.ok(calls.every(call => call.url === CENTER_API || call.url === data.assets['windows-x64'].fileUrl));
+  }
+});
+
+test('retired comment routes return no-store 404 without contacting GitHub or the edge cache', async () => {
+  const noFetch = () => assert.fail('Retired comments must not make any upstream request');
+  const unusedCache = () => assert.fail('Retired comments must not read or update the edge cache');
+  const edge = { cache: { match: unusedCache, put: unusedCache }, waitUntil: unusedCache };
+  for (const base of ['/api/docs/comments', '/api/docs/zh-hant/comments']) {
+    for (const path of [base, base + '?page=2', base + '/']) {
+      for (const method of ['GET', 'HEAD', 'POST']) {
+        const reply = await handle(request(path, method), env, noFetch, edge);
+        assert.equal(reply.status, 404, method + ' ' + path);
+        assert.match(reply.headers.get('cache-control'), /no-store/);
+        if (method === 'HEAD') assert.equal(await reply.text(), '');
+        else assert.deepEqual(await reply.json(), { error: 'NOT_FOUND' });
+      }
+    }
   }
 });
