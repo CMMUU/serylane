@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { DOCS_COMMENTS_PAGE, DOCS_COMMENTS_API, DOCS_COMMENTS_THREAD } from '../src/docs-comments.ts';
+import { DOCS_COMMENTS_API, DOCS_COMMENTS_THREAD } from '../src/docs-comments.ts';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { contentRoutes, equivalents, locales, origin, outputPath as root, pathFor, readUI } from './site-locales.mjs';
@@ -25,6 +25,7 @@ const htmls = new Map();
 const titles = new Set();
 const descriptions = new Set();
 let checkedLinks = 0;
+let documentedPages = 0;
 function checkSchema(value) {
   if (!value || typeof value !== 'object') return;
   assert.ok(!Object.hasOwn(value, 'aggregateRating') && !Object.hasOwn(value, 'review'), 'Do not fabricate ratings/reviews');
@@ -123,15 +124,21 @@ for (const path of files.filter(path => path.endsWith('.html'))) {
   assert.ok(mobile && tags(mobile, 'summary').length === 1, route + ': native mobile navigation');
   assert.deepEqual(tags(mobile, 'a').map(link => link.href), tags(nav, 'a').map(link => link.href), route + ': same links in mobile and desktop');
   for (const kind of ['guide', 'docs']) assert.ok(tags(nav, 'a').some(link => link.href === pathFor(kind, locale)), route + ': localized entry ' + kind);
-  const comments = route === DOCS_COMMENTS_PAGE;
-  assert.equal(tags(html, 'script').filter(tag => tag.src === '/docs-comments.js').length, Number(comments));
-  assert.equal(html.includes('class="docs-feedback-layout"'), comments);
-  assert.equal(html.includes('data-docs-comments='), comments);
-  if (comments) {
-    const toc = html.match(/<nav class="chapter-nav"[^>]*>[\s\S]*?<\/nav>/)?.[0];
-    assert.ok(toc, 'Traditional Chinese docs show a chapter menu');
-    assert.deepEqual(tags(toc, 'a').map(link => link.href), ['#start', '#current-capabilities', '#tun-compatibility', '#download-center', '#history']);
+  const isDoc = page !== 'home';
+  assert.equal(tags(html, 'script').filter(tag => tag.src === '/docs-comments.js').length, Number(isDoc));
+  assert.equal(html.includes('class="docs-feedback-layout"'), isDoc);
+  assert.equal(html.includes('data-docs-comments='), isDoc);
+  if (isDoc) {
+    documentedPages++;
+    const tocEntries = [...html.matchAll(/<nav class="chapter-nav"[^>]*>[\s\S]*?<\/nav>/g)];
+    assert.equal(tocEntries.length, 1, route + ': a single documentation TOC');
+    const toc = tocEntries[0][0];
+    assert.match(toc, /<details class="chapter-details" open><summary>/, route + ': native collapsible TOC');
+    const chapterLinks = tags(toc, 'a').map(link => link.href);
+    assert.ok(chapterLinks.length >= 3 && new Set(chapterLinks).size === chapterLinks.length);
+    for (const href of chapterLinks) assert.ok(href.startsWith('#') && ids.includes(href.slice(1)), route + ': existing local chapter ' + href);
     assert.ok(html.indexOf(toc) < html.indexOf('class="chapter-content"') && html.indexOf('class="chapter-content"') < html.indexOf('data-docs-comments='));
+    assert.equal((html.match(/data-docs-comments="/g) ?? []).length, 1, route + ': one feedback panel');
     assert.ok(html.includes('data-docs-comments="' + DOCS_COMMENTS_API + '"'));
     assert.ok(tags(html, 'a').some(link => link.href === DOCS_COMMENTS_THREAD && link.rel === 'noopener noreferrer'));
   }
@@ -192,6 +199,7 @@ for (const prefix of ['', '/zh']) {
     assert.ok(home.includes(`href="/download/${system}-${architecture}"`), `${prefix}: six no-JS routes`);
   }
 }
+assert.equal(documentedPages, 55, 'All five kinds of documentation in eleven locales');
 const sitemap = await readFile(join(root, 'sitemap.xml'), 'utf8');
 const listed = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(match => match[1]).sort();
 assert.deepEqual(listed, expectedRoutes.filter(route => route !== '/404').map(route => origin + route).sort(), 'Sitemap has all canonical content pages, no error/API/download routes');
@@ -234,4 +242,4 @@ assert.equal(config.assets.not_found_handling, '404-page');
 assert.equal(config.workers_dev, false);
 assert.deepEqual(config.assets.run_worker_first, ['/api/*', '/download/*']);
 assert.equal(config.assets.binding, 'ASSETS');
-console.log(`PASS: ${htmls.size} static HTML pages, ${checkedLinks} local links/assets; 11-language dropdown/TOC/canonical/hreflang/sitemap/JSON-LD, historical anchors, CSP, one-key theme privacy, and allowlisted download/comments network scope.`);
+console.log(`PASS: ${htmls.size} static HTML pages, ${checkedLinks} local links/assets; 55 docs with shared TOC and feedback; 11-language dropdown/canonical/hreflang/sitemap/JSON-LD, historical anchors, CSP, one-key theme privacy, and allowlisted download/comments network scope.`);

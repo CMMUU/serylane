@@ -2,13 +2,17 @@ import { boundedText } from './releases.ts';
 import type { Fetcher } from './releases.ts';
 import type { GithubUpdateCache } from './github-updates.ts';
 
-export const DOCS_COMMENTS_PAGE = '/zh-hant/docs/';
-export const DOCS_COMMENTS_API = '/api/docs/zh-hant/comments';
-export const DOCS_COMMENTS_THREAD = 'https://github.com/CMMUU/serylane/issues/52';
-const upstream = 'https://api.github.com/repos/CMMUU/serylane/issues/52/comments?per_page=6';
-const key = 'https://serylane.cmmuu.com' + DOCS_COMMENTS_API;
+export const DOCS_COMMENTS_API = '/api/docs/comments';
+export const DOCS_COMMENTS_LEGACY_API = '/api/docs/zh-hant/comments';
+const repository = 'CMMUU/serylane';
+const issueNumber = 54;
+export const DOCS_COMMENTS_ISSUES = 'https://github.com/' + repository + '/issues';
+export const DOCS_COMMENTS_THREAD = DOCS_COMMENTS_ISSUES + '/' + issueNumber;
+const upstream = 'https://api.github.com/repos/' + repository + '/issues/' + issueNumber + '/comments?per_page=6';
+const key = 'https://serylane.cmmuu.com' + DOCS_COMMENTS_API + '/issue-' + issueNumber;
 const headers = { 'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' };
 const previewLimit = 420;
+class ThreadUnavailable extends Error {}
 
 type CommentPreview = { id: number; author: string; text: string; createdAt: string };
 const inFlight = new WeakMap<Fetcher, Promise<CommentPreview[]>>();
@@ -29,6 +33,10 @@ async function readPreviews(fetcher: Fetcher): Promise<CommentPreview[]> {
       await response.body?.cancel();
       response = await fetcher(upstream + '&page=' + page, options);
     }
+  }
+  if (response.status === 404 || response.status === 410) {
+    await response.body?.cancel();
+    throw new ThreadUnavailable('The configured GitHub issue is missing');
   }
   const feed = JSON.parse(await boundedText(response, 1024 * 1024));
   if (!Array.isArray(feed)) throw new Error('Unrecognized GitHub comment feed');
@@ -75,8 +83,8 @@ export async function docsComments(request: Request, url: URL, fetcher: Fetcher,
         headers: { ...headers, 'Cache-Control': 'public, max-age=300' },
       });
       if (edge) edge.waitUntil(edge.cache.put(key, result.clone()).catch(() => {}));
-    } catch {
-      result = error(503, 'COMMENTS_UNAVAILABLE', { 'Retry-After': '30' });
+    } catch (cause) {
+      result = cause instanceof ThreadUnavailable ? error(410, 'THREAD_UNAVAILABLE') : error(503, 'COMMENTS_UNAVAILABLE', { 'Retry-After': '30' });
     }
   }
   if (request.method === 'HEAD') {

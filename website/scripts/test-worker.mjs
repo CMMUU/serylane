@@ -262,7 +262,7 @@ test('archive HEAD must confirm exact size and non-HTML file, with no redirects'
 });
 
 test('only the fixed public GitHub thread is read; previews are bounded and share the edge cache', async () => {
-  const path = '/api/docs/zh-hant/comments';
+  const path = '/api/docs/comments';
   const sampleDate = '2026-11-20T01:00:00Z';
   const cached = new Map();
   const background = [];
@@ -278,7 +278,7 @@ test('only the fixed public GitHub thread is read; previews are bounded and shar
   const wait = new Promise(resolve => { proceed = resolve; });
   const fetcher = async (url, init) => {
     reads++;
-    assert.equal(url, 'https://api.github.com/repos/CMMUU/serylane/issues/52/comments?per_page=6');
+    assert.equal(url, 'https://api.github.com/repos/CMMUU/serylane/issues/54/comments?per_page=6');
     assert.equal(init.redirect, 'manual');
     assert.equal(init.headers.Accept, 'application/vnd.github.text+json');
     assert.equal(init.headers.Authorization, undefined);
@@ -306,14 +306,14 @@ test('only the fixed public GitHub thread is read; previews are bounded and shar
   assert.equal(payload.comments[1].text, '說'.repeat(420) + '…');
   assert.equal(payload.comments[1].author, 'ghost');
   await Promise.all(background);
-  const head = await handle(request(path, 'HEAD'), env, fetcher, edge);
+  const head = await handle(request('/api/docs/zh-hant/comments', 'HEAD'), env, fetcher, edge);
   assert.equal(await head.text(), '');
   assert.equal(head.status, 200);
-  assert.equal(reads, 1);
+  assert.equal(reads, 1, 'The legacy alias shares the same thread and edge cache');
 });
 
 test('docs comment preview handles empty, upstream errors, and requests outside the fixed read contract', async () => {
-  const path = '/api/docs/zh-hant/comments';
+  const path = '/api/docs/comments';
   const noFetch = () => assert.fail('A rejected comment request must not contact GitHub');
   const post = await handle(request(path, 'POST'), env, noFetch);
   assert.equal(post.status, 405);
@@ -338,18 +338,28 @@ test('docs comment preview handles empty, upstream errors, and requests outside 
 
 test('long discussions use the last limited page without following an upstream URL', async () => {
   const calls = [];
-  const result = await handle(request('/api/docs/zh-hant/comments'), env, async (url, options) => {
+  const result = await handle(request('/api/docs/comments'), env, async (url, options) => {
     calls.push([url, options.signal]);
     if (calls.length === 1) return Response.json([], {
-      headers: { Link: '<https://api.github.com/repositories/42/issues/52/comments?per_page=6&page=3>; rel="last"' },
+      headers: { Link: '<https://api.github.com/repositories/42/issues/54/comments?per_page=6&page=3>; rel="last"' },
     });
     return Response.json([{ id: 12, user: { login: 'contributor' }, body_text: '更新說明', created_at: '2026-11-20T01:00:00Z' }]);
   });
   assert.equal(result.status, 200);
   assert.equal((await result.json()).comments[0].id, 12);
   assert.deepEqual(calls.map(call => call[0]), [
-    'https://api.github.com/repos/CMMUU/serylane/issues/52/comments?per_page=6',
-    'https://api.github.com/repos/CMMUU/serylane/issues/52/comments?per_page=6&page=3',
+    'https://api.github.com/repos/CMMUU/serylane/issues/54/comments?per_page=6',
+    'https://api.github.com/repos/CMMUU/serylane/issues/54/comments?per_page=6&page=3',
   ]);
   assert.equal(calls[0][1], calls[1][1], 'One timeout covers both requests');
+});
+
+
+test('a deleted or inaccessible feedback thread is distinguished from a temporary failure', async () => {
+  for (const status of [404, 410]) {
+    const res = await handle(request('/api/docs/comments'), env, async () => new Response(null, { status }));
+    assert.equal(res.status, 410);
+    assert.deepEqual(await res.json(), { error: 'THREAD_UNAVAILABLE' });
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+  }
 });

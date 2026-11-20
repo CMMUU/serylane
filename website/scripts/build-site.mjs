@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { DOCS_COMMENTS_PAGE, DOCS_COMMENTS_API, DOCS_COMMENTS_THREAD } from '../src/docs-comments.ts';
+import { DOCS_COMMENTS_API, DOCS_COMMENTS_ISSUES, DOCS_COMMENTS_THREAD } from '../src/docs-comments.ts';
 import { contentRoutes, english, equivalents, locales, origin, output, outputPath, pathFor, readUI } from './site-locales.mjs';
 
 const source = new URL('../public/', import.meta.url);
@@ -234,35 +234,59 @@ const related = (page, locale, ui) => '<nav class="document-nav" aria-label="' +
   ['docs', 'guide', 'routing', 'verification', 'privacy'].filter(key => key !== page).map(key =>
     '<a href="' + pathFor(key, locale) + '">' + esc(ui[key]) + '</a>').join('') + '</nav>';
 
-function commentsPanel() {
-  return '<aside class="docs-comments" data-docs-comments="' + DOCS_COMMENTS_API + '" aria-labelledby="docs-comments-title">' +
-    '<h2 id="docs-comments-title">GitHub 留言</h2><p>分享本頁的更正建議或使用心得。留言是公開的，請勿附上訂閱網址或帳密。</p>' +
-    '<a class="button button-secondary comments-thread" href="' + DOCS_COMMENTS_THREAD + '" data-comments-thread target="_blank" rel="noopener noreferrer">前往 GitHub 留言</a>' +
-    '<p class="comments-status" data-comments-status role="status">完整留言可在 GitHub 查看。</p><ul class="comments-list" data-comments-list hidden></ul>' +
-    '<button class="text-link" type="button" data-comments-retry hidden>重新讀取留言</button></aside>';
+function commentsPanel(copy) {
+  const attributes = data({
+    'docs-comments': DOCS_COMMENTS_API, 'comments-issues': DOCS_COMMENTS_ISSUES,
+    'comments-loading': copy.loading, 'comments-preview': copy.preview, 'comments-empty': copy.empty,
+    'comments-unavailable': copy.unavailable, 'comments-missing': copy.missing, 'comments-browse': copy.browse,
+  });
+  return '<aside class="docs-comments"' + attributes + ' aria-labelledby="docs-comments-title">' +
+    '<h2 id="docs-comments-title">' + esc(copy.title) + '</h2><p>' + esc(copy.intro) + '</p>' +
+    '<a class="button button-secondary comments-thread" href="' + DOCS_COMMENTS_THREAD + '" data-comments-thread target="_blank" rel="noopener noreferrer">' + esc(copy.open) + '</a>' +
+    '<p class="comments-status" data-comments-status role="status">' + esc(copy.initial) + '</p><ul class="comments-list" data-comments-list hidden></ul>' +
+    '<button class="text-link" type="button" data-comments-retry hidden>' + esc(copy.retry) + '</button></aside>';
+}
+
+function docsLayout(html, route, ui, copy) {
+  const root = '<main id="main" class="document-main page-width">';
+  return html.replace('</head>', '<script src="/docs-comments.js" defer></script>\n</head>')
+    .replace(/<main id="main" class="document-main page-width">([\s\S]*?)<\/main>/, (_, body) => {
+      // Reuse the source TOC, rather than regenerating fragment names or listing every historical release.
+      const toc = [...body.matchAll(/<nav class="document-nav"[^>]*>[\s\S]*?<\/nav>/g)]
+        .find(([nav]) => /href="#[^"]+"/.test(nav));
+      assert.ok(toc, route + ': source has a chapter navigation block');
+      const links = [...toc[0].matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/g)].map(([link]) => link);
+      const chapters = links.filter(link => /href="#[^"]+"/.test(link));
+      const other = links.filter(link => !chapters.includes(link));
+      assert.ok(chapters.length >= 3, route + ': chapter navigation is non-empty');
+      const fullToc = '<nav class="chapter-nav" aria-label="' + esc(ui.toc) + '" data-chapter-nav>' +
+        '<details class="chapter-details" open><summary>' + esc(ui.toc) + '</summary><ol>' +
+        chapters.map(link => '<li>' + link + '</li>').join('') + '</ol></details></nav>';
+      const extras = other.length ? '<nav class="document-nav" aria-label="' + esc(ui.related) + '">' + other.join('') + '</nav>' : '';
+      return root.replace('page-width"', 'page-width docs-feedback-main"') + body.slice(0, toc.index) +
+        '<div class="docs-feedback-layout">' + fullToc + '<div class="chapter-content">' +
+        body.slice(toc.index + toc[0].length) + extras + '</div>' + commentsPanel(copy) + '</div></main>';
+    });
 }
 
 function articleFor(markdown, page, locale, ui) {
   const { title, description, sections } = parseArticle(markdown);
   assert.deepEqual(sections.map(item => item.id), page === 'guide' ? guideChapters : pageChapters[page], locale.id + ':' + page + ' chapter IDs');
-  const toc = '<nav class="chapter-nav" aria-label="' + esc(ui.toc) + '" data-chapter-nav><h2>' + esc(ui.toc) + '</h2><ol>' +
-    sections.map(section => '<li><a href="#' + section.id + '">' + esc(section.label) + '</a></li>').join('') + '</ol></nav>';
-  const guide = page === 'guide';
-  const feedback = pathFor(page, locale) === DOCS_COMMENTS_PAGE;
+  const toc = '<nav class="document-nav" aria-label="' + esc(ui.toc) + '">' +
+    sections.map(section => '<a href="#' + section.id + '">' + esc(section.label) + '</a>').join('') + '</nav>';
   const sectionsHtml = sections.map(({ id, label, lines }) => '<section id="' + id + '" data-chapter><h2>' +
     esc(label) + '</h2>\n' + renderBlocks(lines, locale) + '\n</section>').join('\n');
   return [
     '<!doctype html>', '<html lang="' + locale.lang + '" data-theme="system"' + htmlData(locale, ui) + '>', '<head>',
     head(page, locale, title.includes('Serylane') ? title : title + ' — Serylane', description),
-    feedback ? '<script src="/docs-comments.js" defer></script>' : '', '</head>', '<body class="document-page">',
-    docsHeader(locale, page, ui), '<main id="main" class="document-main page-width' + (guide ? ' guide-main' : feedback ? ' docs-feedback-main' : '') + '">',
+    '</head>', '<body class="document-page">',
+    docsHeader(locale, page, ui), '<main id="main" class="document-main page-width">',
     '<p class="breadcrumb"><a href="' + pathFor('home', locale) + '">Serylane</a> / ' +
       (page !== 'docs' ? '<a href="' + pathFor('docs', locale) + '">' + esc(ui.docs) + '</a> / ' : '') +
       '<span aria-current="page">' + esc(ui[page]) + '</span></p>',
     '<h1>' + esc(title) + '</h1>', '<p class="lead">' + esc(description) + '</p>',
     (page === 'docs' ? '<p class="guide-entry">' + guideLink(locale, ui) + '</p>' : ''),
-    '<div class="' + (guide ? 'guide-layout' : feedback ? 'docs-feedback-layout' : 'article-layout') + '">' + toc +
-      '<div class="chapter-content">' + sectionsHtml + '</div>' + (feedback ? commentsPanel() : '') + '</div>',
+    toc, sectionsHtml,
     related(page, locale, ui), '</main>',
     '<footer class="document-footer"><div class="page-width"><a href="' + pathFor('home', locale) + '">Serylane</a> · ' +
       '<a href="' + pathFor('docs', locale) + '">' + esc(ui.docs) + '</a> · ' +
@@ -274,6 +298,13 @@ function articleFor(markdown, page, locale, ui) {
 
 export async function buildSite() {
   const translations = new Map(await Promise.all(locales.map(async locale => [locale.id, await readUI(locale.id)])));
+  const copy = JSON.parse(await contentText('docs-comments.json'));
+  const commentKeys = ['title','intro','open','initial','loading','preview','empty','unavailable','missing','browse','retry'].sort();
+  assert.deepEqual(new Set(Object.keys(copy)), new Set(locales.map(locale => locale.id)), 'Feedback text covers every locale');
+  for (const [id, row] of Object.entries(copy)) {
+    assert.deepEqual(Object.keys(row).sort(), commentKeys, id + ': complete feedback copy');
+    assert.ok(Object.values(row).every(value => typeof value === 'string' && value.trim()), id + ': no empty feedback text');
+  }
   const legacyLocales = [english.id, 'zh-Hans'];
   const articles = new Map(await Promise.all(locales.filter(locale => !legacyLocales.includes(locale.id)).map(async locale => {
     const pages = (await contentText('pages/' + locale.id + '.md')).split(/^<!-- (docs|routing|verification|privacy) -->\r?$/m);
@@ -288,7 +319,7 @@ export async function buildSite() {
       : legacyLocales.includes(locale.id) ? legacy(await publicText(file), page, locale, ui)
       : page === 'home' ? await homeFor(locale, ui)
       : articleFor(articles.get(locale.id).get(page), page, locale, ui);
-    return [route, html];
+    return [route, page === 'home' ? html : docsLayout(html, route, ui, copy[locale.id])];
   })));
   const idsByRoute = new Map([...bodies].map(([route, html]) => [route, idsOf(html)]));
   await rm(output, { recursive: true, force: true });

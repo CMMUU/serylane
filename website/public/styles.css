@@ -486,11 +486,15 @@ html[data-motion="paused"] .route-flow { animation-play-state: paused; }
   .language-current { max-inline-size: none; }
 }
 
-/* The Traditional Chinese docs index: chapters, article, then GitHub feedback. */
+/* Shared docs layout: chapters, article, then GitHub feedback. */
 .docs-feedback-main { max-width: 1280px; }
 .docs-feedback-layout { display: grid; grid-template-columns: minmax(145px, 190px) minmax(0, 1fr) minmax(238px, 292px);
   align-items: start; gap: clamp(20px, 3vw, 38px); }
-.docs-feedback-layout .chapter-nav { position: sticky; top: 18px; }
+.docs-feedback-layout .chapter-nav { position: sticky; top: 18px; max-block-size: min(78vh, 560px); overflow: auto; }
+.docs-feedback-layout .chapter-details { margin: 0; padding: 0; border: 0; }
+.docs-feedback-layout .chapter-details > summary { cursor: pointer; font-size: 14px; line-height: 1.45; }
+.docs-feedback-layout .chapter-details > ol { margin-block-start: 8px; }
+.docs-feedback-layout .chapter-content { min-width: 0; }
 .docs-feedback-layout .chapter-nav a[aria-current="location"] { font-weight: 700; }
 .docs-feedback-layout .chapter-content > section:first-child > h2 { margin-top: 0; }
 .docs-comments { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-wrap: anywhere; }
@@ -509,6 +513,6 @@ html[data-motion="paused"] .route-flow { animation-play-state: paused; }
 }
 @media (max-width: 640px) {
   .docs-feedback-layout { grid-template-columns: minmax(0, 1fr); }
-  .docs-feedback-layout .chapter-nav { position: static; }
+  .docs-feedback-layout .chapter-nav { position: static; max-block-size: none; }
   .docs-feedback-layout .docs-comments { grid-column: 1; }
 }
