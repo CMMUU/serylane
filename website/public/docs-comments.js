@@ -1,15 +1,31 @@
 "use strict";
 
-// Read plain-text public comment previews from our fixed first-party endpoint.
-// Visitor authentication and submissions happen on the GitHub issue itself.
+// All locales use one public Issue. The website only reads text previews.
 (() => {
+  const toc = document.querySelector("[data-chapter-nav]");
+  if (toc) {
+    const links = [...toc.querySelectorAll("a")];
+    function reflectChapter() {
+      const hash = window.location.hash || links[0]?.hash;
+      for (const link of links) {
+        if (link.hash === hash) link.setAttribute("aria-current", "location");
+        else link.removeAttribute("aria-current");
+      }
+    }
+    window.addEventListener("hashchange", reflectChapter);
+    reflectChapter();
+  }
+
   const panel = document.querySelector("[data-docs-comments]");
   if (!panel) return;
   const status = panel.querySelector("[data-comments-status]");
   const list = panel.querySelector("[data-comments-list]");
   const retry = panel.querySelector("[data-comments-retry]");
-  const thread = panel.querySelector("[data-comments-thread]").href;
-  const date = new Intl.DateTimeFormat("zh-TW", { dateStyle: "short" });
+  const anchor = panel.querySelector("[data-comments-thread]");
+  const thread = anchor.href;
+  const anchorText = anchor.textContent;
+  const copy = panel.dataset;
+  const date = new Intl.DateTimeFormat(document.documentElement.lang, { dateStyle: "short" });
   let loading = false;
 
   function render(comment) {
@@ -18,6 +34,7 @@
     meta.className = "comment-meta";
     const author = document.createElement("strong");
     author.textContent = comment.author;
+    author.dir = "auto";
     const permalink = document.createElement("a");
     permalink.href = thread + "#issuecomment-" + comment.id;
     permalink.target = "_blank";
@@ -28,6 +45,7 @@
     permalink.append(timestamp);
     meta.append(author, permalink);
     const body = document.createElement("p");
+    body.dir = "auto";
     body.textContent = comment.text;
     row.append(meta, body);
     return row;
@@ -38,20 +56,29 @@
     loading = true;
     retry.hidden = true;
     panel.setAttribute("aria-busy", "true");
-    status.textContent = "正在讀取 GitHub 留言…";
+    status.textContent = copy.commentsLoading;
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 7500);
     try {
       const response = await fetch(panel.dataset.docsComments, { credentials: "omit", signal: controller.signal });
+      if (response.status === 410) {
+        list.hidden = true;
+        status.textContent = copy.commentsMissing;
+        anchor.href = copy.commentsIssues;
+        anchor.textContent = copy.commentsBrowse;
+        return;
+      }
       if (!response.ok) throw new Error("GitHub unavailable");
       const { comments } = await response.json();
       if (!Array.isArray(comments) || comments.length > 6) throw new Error("Unexpected preview");
+      anchor.href = thread;
+      anchor.textContent = anchorText;
       list.replaceChildren(...comments.map(render));
       list.hidden = !comments.length;
-      status.textContent = comments.length ? "留言預覽。完整內容與最新留言請到 GitHub。" : "目前沒有留言。歡迎到 GitHub 留下建議。";
+      status.textContent = comments.length ? copy.commentsPreview : copy.commentsEmpty;
     } catch {
       list.hidden = true;
-      status.textContent = "暫時讀不到留言。你仍可直接到 GitHub 查看或發言。";
+      status.textContent = copy.commentsUnavailable;
       retry.hidden = false;
     } finally {
       window.clearTimeout(timer);
@@ -61,18 +88,15 @@
   }
 
   retry.addEventListener("click", load);
-  const toc = document.querySelector(".docs-feedback-layout [data-chapter-nav]");
-  if (toc) {
-    const links = [...toc.querySelectorAll("a")];
-    function reflectChapter() {
-      const hash = window.location.hash || links[0].hash;
-      for (const link of links) {
-        if (link.hash === hash) link.setAttribute("aria-current", "location");
-        else link.removeAttribute("aria-current");
+  // The panel is after the article on narrow screens. Do not start its network
+  // request until it is near the viewport; navigation does not wait for comments.
+  if (typeof IntersectionObserver === "function") {
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        observer.disconnect();
+        void load();
       }
-    }
-    window.addEventListener("hashchange", reflectChapter);
-    reflectChapter();
-  }
-  void load();
+    }, { rootMargin: "320px" });
+    observer.observe(panel);
+  } else void load();
 })();
