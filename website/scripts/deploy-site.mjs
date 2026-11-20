@@ -50,7 +50,7 @@ async function currentMain() {
 // Keep all localized content and critical shared resources in the byte proof.
 export const STATIC_ASSETS = Object.freeze({
   ...Object.fromEntries([...contentRoutes].map(([route, { file }]) => [route, file])),
-  '/site.js': 'site.js', '/docs-comments.js': 'docs-comments.js', '/language.js': 'language.js', '/theme.js': 'theme.js', '/styles.css': 'styles.css',
+  '/site.js': 'site.js', '/language.js': 'language.js', '/theme.js': 'theme.js', '/styles.css': 'styles.css',
   '/robots.txt': 'robots.txt', '/sitemap.xml': 'sitemap.xml',
   '/assets/serylane-mark.png': 'assets/serylane-mark.png', '/favicon.png': 'favicon.png',
 });

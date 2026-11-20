@@ -3,6 +3,20 @@
 // The address is the source of truth. The menu is ordinary links without JS;
 // enhancement only handles dismissal and carries over shared section anchors.
 (() => {
+  const toc = document.querySelector("[data-chapter-nav]");
+  if (toc) {
+    const links = [...toc.querySelectorAll("a")];
+    function reflectChapter() {
+      const hash = window.location.hash || links[0]?.hash;
+      for (const link of links) {
+        if (link.hash === hash) link.setAttribute("aria-current", "location");
+        else link.removeAttribute("aria-current");
+      }
+    }
+    window.addEventListener("hashchange", reflectChapter);
+    reflectChapter();
+  }
+
   const picker = document.querySelector("[data-language-menu]");
   if (!picker) return;
   const menus = [picker, ...document.querySelectorAll("[data-mobile-nav]")];
