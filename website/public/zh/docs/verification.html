@@ -83,6 +83,7 @@ sha256sum '/下载目录/实际安装包文件名.AppImage'</code></pre><p>上�
 <h2>核对 macOS 签名与 TUN 辅助服务授权</h2>
 <p>使用 TUN 前，请核对完整安装包的发行说明是否标注 Developer ID 签名和 Apple 公证。v0.7.44 等旧兼容包缺少这两项；项目更新签名或重复授权不会补齐开发者身份。</p>
 <p>通过应用内更新或 Finder 覆盖升级后，Serylane 会检查返回 <code>EX_CONFIG</code> 的旧 TUN 辅助服务登记。恢复时先确认旧服务移除，再核对新版 Helper 的身份、版本和协议，随后才允许启动 TUN。若 macOS 要求批准，在「登录项与扩展」允许 Serylane 后返回应用继续。若在应用设置中手动重新关联，请先停止代理。</p>
+<p>从 TUN 切到系统代理时，macOS 可能仍在清理已退出内核的连接。Serylane 确认这一状态后会等待原端口可用，系统代理在新内核就绪后生效。其他程序正在监听或等待超时时，请查看操作详情。</p>
 <p>Apple 签名与公证、系统辅助服务许可、流量实际接管需分别核对。<a href="/zh/docs/#tun-compatibility">查看平台与实测范围</a>，或查看<a href="#verification-history">以往验证记录</a>。</p>
 </section>
 <section id="update-downloads">

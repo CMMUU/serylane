@@ -92,6 +92,7 @@
 <h2>Verify macOS signing and TUN helper approval</h2>
 <p>For TUN, use a complete installer whose release notes confirm Developer ID signing and Apple notarization. The v0.7.44 and earlier compatibility packages did not include both. A project update signature or repeated approval does not add the missing signing identity.</p>
 <p>After an in-app update or a replacement in Finder, Serylane checks for an older TUN Helper registration that fails with <code>EX_CONFIG</code>. Recovery confirms that the old job is gone and checks the new helper’s identity, version and protocol before allowing TUN. If macOS asks for approval, allow Serylane in Login Items &amp; Extensions and return to the app to continue. For a manual repair in Settings, stop the proxy first.</p>
+<p>When switching from TUN to System Proxy on macOS, Serylane can wait for old connections to release the configured ports. System Proxy takes effect after the new core is ready. Check the operation details if the wait times out or another app is listening.</p>
 <p>Apple signing and notarization, the system’s helper approval, and real traffic takeover are separate checks. <a href="/docs/#tun-compatibility">See platform and runtime coverage</a> or read <a href="#verification-history">earlier verification records</a>.</p>
 </section>
 <section id="update-downloads">

@@ -1,4 +1,4 @@
-//! The toolbar and the macOS status panel submit the same explicit intents.
+//! The toolbar and the macOS status menu submit the same explicit intents.
 //! An action owns the admission slot through readback; background observations
 //! never acquire that slot or overwrite a newer in-flight/completed action.
 use crate::domain_routing::ingress::IngressState;
@@ -622,6 +622,8 @@ fn plan(
 enum Step {
     PreflightTun,
     StopPrevious,
+    #[cfg(target_os = "macos")]
+    WaitForTunPorts,
     SelectMode(NetworkMode),
     StartCore,
 }
@@ -642,6 +644,12 @@ fn transition_steps(before: NetworkMode, after: NetworkMode, transition: &Transi
         Transition::Cold { stop_first, start } => {
             if *stop_first {
                 steps.push(Step::StopPrevious);
+            }
+            // A manual Stop followed by Switch can hit the same close
+            // window. The runtime only waits for a stop it acknowledged.
+            #[cfg(target_os = "macos")]
+            if *start && before == NetworkMode::Tun && after == NetworkMode::SystemProxy {
+                steps.push(Step::WaitForTunPorts);
             }
             if before != after {
                 steps.push(Step::SelectMode(after));
@@ -809,6 +817,28 @@ impl NetworkDriver for NativeDriver<'_> {
             Step::PreflightTun => check_tun(self.0).await?,
             Step::StopPrevious => {
                 stop_with_permit(self.0, false).await?;
+            }
+            #[cfg(target_os = "macos")]
+            Step::WaitForTunPorts => {
+                let app = self.0.clone();
+                let settings = AppStorage::from_app(&app)
+                    .and_then(|storage| storage.settings())
+                    .map_err(dto)?;
+                tauri::async_runtime::spawn_blocking(move || {
+                    let runtime = app.state::<MihomoRuntime>();
+                    let session = app.state::<SessionResumeManager>();
+                    runtime.wait_for_tun_ports(
+                        settings.mixed_port,
+                        settings.controller_port,
+                        || {
+                            !session.is_shutting_down()
+                                && crate::lifecycle::PROCESS_LIFECYCLE.admitting()
+                        },
+                    )
+                })
+                .await
+                .map_err(|error| dto(AppError::Runtime(error.to_string())))?
+                .map_err(dto)?;
             }
             Step::SelectMode(mode) => {
                 crate::set_network_mode_with_permit(self.0, self.1, mode).await?;
@@ -1201,6 +1231,43 @@ mod tests {
         );
         assert_eq!(d.calls, [SelectMode(SystemProxy)]);
         assert_eq!(d.phase, Running);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn system_proxy_waits_for_an_acknowledged_tun_stop_before_committing_mode() {
+        use Step::WaitForTunPorts;
+
+        let mut live = Script::new(Tun, Running);
+        assert_eq!(
+            live.switch(SystemProxy).await.unwrap(),
+            Expected::Active(SystemProxy)
+        );
+        assert_eq!(
+            live.calls,
+            [
+                StopPrevious,
+                WaitForTunPorts,
+                SelectMode(SystemProxy),
+                StartCore
+            ]
+        );
+
+        let mut stopped = Script::new(Tun, Stopped);
+        stopped.faults = vec![(1, Stopped, "port conflict")];
+        assert!(stopped.switch(SystemProxy).await.is_err());
+        assert_eq!(stopped.calls, [WaitForTunPorts]);
+        assert_eq!((stopped.mode, stopped.phase), (Tun, Stopped));
+
+        let mut failed = Script::new(Tun, Running);
+        failed.faults = vec![(2, Stopped, "port conflict")];
+        let error = failed.switch(SystemProxy).await.unwrap_err();
+        assert_eq!(failed.calls, [StopPrevious, WaitForTunPorts, StartCore]);
+        assert_eq!((failed.mode, failed.phase), (Tun, Running));
+        assert!(error
+            .user_message
+            .description
+            .contains("已恢复之前的网络模式与运行状态"));
     }
 
     #[test]

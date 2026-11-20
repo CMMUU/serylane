@@ -224,11 +224,8 @@ fn set_app_locale(app: AppHandle, preference: String) -> Result<i18n::Locale, Ap
         let _ = items.quit.set_text(i18n::text("退出"));
     }
     #[cfg(target_os = "macos")]
-    let _ = app.run_on_main_thread(|| {
-        if let Some(marker) = objc2::MainThreadMarker::new() {
-            macos_menu_panel::refresh_locale(marker);
-        }
-    });
+    app.state::<macos_menu_panel::MenuProcess>()
+        .refresh_locale();
     Ok(selection)
 }
 
@@ -1528,6 +1525,8 @@ fn cleanup_app(app: &AppHandle) {
     if !resume.begin_shutdown() {
         return;
     }
+    #[cfg(target_os = "macos")]
+    app.state::<macos_menu_panel::MenuProcess>().stop();
     let snapshot = lifecycle::PROCESS_LIFECYCLE.snapshot();
     let _ = app.emit("app-lifecycle", snapshot);
     #[cfg(not(windows))]
@@ -1624,8 +1623,8 @@ fn update_macos_proxy_controls(app: &AppHandle, snapshot: &proxy_control::Snapsh
     let controls = macos_menu_panel::Controls {
         serial: snapshot.serial,
         action_serial: snapshot.action_serial,
-        busy: snapshot.busy,
-        status: snapshot.network.label,
+        busy: snapshot.busy.map(str::to_owned),
+        status: snapshot.network.label.to_owned(),
         can_switch: snapshot.can_switch,
         can_start: snapshot.can_start,
         can_stop: snapshot.can_stop,
@@ -1644,7 +1643,7 @@ fn update_macos_proxy_controls(app: &AppHandle, snapshot: &proxy_control::Snapsh
                     profile: route.intent.profile_id,
                     profile_revision: route.intent.profile_revision,
                 },
-                label: route.label,
+                label: route.label.to_owned(),
                 message: route.message.clone(),
                 can_toggle: route.ready_to_toggle,
                 active: route.active,
@@ -1652,17 +1651,15 @@ fn update_macos_proxy_controls(app: &AppHandle, snapshot: &proxy_control::Snapsh
                 target: route.target.clone(),
             }),
     };
-    let _ = app.run_on_main_thread(move || {
-        if let Some(mtm) = objc2::MainThreadMarker::new() {
-            macos_menu_panel::update_controls(mtm, controls);
-        }
-    });
+    app.state::<macos_menu_panel::MenuProcess>()
+        .update_controls(controls);
 }
 
 #[cfg(target_os = "macos")]
-fn macos_proxy_action(app: &AppHandle, action: macos_menu_panel::Action) {
-    use macos_menu_panel::Action;
+fn macos_proxy_action(app: &AppHandle, command: macos_menu_panel::MenuCommand) {
+    use macos_menu_panel::{Action, MenuProcess};
     use proxy_control::{Request, RouteIntent};
+    let action = command.action;
     match action {
         Action::OpenWindow => {
             reveal_main_window(app);
@@ -1683,11 +1680,14 @@ fn macos_proxy_action(app: &AppHandle, action: macos_menu_panel::Action) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if action == Action::Observe {
-            proxy_control::observe(&app).await;
+        let current = proxy_control::current(&app);
+        let previous_action = current.action_serial;
+        if previous_action != command.action_serial {
+            update_macos_proxy_controls(&app, &current);
+            app.state::<MenuProcess>()
+                .reject(command.id, "配置有变化，请重新打开菜单确认。".into());
             return;
         }
-        let previous_action = proxy_control::current(&app).action_serial;
         let result = if let Action::Route(token) = action {
             proxy_control::apply_route(
                 &app,
@@ -1718,7 +1718,7 @@ fn macos_proxy_action(app: &AppHandle, action: macos_menu_panel::Action) {
                 Action::Tun(false) => Request::Stop {
                     mode: Some(NetworkMode::Tun),
                 },
-                _ => return,
+                Action::Route(_) | Action::OpenWindow | Action::OpenRoute | Action::Quit => return,
             };
             proxy_control::execute(&app, request).await.map(|_| ())
         };
@@ -1726,12 +1726,8 @@ fn macos_proxy_action(app: &AppHandle, action: macos_menu_panel::Action) {
             // A busy/admission rejection might not have emitted a new state.
             let view = proxy_control::current(&app);
             if view.action_serial == previous_action {
-                let detail = error.user_message.title;
-                let _ = app.run_on_main_thread(move || {
-                    if let Some(mtm) = objc2::MainThreadMarker::new() {
-                        macos_menu_panel::reject_queued(mtm, previous_action, detail);
-                    }
-                });
+                app.state::<MenuProcess>()
+                    .reject(command.id, error.user_message.title);
             }
         }
     });
@@ -1739,6 +1735,16 @@ fn macos_proxy_action(app: &AppHandle, action: macos_menu_panel::Action) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    if macos_menu_panel::is_worker() {
+        if let Err(error) = macos_menu_panel::run_worker(
+            traffic_monitor::macos_menu_brand,
+            traffic_monitor::render_macos_menu,
+        ) {
+            eprintln!("macOS status menu worker: {error}");
+        }
+        return;
+    }
     #[cfg(windows)]
     if startup::installer_cleanup_requested(&std::env::args().skip(1).collect::<Vec<_>>()) {
         std::process::exit(if startup::remove_owned_login_entries().is_ok() {
@@ -1750,6 +1756,7 @@ pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder
+        .manage(macos_menu_panel::MenuProcess::default())
         .manage(macos_window_recovery::MainWindowRecovery::default())
         .on_page_load(macos_window_recovery::loaded)
         .on_web_content_process_terminate(macos_window_recovery::terminated);
@@ -1826,16 +1833,37 @@ pub fn run() {
                 .map_err(|error| error.to_string())?;
             #[cfg(target_os = "macos")]
             let native_tray = {
+                use macos_menu_panel::{Event, MenuProcess};
+
                 let handle = app.handle().clone();
-                let result = traffic_monitor::install_macos_panel(
-                    settings.show_global_traffic,
-                    move |action| macos_proxy_action(&handle, action),
-                );
-                if let Err(error) = result {
+                update_macos_proxy_controls(&handle, &proxy_control::current(&handle));
+                let result =
+                    app.state::<MenuProcess>()
+                        .start(settings.show_global_traffic, move |event| match event {
+                            Event::Visible(true) => {
+                                let handle = handle.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    proxy_control::observe(&handle).await;
+                                });
+                            }
+                            Event::Command(command) => {
+                                let dispatcher = handle.clone();
+                                let _ = handle.run_on_main_thread(move || {
+                                    if !dispatcher
+                                        .state::<session_resume::SessionResumeManager>()
+                                        .is_shutting_down()
+                                    {
+                                        macos_proxy_action(&dispatcher, command);
+                                    }
+                                });
+                            }
+                            Event::Ready | Event::Visible(false) => {}
+                        });
+                if let Err(error) = &result {
                     app_log::record(
                         1,
                         app_log::Area::App,
-                        &format!("菜单栏面板初始化失败：{error}"),
+                        &format!("原生状态菜单进程启动失败：{error}"),
                     );
                 }
                 result.is_ok()
@@ -1852,7 +1880,7 @@ pub fn run() {
                         {
                             break;
                         }
-                        if macos_menu_panel::is_visible() {
+                        if handle.state::<macos_menu_panel::MenuProcess>().is_visible() {
                             proxy_control::observe(&handle).await;
                         }
                     }
@@ -2064,10 +2092,6 @@ pub fn run() {
             // Tao maps confirmed Windows WM_ENDSESSION to LoopDestroyed,
             // which reaches Tauri as Exit (not necessarily Window::Destroyed).
             if matches!(event, tauri::RunEvent::Exit) {
-                #[cfg(target_os = "macos")]
-                if let Some(mtm) = objc2::MainThreadMarker::new() {
-                    macos_menu_panel::uninstall(mtm);
-                }
                 cleanup_app(app);
             }
         });
