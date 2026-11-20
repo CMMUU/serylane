@@ -94,7 +94,10 @@ pub(crate) fn recovery_service_status() -> Result<isize, String> {
     SERVICE.status()
 }
 
-pub(crate) fn register_after_upgrade(attempted: &AtomicBool) -> Result<TunHelperStatus, String> {
+pub(crate) fn register_after_upgrade(
+    source_version: &str,
+    attempted: &AtomicBool,
+) -> Result<TunHelperStatus, String> {
     let _guard = mutation()?;
     // A confirmed failed launch can hold XPC replies until timeout. Use
     // fresh launchd evidence and consent before probing the replacement.
@@ -103,6 +106,22 @@ pub(crate) fn register_after_upgrade(attempted: &AtomicBool) -> Result<TunHelper
     }
     let observed = register_inner(Registration::Upgrade)?;
     record_recovery("handshake", &format!("state={:?}", observed.state));
+    if idle_upgrade_binding(&observed, source_version) && !attempted.load(Ordering::Acquire) {
+        codesign::validate_installation()?;
+        // A successfully authenticated older service can still be running
+        // after Finder replaced its bundle. Recheck consent, launchd's
+        // registration and the absence of an active core before detaching it.
+        let consent = recovery_service_status()?;
+        if consent == macos_service::REQUIRES_APPROVAL {
+            return Ok(requires_approval());
+        }
+        let confirmed = consent == macos_service::ENABLED
+            && launchd::older_version_now().as_deref() == Some(source_version)
+            && idle_upgrade_binding(&enabled_status(), source_version);
+        if let Some(repaired) = retry_stale_binding_once(confirmed, attempted, rebind_enabled)? {
+            return Ok(repaired);
+        }
+    }
     if matches!(
         observed.state,
         TunHelperState::NeedsRepair | TunHelperState::Checking
@@ -114,6 +133,22 @@ pub(crate) fn register_after_upgrade(attempted: &AtomicBool) -> Result<TunHelper
         }
     }
     Ok(observed)
+}
+
+fn idle_upgrade_binding(status: &TunHelperStatus, source_version: &str) -> bool {
+    status.state == TunHelperState::Outdated
+        && status.helper_version.as_deref() == Some(source_version)
+        && !status.runtime_running
+        && status.runtime_pid.is_none()
+}
+
+fn rebind_enabled() -> Result<TunHelperStatus, String> {
+    rebind(|| {
+        record_recovery("unregister", "request");
+        SERVICE.unregister_enabled()?;
+        record_recovery("unregister", "completed");
+        Ok(())
+    })
 }
 
 fn repair_stale_binding(attempted: &AtomicBool) -> Result<Option<TunHelperStatus>, String> {
@@ -138,14 +173,7 @@ fn repair_stale_binding(attempted: &AtomicBool) -> Result<Option<TunHelperStatus
     retry_stale_binding_once(
         version.is_some() && status == macos_service::ENABLED,
         attempted,
-        || {
-            rebind(|| {
-                record_recovery("unregister", "request");
-                SERVICE.unregister_enabled()?;
-                record_recovery("unregister", "completed");
-                Ok(())
-            })
-        },
+        rebind_enabled,
     )
 }
 
@@ -445,6 +473,26 @@ mod tests {
                 .is_none()
         );
         assert!(!attempted.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn upgrade_accepts_only_the_expected_authenticated_idle_helper() {
+        let mut previous = client::RuntimeSnapshot {
+            protocol_version: 2,
+            helper_version: Some("0.7.48".into()),
+            running: false,
+            pid: None,
+            version: None,
+            config_path: None,
+            last_error: None,
+        };
+        let status = status_from_probe(ProbeRead::Complete(Ok(previous.clone())));
+        assert!(idle_upgrade_binding(&status, "0.7.48"));
+        assert!(!idle_upgrade_binding(&status, "0.7.47"));
+        previous.running = true;
+        previous.pid = Some(123);
+        let status = status_from_probe(ProbeRead::Complete(Ok(previous)));
+        assert!(!idle_upgrade_binding(&status, "0.7.48"));
     }
 
     #[test]

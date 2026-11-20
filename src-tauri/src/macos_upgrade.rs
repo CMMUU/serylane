@@ -272,9 +272,10 @@ pub fn recover(app: &AppHandle) -> AppResult<()> {
             );
             let status = match phase {
                 TransactionPhase::Rollback => tun_service::admin::register(),
-                TransactionPhase::Replacement => {
-                    tun_service::admin::register_after_upgrade(&STALE_TUN_REBIND_ATTEMPTED)
-                }
+                TransactionPhase::Replacement => tun_service::admin::register_after_upgrade(
+                    &marker.source_version,
+                    &STALE_TUN_REBIND_ATTEMPTED,
+                ),
             }
             .map_err(AppError::Platform)?;
             if status.state == TunHelperState::RequiresApproval {
