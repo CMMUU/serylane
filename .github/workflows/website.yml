@@ -85,3 +85,69 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           WRANGLER_SEND_METRICS: 'false'
         run: pnpm run deploy
+
+  resume-uploaded-version:
+    # One-off recovery on this owner-only ref; never uploads, changes bindings, or runs on main.
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.repository == 'CMMUU/serylane' &&
+      github.actor == 'CMMUU' && github.ref == 'refs/heads/codex/website-comments-activation-20261120'
+    needs: static-site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    concurrency:
+      group: serylane-website-production
+      cancel-in-progress: false
+    steps:
+      - name: Verify and activate only the already uploaded, tested main version
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const source = 'f746ce9c26bc685fee27485214a91ec3b5683360';
+          const uploaded = '45540e38-c20b-4be0-b323-ca315e8ec2be';
+          const previous = 'ac01f394-b194-4ed7-ba28-caf95326b450';
+          const previousSource = '6fe19be047f48282fc2d1e074bf53d0d33a3844d';
+          const marker = 'https://serylane.cmmuu.com/build-info.json';
+          const base = 'https://api.cloudflare.com/client/v4/accounts/97eb9abaee45ec161253c18426b7b51b/workers/scripts/serylane-website';
+          const token = process.env.CLOUDFLARE_API_TOKEN;
+          assert.ok(token, 'Missing configured site deployment secret');
+          async function api(path, body) {
+            const res = await fetch(base + path, {
+              method: body ? 'POST' : 'GET',
+              headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+              body: body && JSON.stringify(body),
+              signal: AbortSignal.timeout(15000),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+              const detail = (data.errors || []).map(error => String(error.code) + ' ' + String(error.message).replaceAll(token, '[redacted]').slice(0, 220));
+              throw new Error('Cloudflare ' + (body ? 'activation' : 'state inspection') + ' HTTP ' + res.status + ': ' + detail.join('; '));
+            }
+            return data.result;
+          }
+          async function verifyMain() {
+            const response = await fetch('https://api.github.com/repos/CMMUU/serylane/git/ref/heads/main', { headers: { Authorization: 'Bearer ' + process.env.GITHUB_TOKEN }, signal: AbortSignal.timeout(10000) });
+            assert.equal(response.status, 200, 'Authenticated GitHub main ref query');
+            assert.equal((await response.json()).object.sha, source, 'Trusted main changed');
+          }
+          await verifyMain();
+          const active = (await api('/deployments')).deployments[0];
+          const candidate = await api('/versions/' + uploaded);
+          assert.equal(candidate.id, uploaded);
+          assert.equal(candidate.annotations['workers/message'], 'Website source ' + source, 'Uploaded version is not the passing main build');
+          const live = await fetch(marker, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+          assert.equal(live.status, 200);
+          const deployed = (await live.json()).sourceCommit;
+          assert.deepEqual(active.versions, [{ version_id: previous, percentage: 100 }], 'Existing deployment changed; no activation attempted');
+          assert.equal(deployed, previousSource, 'Public source changed; no activation attempted');
+          console.log('Confirmed previous Worker and exact prebuilt main version. No upload needed.');
+          await verifyMain();
+          const result = await api('/deployments', {
+            strategy: 'percentage',
+            versions: [{ version_id: uploaded, percentage: 100 }],
+            annotations: { 'workers/message': 'Resume website source ' + source },
+          });
+          console.log('Activated verified prebuilt Worker:', result.id, uploaded);
+          JS
