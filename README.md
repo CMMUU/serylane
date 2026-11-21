@@ -8,7 +8,17 @@
 
 [Website](https://serylane.cmmuu.com/) · [User guide](https://serylane.cmmuu.com/docs/guide/) · **[Download](https://downloads.cmmuu.com/projects/serylane)** · [Changelog](CHANGELOG.md)
 
-**English** · [简体中文](https://serylane.cmmuu.com/zh/) · [繁體中文](https://serylane.cmmuu.com/zh-hant/) · [日本語](https://serylane.cmmuu.com/ja/) · [한국어](https://serylane.cmmuu.com/ko/) · [Deutsch](https://serylane.cmmuu.com/de/) · [Français](https://serylane.cmmuu.com/fr/) · [Español](https://serylane.cmmuu.com/es/) · [Português (Brasil)](https://serylane.cmmuu.com/pt-br/) · [Русский](https://serylane.cmmuu.com/ru/) · [العربية](https://serylane.cmmuu.com/ar/)
+**English**
+· [简体中文](website/content/guide/zh-Hans.md)
+· [繁體中文](website/content/guide/zh-Hant.md)
+· [日本語](website/content/guide/ja.md)
+· [한국어](website/content/guide/ko.md)
+· [Deutsch](website/content/guide/de.md)
+· [Français](website/content/guide/fr.md)
+· [Español](website/content/guide/es.md)
+· [Português (Brasil)](website/content/guide/pt-BR.md)
+· [Русский](website/content/guide/ru.md)
+· [العربية](website/content/guide/ar.md)
 
 Serylane uses **Mihomo, Rust, and Tauri 2** to manage subscriptions, profiles, nodes, routing rules, and system proxy settings. Optional domain routing for AI tools runs inside Mihomo and is off by default. [TUN support](#tun-compatibility) varies by platform.
 
