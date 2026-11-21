@@ -10,7 +10,7 @@ const capture = (source, pattern, name) => {
   return found;
 };
 
-export function productTable() {
+export function productTable(language = 'zh') {
   const version = JSON.parse(read('package.json')).version;
   const capabilities = read('src-tauri/src/capabilities.rs');
   const policy = read('src-tauri/src/openai_policy.rs');
@@ -23,15 +23,31 @@ export function productTable() {
   if (variants.map(item => item.slice(0, -1)).join(',') !== expected.join(',') || order.join(',') !== expected.join(',')) {
     throw new Error('Update source changed; review the documented priority');
   }
-  const enabled = name => capture(capabilities, new RegExp(`pub const ${name}: bool = (true|false);`), name) === 'true' ? '已启用' : '暂时停用';
+  const [enabledLabel, disabledLabel] = language === 'en'
+    ? ['Enabled', 'Temporarily disabled']
+    : ['已启用', '暂时停用'];
+  const enabled = name => capture(capabilities, new RegExp(`pub const ${name}: bool = (true|false);`), name) === 'true'
+    ? enabledLabel
+    : disabledLabel;
   const min = capture(policy, /const MIN_HEALTHY_NODES: usize = (\d+);/, 'minimum AI nodes');
   const max = capture(policy, /const SELECTED_NODES: usize = (\d+);/, 'maximum AI nodes');
+  if (language === 'en') {
+    return `| Source fact | Current value |
+| --- | --- |
+| Source version | ${version} (see Releases for published builds) |
+| Website installers | Download center |
+| In-app updates | Direct GitHub → GitHub accelerator → GitHub through the running Serylane proxy → Download center |
+| Eligible AI nodes | ${min}–${max}. A single node has no fallback. |
+| Per-app proxy | ${enabled('PROGRAM_PROXY')} |
+| Enhanced failover | ${enabled('ENHANCED_STABILITY')} |
+| New Codex integration | ${enabled('CODEX_ATTACH')} |`;
+  }
   return `| 源码事实 | 当前值 |\n| --- | --- |\n| 源码版本 | ${version}（不代表已经发行） |\n| 官网安装包 | 下载中心 |\n| 应用内更新 | GitHub 直连 → GitHub 加速代理 → 经 Serylane 本地代理访问 GitHub → 下载中心 |\n| AI 合格节点范围 | ${min}–${max} 个；单节点没有备用 |\n| 程序代理 | ${enabled('PROGRAM_PROXY')} |\n| 增强稳定灾备 | ${enabled('ENHANCED_STABILITY')} |\n| 新增 Codex 接入 | ${enabled('CODEX_ATTACH')} |`;
 }
 
 export function verifyProductDocs(write = false) {
-  const block = `<!-- product-contract:start -->\n${productTable()}\n<!-- product-contract:end -->`;
-  for (const path of ['README.md', 'docs/当前实现与业务契约.md']) {
+  for (const [path, language] of [['README.md', 'en'], ['docs/当前实现与业务契约.md', 'zh']]) {
+    const block = `<!-- product-contract:start -->\n${productTable(language)}\n<!-- product-contract:end -->`;
     const original = read(path).replace(/\r\n/g, '\n');
     const marker = /<!-- product-contract:start -->[\s\S]*?<!-- product-contract:end -->/g;
     if ([...original.matchAll(marker)].length !== 1) throw new Error(`Expected one product contract: ${path}`);
