@@ -122,6 +122,8 @@ pub struct AppSettings {
     pub schema_version: u32,
     #[serde(default = "legacy_locale")]
     pub locale: String,
+    #[serde(default)]
+    pub language_selection_pending: bool,
     pub theme: String,
     pub launch_at_login: bool,
     // Older installs have no field: login should be tray-only without requiring
@@ -171,6 +173,7 @@ impl Default for AppSettings {
             proxy_mode: crate::manual_outbound::ProxyMode::Manual,
             proxy_mode_revision: Uuid::nil(),
             locale: "system".to_string(),
+            language_selection_pending: false,
             theme: "system".to_string(),
             launch_at_login: false,
             silent_startup: true,
@@ -247,6 +250,7 @@ impl PublicAppSettings {
         AppSettings {
             schema_version: self.schema_version,
             locale: self.locale,
+            language_selection_pending: current.language_selection_pending,
             theme: self.theme,
             launch_at_login: self.launch_at_login,
             silent_startup: self.silent_startup,

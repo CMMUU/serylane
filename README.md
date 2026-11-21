@@ -48,7 +48,7 @@ Serylane is an independent project. Bring your own proxy subscription or Mihomo 
 
 ## Features
 
-- **Languages.** Choose from 11 languages in Settings. Each option shows its native name. Changes apply immediately in the current window and are saved automatically.
+- **Languages.** Choose an interface language during Windows setup or on the first launch on macOS, Linux, and Windows MSI. The system match is preselected. Settings lists all 11 languages by their native names and applies your choice immediately.
 - **Subscriptions and profiles.** The subscription dialog keeps the current session's draft when you close it with Esc or click outside. Submitted imports continue in the background. Subscription cards show the active profile, plan usage, expiry, and configuration updates. Expand a card for usage samples and error details. Profiles support validation and rollback.
 - **Node selection.** Choose manual selection or AI proxy mode. Manual selection keeps the subscription's policy groups and rules. AI proxy ranks candidates by connection performance, rate multiplier, and latency. It shows their ranking and the current outbound node. It keeps a healthy node and selects a ranked replacement for new connections after confirming a failure. Use the numbered subscription recommendations to choose a node manually. The control shows it as applied only after Mihomo confirms the pin. Changes affect new connections that match the group.
 - **macOS menu bar.** Left- or right-click the icon-only or two-line traffic item to open the native AppKit menu. It follows the system appearance. On startup, the S icon appears when the status item is positioned, and the traffic view uses the final item size before it appears. The menu and main window share controls and status checks. Dismiss the menu by selecting a command, clicking outside, or pressing Esc. **Open main window** returns you to your previous page.
@@ -61,7 +61,7 @@ Serylane is an independent project. Bring your own proxy subscription or Mihomo 
 <!-- product-contract:start -->
 | Source fact | Current value |
 | --- | --- |
-| Source version | 0.7.50 (see Releases for published builds) |
+| Source version | 0.7.51 (see Releases for published builds) |
 | Website installers | Download center |
 | In-app updates | Direct GitHub → GitHub accelerator → GitHub through the running Serylane proxy → Download center |
 | Eligible AI nodes | 1–10. A single node has no fallback. |

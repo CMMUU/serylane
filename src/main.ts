@@ -556,6 +556,11 @@ const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>
 const $$ = <T extends HTMLElement>(selector: string) => [...document.querySelectorAll<T>(selector)];
 const languageInput = $<HTMLSelectElement>("#settings-language")!;
 const languageStatus = $("#language-status")!;
+const languageSetup = $("#language-setup")!;
+const languageSetupForm = $<HTMLFormElement>("#language-setup-form")!;
+const languageSetupInput = $<HTMLSelectElement>("#language-setup-select")!;
+const languageSetupContinue = $<HTMLButtonElement>("#language-setup-continue")!;
+const languageSetupError = $("#language-setup-error")!;
 languageInput.innerHTML = localeOptions() + '<option value="system"><!--i18n:language-system-->跟随系统</option>';
 window.addEventListener("pagehide", observeLocalizedMarkup(app), { once: true });
 let appLocale = initialLocale;
@@ -585,10 +590,50 @@ languageInput.addEventListener("change", async () => {
   }
 });
 
-void api.appLocale().then(selectLocale).catch(() => selectLocale(initialLocale)).finally(() => {
+const showMainInterface = () => {
+  languageSetup.hidden = true;
   languageInput.disabled = false;
   app.hidden = false;
   renderUpdateNotice();
+};
+
+languageSetupForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (languageSetupContinue.disabled) return;
+  const preference = languageSetupInput.value;
+  languageSetupContinue.disabled = true;
+  languageSetupInput.disabled = true;
+  languageSetupError.hidden = true;
+  try {
+    selectLocale(await api.setAppLocale(preference));
+    showMainInterface();
+  } catch {
+    setMessage(languageSetupError, "language-save-error", "未能保存语言，请重试。");
+    languageSetupError.hidden = false;
+  } finally {
+    languageSetupContinue.disabled = false;
+    languageSetupInput.disabled = false;
+  }
+});
+
+void api.appLocale().then((locale) => {
+  selectLocale(locale);
+  if (!locale.selectionPending) {
+    showMainInterface();
+    return;
+  }
+  languageSetupInput.innerHTML = localeOptions();
+  const system = new Option("", "system");
+  languageSetupInput.add(system);
+  setMessage(system, "language-system", "跟随系统");
+  setMessage($("#language-setup-heading")!, "language-heading", "界面语言");
+  setMessage(languageSetupContinue, "language-continue", "继续");
+  languageSetupInput.value = locale.language;
+  languageSetup.hidden = false;
+  languageSetupInput.focus();
+}).catch(() => {
+  selectLocale(initialLocale);
+  showMainInterface();
 });
 let confirmationResolver: ((confirmed: boolean) => void) | null = null;
 let confirmationReturnFocus: HTMLElement | null = null;

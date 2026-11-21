@@ -11,6 +11,8 @@ Get the current verified release from [the website](https://serylane.cmmuu.com/#
 - macOS: choose Apple silicon for an M-series chip or Intel for an Intel Mac. Open the DMG and drag Serylane into Applications. macOS 13 or later is required.
 - Linux: choose the AppImage for your architecture, make it executable, and run it.
 
+Starting in v0.7.51, new users choose an interface language before entering Serylane. The Windows setup executable from the website asks during installation. On macOS, Linux, and Windows MSI installs, choose the language on first launch. The system match is preselected and Follow system is also available. Upgrades keep the saved language.
+
 ## Get started in five minutes
 <!-- anchor: quick-start -->
 

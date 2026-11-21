@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.51 - 2026-11-21
+
+- Choose the interface language during Windows setup or before entering the application on first launch.
+- Preselect the system match, display all 11 native language names, and retain the confirmed choice on later launches and upgrades.
+
 ## 0.7.50 - 2026-11-21
 
 - Wait for the macOS status item to settle into position before showing its icon at startup.

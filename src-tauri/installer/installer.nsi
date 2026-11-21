@@ -55,6 +55,7 @@ ${StrLoc}
 !define MAINBINARYNAME "{{main_binary_name}}"
 !define MAINBINARYSRCPATH "{{main_binary_path}}"
 !define BUNDLEID "{{bundle_id}}"
+!define INSTALL_LANGUAGE_FILE "$APPDATA\${BUNDLEID}\install-language"
 !define COPYRIGHT "{{copyright}}"
 !define OUTFILE "{{out_file}}"
 !define ARCH "{{arch}}"
@@ -79,6 +80,9 @@ Var UpdateMode
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
+Var AppLanguageList
+Var AppLanguageIndex
+Var SelectedAppLanguage
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -405,6 +409,7 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
 
 ; 7. Installation page
+Page custom ShowAppLanguagePage ReadAppLanguagePage
 !insertmacro MUI_PAGE_INSTFILES
 
 ; 8. Finish page
@@ -424,6 +429,152 @@ Var AppStartMenuFolder
 
 Function RunMainBinary
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
+FunctionEnd
+
+; Keep the order and native labels in sync with locales/manifest.json.
+!macro AppLanguages Apply
+  !insertmacro ${Apply} 0 "zh-Hans" "简体中文"
+  !insertmacro ${Apply} 1 "zh-Hant" "繁體中文"
+  !insertmacro ${Apply} 2 "en" "English"
+  !insertmacro ${Apply} 3 "ja" "日本語"
+  !insertmacro ${Apply} 4 "ko" "한국어"
+  !insertmacro ${Apply} 5 "de" "Deutsch"
+  !insertmacro ${Apply} 6 "fr" "Français"
+  !insertmacro ${Apply} 7 "es" "Español"
+  !insertmacro ${Apply} 8 "pt-BR" "Português (Brasil)"
+  !insertmacro ${Apply} 9 "ru" "Русский"
+  !insertmacro ${Apply} 10 "ar" "العربية"
+  !insertmacro ${Apply} 11 "system" "$(appLanguageSystem)"
+!macroend
+
+!macro AddAppLanguage Index Id Name
+  ${NSD_CB_AddString} $AppLanguageList "${Name}"
+!macroend
+
+!macro SelectAppLanguageIndex Index Id Name
+  ${If} $4 == "${Id}"
+    StrCpy $AppLanguageIndex "${Index}"
+  ${EndIf}
+!macroend
+
+!macro ReadAppLanguageId Index Id Name
+  ${If} $AppLanguageIndex == "${Index}"
+    StrCpy $SelectedAppLanguage "${Id}"
+  ${EndIf}
+!macroend
+
+Function PreferredAppLanguage
+  StrCpy $AppLanguageIndex -1
+  ; MUI_LANGUAGE_NAME returns the user's UI languages in preference order.
+  System::Call 'kernel32::GetUserPreferredUILanguages(i 8, *i .r0, p 0, *i .r1) i.r2'
+  ${If} $2 <> 0
+    ; Leave room for the fixed-size wide-string read at the end of the buffer.
+    IntOp $2 $1 * 2
+    IntOp $2 $2 + 170
+    System::Alloc $2
+    Pop $2
+    ${If} $2 <> 0
+      System::Call 'kernel32::GetUserPreferredUILanguages(i 8, *i .r0, p r2, *i r1) i.r3'
+      ${If} $3 <> 0
+        StrCpy $3 $2
+        ${DoWhile} $0 > 0
+          System::Call '*$3(&w85 .r4)'
+          StrLen $5 $4
+          IntOp $5 $5 * 2
+          IntOp $5 $5 + 2
+          System::Int64Op $3 + $5
+          Pop $3
+
+          ${WordFind} "$4" "-" "+1" $5
+          ${If} $5 == "zh"
+            ${WordFind} "$4" "-" "+2" $6
+            StrLen $7 $6
+            StrCpy $4 "zh-Hans"
+            ${If} $6 == "Hant"
+            ${OrIf} $6 == "TW"
+            ${OrIf} $6 == "HK"
+            ${OrIf} $6 == "MO"
+              StrCpy $4 "zh-Hant"
+            ${ElseIf} $7 = 4
+            ${AndIf} $6 != "Hans"
+              StrCpy $4 ""
+            ${EndIf}
+          ${ElseIf} $5 == "pt"
+            StrCpy $4 "pt-BR"
+          ${Else}
+            StrCpy $4 $5
+          ${EndIf}
+          !insertmacro AppLanguages SelectAppLanguageIndex
+          ${If} $AppLanguageIndex >= 0
+            ${ExitDo}
+          ${EndIf}
+          IntOp $0 $0 - 1
+        ${Loop}
+      ${EndIf}
+      System::Free $2
+    ${EndIf}
+  ${EndIf}
+  ${If} $AppLanguageIndex < 0
+    StrCpy $AppLanguageIndex 2 ; English
+  ${EndIf}
+FunctionEnd
+
+Function ShowAppLanguagePage
+  ${If} $PassiveMode = 1
+  ${OrIf} $UpdateMode = 1
+  ${OrIf} ${Silent}
+  ${OrIf} ${FileExists} "$APPDATA\${BUNDLEID}\settings.json"
+    StrCpy $SelectedAppLanguage ""
+    Abort
+  ${EndIf}
+
+  !insertmacro MUI_HEADER_TEXT "$(appLanguageHeading)" "${PRODUCTNAME}"
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
+  ${NSD_CreateLabel} 0 0 100% 13u "$(appLanguageLabel)"
+  Pop $0
+  ${NSD_CreateDropList} 0 17u 100% 125u ""
+  Pop $AppLanguageList
+  !insertmacro AppLanguages AddAppLanguage
+  ${If} $AppLanguageIndex == ""
+    Call PreferredAppLanguage
+  ${EndIf}
+  SendMessage $AppLanguageList ${CB_SETCURSEL} $AppLanguageIndex 0
+  nsDialogs::Show
+FunctionEnd
+
+Function ReadAppLanguagePage
+  SendMessage $AppLanguageList ${CB_GETCURSEL} 0 0 $AppLanguageIndex
+  StrCpy $SelectedAppLanguage ""
+  !insertmacro AppLanguages ReadAppLanguageId
+FunctionEnd
+
+Function SaveAppLanguage
+  ${If} $SelectedAppLanguage == ""
+  ${OrIf} ${FileExists} "$APPDATA\${BUNDLEID}\settings.json"
+    Return
+  ${EndIf}
+
+  ; Commit after file installation and before the finish page can launch the app.
+  ClearErrors
+  CreateDirectory "$APPDATA\${BUNDLEID}"
+  GetTempFileName $1 "$APPDATA\${BUNDLEID}"
+  ${IfNot} ${Errors}
+    FileOpen $0 "$1" w
+    ${IfNot} ${Errors}
+      FileWrite $0 "$SelectedAppLanguage"
+      FileClose $0
+      ${IfNot} ${Errors}
+        System::Call 'kernel32::MoveFileExW(w r1, w "${INSTALL_LANGUAGE_FILE}", i 1) i.r0'
+      ${EndIf}
+    ${EndIf}
+    Delete "$1"
+  ${EndIf}
+  ClearErrors
 FunctionEnd
 
 ; Uninstaller Pages
@@ -479,6 +630,41 @@ FunctionEnd
 {{#each language_files}}
   !include "{{this}}"
 {{/each}}
+
+; App language values from the bundled Fluent catalogs.
+LangString appLanguageHeading ${LANG_ENGLISH} "Interface language"
+LangString appLanguageLabel ${LANG_ENGLISH} "Language"
+LangString appLanguageSystem ${LANG_ENGLISH} "Follow system"
+LangString appLanguageHeading ${LANG_SIMPCHINESE} "界面语言"
+LangString appLanguageLabel ${LANG_SIMPCHINESE} "语言"
+LangString appLanguageSystem ${LANG_SIMPCHINESE} "跟随系统"
+LangString appLanguageHeading ${LANG_TRADCHINESE} "介面語言"
+LangString appLanguageLabel ${LANG_TRADCHINESE} "語言"
+LangString appLanguageSystem ${LANG_TRADCHINESE} "跟隨系統"
+LangString appLanguageHeading ${LANG_JAPANESE} "表示言語"
+LangString appLanguageLabel ${LANG_JAPANESE} "言語"
+LangString appLanguageSystem ${LANG_JAPANESE} "システムに従う"
+LangString appLanguageHeading ${LANG_KOREAN} "인터페이스 언어"
+LangString appLanguageLabel ${LANG_KOREAN} "언어"
+LangString appLanguageSystem ${LANG_KOREAN} "시스템 언어 사용"
+LangString appLanguageHeading ${LANG_GERMAN} "Oberflächensprache"
+LangString appLanguageLabel ${LANG_GERMAN} "Sprache"
+LangString appLanguageSystem ${LANG_GERMAN} "Systemsprache verwenden"
+LangString appLanguageHeading ${LANG_FRENCH} "Langue de l’interface"
+LangString appLanguageLabel ${LANG_FRENCH} "Langue"
+LangString appLanguageSystem ${LANG_FRENCH} "Utiliser la langue du système"
+LangString appLanguageHeading ${LANG_SPANISHINTERNATIONAL} "Idioma de la interfaz"
+LangString appLanguageLabel ${LANG_SPANISHINTERNATIONAL} "Idioma"
+LangString appLanguageSystem ${LANG_SPANISHINTERNATIONAL} "Usar el idioma del sistema"
+LangString appLanguageHeading ${LANG_PORTUGUESEBR} "Idioma da interface"
+LangString appLanguageLabel ${LANG_PORTUGUESEBR} "Idioma"
+LangString appLanguageSystem ${LANG_PORTUGUESEBR} "Usar o idioma do sistema"
+LangString appLanguageHeading ${LANG_RUSSIAN} "Язык интерфейса"
+LangString appLanguageLabel ${LANG_RUSSIAN} "Язык"
+LangString appLanguageSystem ${LANG_RUSSIAN} "Язык системы"
+LangString appLanguageHeading ${LANG_ARABIC} "لغة الواجهة"
+LangString appLanguageLabel ${LANG_ARABIC} "اللغة"
+LangString appLanguageSystem ${LANG_ARABIC} "اتباع لغة النظام"
 
 Function .onInit
   ${GetOptions} $CMDLINE "/P" $PassiveMode
@@ -756,6 +942,7 @@ Section Install
   !ifmacrodef NSIS_HOOK_POSTINSTALL
     !insertmacro NSIS_HOOK_POSTINSTALL
   !endif
+  Call SaveAppLanguage
 
   ; Auto close this page for passive mode
   ${If} $PassiveMode = 1
@@ -886,6 +1073,7 @@ Section Uninstall
   ; We do this when not updating (to preserve the registry value on updates)
   ${If} $UpdateMode <> 1
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    Delete "${INSTALL_LANGUAGE_FILE}"
   ${EndIf}
 
   ; Delete app data if the checkbox is selected

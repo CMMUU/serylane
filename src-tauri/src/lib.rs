@@ -2022,7 +2022,9 @@ pub fn run() {
                 .recover_profile_deletion()
                 .map_err(|error| error.to_string())?;
             let settings = storage.settings().map_err(|error| error.to_string())?;
-            i18n::activate(i18n::resolve_preference(&settings.locale));
+            let mut locale = i18n::resolve_preference(&settings.locale);
+            locale.selection_pending = settings.language_selection_pending;
+            i18n::activate(locale);
             app_log::initialize(storage.app_log_path(), settings.app_log_retention_days);
             app_log::record(
                 0,

@@ -11,6 +11,8 @@
 - macOS: M 시리즈는 Apple Silicon, Intel Mac은 Intel을 선택하세요. DMG를 열고 Serylane을 응용 프로그램에 넣으세요. macOS 13 이상이 필요합니다.
 - Linux: 기기 아키텍처에 맞는 AppImage에 실행 권한을 부여한 뒤 실행하세요.
 
+v0.7.51부터 새 사용자는 메인 화면에 들어가기 전에 인터페이스 언어를 선택합니다. 공식 사이트의 Windows 설치 프로그램은 설치 중에 언어를 묻습니다. macOS, Linux 및 MSI로 설치한 Windows에서는 처음 실행할 때 선택합니다. 시스템과 일치하는 언어가 미리 선택되며 시스템 설정을 따를 수도 있습니다. 업그레이드하면 저장된 언어가 유지됩니다.
+
 ## 빠르게 시작하기
 <!-- anchor: quick-start -->
 

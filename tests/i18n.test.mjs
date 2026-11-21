@@ -46,6 +46,33 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     assert.deepEqual(languages.filter(({ direction }) => direction === "rtl").map(({ id }) => id), ["ar"]);
   });
 
+  test("the Windows setup list matches the app's native names and localized controls", () => {
+    const installer = readFileSync(new URL("../src-tauri/installer/installer.nsi", import.meta.url), "utf8");
+    const options = [...installer.matchAll(/^\s*!insertmacro \$\{Apply\} (\d+) "([^"]+)" "([^"]+)"$/gm)];
+    assert.deepEqual(options.map(([, index, id, label]) => [Number(index), id, label]), [
+      ...languages.map(({ id, name }, index) => [index, id, name]),
+      [11, "system", "$(appLanguageSystem)"],
+    ]);
+    const installerLanguages = [
+      ["en", "English"], ["zh-Hans", "SimpChinese"], ["zh-Hant", "TradChinese"],
+      ["ja", "Japanese"], ["ko", "Korean"], ["de", "German"], ["fr", "French"],
+      ["es", "SpanishInternational"], ["pt-BR", "PortugueseBR"], ["ru", "Russian"], ["ar", "Arabic"],
+    ];
+    const config = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+    assert.deepEqual(config.bundle.windows.nsis.languages, installerLanguages.map(([, name]) => name));
+    for (const [locale, name] of installerLanguages) {
+      const resource = new FluentResource(resourceFor(locale));
+      for (const [fluent, nsis] of [
+        ["language-heading", "appLanguageHeading"],
+        ["language-label", "appLanguageLabel"],
+        ["language-system", "appLanguageSystem"],
+      ]) {
+        const label = resource.body.find(item => item.id === fluent).value;
+        assert.ok(installer.includes(`LangString ${nsis} \${LANG_${name.toUpperCase()}} "${label}"`), locale);
+      }
+    }
+  });
+
   test("all locale files expose matching phrases and named parameters", () => {
     const keys = resource => Object.fromEntries(resource.body.map(({ id, value }) => [
       id, Array.isArray(value) ? value.filter(part => part?.type === "var").map(part => part.name).sort() : [],

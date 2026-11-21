@@ -120,6 +120,7 @@ language-heading = Oberflächensprache
 language-label = Sprache
 language-description = Die Auswahl gilt sofort und wird automatisch gespeichert.
 language-system = Systemsprache verwenden
+language-continue = Weiter
 language-save-error = Die Sprache konnte nicht gespeichert werden. Bitte erneut versuchen.
 update-card-title = Serylane { $version } ist verfügbar
 update-card-open = Update ansehen

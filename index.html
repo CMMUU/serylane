@@ -8,6 +8,14 @@
     <title>Serylane</title>
   </head>
   <body>
+    <main id="language-setup" class="language-setup" hidden>
+      <form id="language-setup-form" aria-labelledby="language-setup-heading">
+        <h1 id="language-setup-heading">界面语言</h1>
+        <select id="language-setup-select" aria-labelledby="language-setup-heading"></select>
+        <div id="language-setup-error" role="alert" hidden></div>
+        <button id="language-setup-continue" class="button button-primary" type="submit">继续</button>
+      </form>
+    </main>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

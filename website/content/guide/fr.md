@@ -11,6 +11,8 @@ Récupérez la version stable vérifiée sur le [site officiel](https://serylane
 - macOS : choisissez Puce Apple pour la série M ou Intel pour un Mac Intel. Ouvrez le DMG et glissez Serylane dans Applications. macOS 13 ou ultérieur est requis.
 - Linux : choisissez l’AppImage adaptée, rendez-la exécutable et lancez-la.
 
+À partir de la v0.7.51, les nouveaux utilisateurs choisissent la langue de l’interface avant d’accéder à Serylane. Le programme d’installation Windows du site propose ce choix pendant l’installation. Sur macOS, Linux et avec un fichier MSI, le choix apparaît au premier lancement. La langue système compatible est présélectionnée et il est aussi possible de suivre la langue du système. Les mises à jour conservent la langue enregistrée.
+
 ## Premiers pas
 <!-- anchor: quick-start -->
 

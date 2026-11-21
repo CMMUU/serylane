@@ -120,6 +120,7 @@ language-heading = 界面语言
 language-label = 语言
 language-description = 选择后立即切换并自动保存。
 language-system = 跟随系统
+language-continue = 继续
 language-save-error = 未能保存语言，请重试。
 update-card-title = Serylane { $version } 可用
 update-card-open = 查看更新
