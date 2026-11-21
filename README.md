@@ -1,68 +1,86 @@
-# Serylane — 开源 Mihomo 桌面代理客户端
+# Serylane <img src="assets/brand/app-icon-128.png" width="48" height="48" align="left" hspace="12" alt="">
 
-Serylane 基于 **Mihomo、Rust 与 Tauri 2**，为 Windows、macOS 和 Linux 提供订阅、配置、节点、分流规则及系统代理管理。AI 工具域名路由默认关闭。
+**Open-source Mihomo desktop proxy client for Windows, macOS, and Linux.**
 
-**Serylane is an open-source Mihomo desktop proxy client for Windows, macOS and Linux.** Optional AI domain routing runs inside Mihomo and is off by default. TUN availability differs by platform; see the compatibility guide.
+[![Latest GitHub release](https://img.shields.io/github/v/release/CMMUU/serylane?label=release&logo=github&color=2563eb)](https://github.com/CMMUU/serylane/releases/latest)
+[![GPL-3.0-only license](https://img.shields.io/badge/license-GPL--3.0--only-0f766e?logo=gnu)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/CMMUU/serylane?label=stars&color=b45309)](https://github.com/CMMUU/serylane)
 
-这是独立客户端项目，并非 Mihomo、Clash 或 OpenAI 的官方产品。项目不提供代理节点或订阅，需要使用自己的订阅与配置。
+[Website](https://serylane.cmmuu.com/) · [User guide](https://serylane.cmmuu.com/docs/guide/) · **[Download](https://downloads.cmmuu.com/projects/serylane)** · [Changelog](CHANGELOG.md)
 
-## 下载与更新
+**English** · [简体中文](https://serylane.cmmuu.com/zh/) · [繁體中文](https://serylane.cmmuu.com/zh-hant/) · [日本語](https://serylane.cmmuu.com/ja/) · [한국어](https://serylane.cmmuu.com/ko/) · [Deutsch](https://serylane.cmmuu.com/de/) · [Français](https://serylane.cmmuu.com/fr/) · [Español](https://serylane.cmmuu.com/es/) · [Português (Brasil)](https://serylane.cmmuu.com/pt-br/) · [Русский](https://serylane.cmmuu.com/ru/) · [العربية](https://serylane.cmmuu.com/ar/)
 
-- [官网](https://serylane.cmmuu.com/) · [使用指南](https://serylane.cmmuu.com/zh/docs/guide/) · **[下载中心](https://downloads.cmmuu.com/projects/serylane)** · [源码仓库](https://github.com/CMMUU/serylane)
-- 官网安装包由下载中心提供。应用内按 GitHub 直连、GitHub 加速代理、经 Serylane 本地代理访问 GitHub、下载中心的顺序检查正式版。检查结果显示本次更新来源。
-- Windows、macOS、Linux 各提供 x64 / ARM64 入口；macOS 请区分 **Intel 芯片（x64）** 与 **Apple 芯片（M 系列，ARM64）**。
-- 自动检查开启时，应用在启动后于后台检查。发现新版本时，点击右下角卡片或侧栏版本号红点，进入「设置 → 软件更新」的下载操作。官网每次点击安装包都会核对下载中心的当前发行。
-- v0.7.44 若停在「正在检查」，退出旧版后可用 v0.7.46 或更新的完整安装包覆盖升级。 [官网下载](https://serylane.cmmuu.com/zh/#download)
-- 下载有界重试，可取消；签名和 SHA-256 通过后才允许确认安装。检查与下载不停止代理，确认安装和重启会短暂中断连接。Linux 内置更新适用于 AppImage。
-- **v0.7.24–v0.7.27 内置安装失败的用户**：首次从下载中心获取已正式发布的 v0.7.28 或更高修复版完整安装包，退出旧版后覆盖原位置并保留配置目录。旧更新器不会先执行新版修复代码。
+Serylane uses **Mihomo, Rust, and Tauri 2** to manage subscriptions, profiles, nodes, routing rules, and system proxy settings. Optional domain routing for AI tools runs inside Mihomo and is off by default. [TUN support](#tun-compatibility) varies by platform.
 
-## 当前功能
+Serylane is an independent project. Bring your own proxy subscription or Mihomo configuration.
 
-- **语言**：设置中可选择 11 种语言。选项显示各自的母语名称，切换在当前窗口生效并自动保存。
+<a name="下载与更新"></a>
 
-- **订阅与配置**使用「订阅 → 添加订阅」在弹窗中填写。点弹窗外或按 Esc 收起，重新打开可继续当前会话的草稿；已提交的导入在后台继续。订阅卡对齐展示选用状态、套餐用量、到期与配置更新，展开可查看用量采样和异常详情。支持配置校验和版本回滚。
-- **选点**：自选节点与 AI 代理互斥。自选模式保留订阅策略组与规则。AI 代理重新筛选后，按连接表现、倍率和延迟推荐候选，显示编号及当前出口。当前节点健康时继续使用，确认故障后按排名选择新连接的出口；仍可手动选点：点击「应用节点」后，只有核心确认所选节点为手动固定的实际出口，按钮才变灰并显示「已应用」。切换只影响命中该组的新连接。订阅推荐编号供手动选用。
-- **macOS 菜单栏**使用 AppKit 原生菜单。左键或右键点击仅图标或双行流量状态项可打开菜单，外观跟随系统。启动时在状态项落位后显示 S 图标，双行流量在首显前按最终外框重绘。菜单和主窗口共用控制与状态核对。选择命令、点击外部或按 Esc 可收起，选择「打开主窗口」会回到原页面。
-- **节点详情**：概览显示所选策略组的实际出口、链路、协议与最近有效延迟。规则模式不存在唯一全局出口；切换影响后续连接，不恢复已断开的数据流。
-- **域名路由**：选择工具域名和出口、保存草稿后独立确认开启。规则写入 Mihomo，并回读核对是否生效；不新增 Codex 接入，不代理或重放模型请求正文。
-- **启动与状态恢复**：可选择不随系统启动、登录后后台恢复或显示窗口恢复。恢复上次配置和网络模式；上次停止则保持停止。主启动按钮使用已保存模式。
-- **日志与界面**：应用日志默认 3 天，可设 1–90 天，正文有 256 KiB / 2,000 条上限；磨砂玻璃主题、隐藏滚动条、托盘与流量监控。长列表按批加载，读取结果按当前操作归属提交。
-- **逐项诊断**：检查按真实执行进度逐条出现，当前项显示检测中；已完成结果保留，单项失败继续后续检查。核心停止时明确跳过网络项，不启动代理或切换出口。
+## Downloads and updates
+
+- The [download center](https://downloads.cmmuu.com/projects/serylane) supplies the installers. Windows, macOS, and Linux each have x64 and ARM64 builds. On macOS, choose **Intel (x64)** or **Apple silicon (M series, ARM64)**.
+- In-app updates check stable releases in this order: direct GitHub access, Serylane's GitHub accelerator, GitHub through the running Serylane proxy, then the download center. The result shows which source the app used.
+- If automatic checks are enabled, the app checks in the background after startup. The lower-right notification or sidebar version indicator opens **Settings → Software update** at the download action. The website verifies the current release in the download center every time you select an installer.
+- Downloads support cancellation and a limited number of retries. The app verifies the signature and SHA-256 before offering installation. Checking and downloading keep the proxy running. Confirming installation and restarting briefly interrupt connections. On Linux, in-app updates support AppImage.
+- **If v0.7.44 gets stuck checking for updates**, quit the app and install the full v0.7.46 or newer package over the existing installation. [Get the installer](https://serylane.cmmuu.com/#download)
+- **If in-app installation fails on v0.7.24–v0.7.27**, get the full installer for a published v0.7.28 or newer release. Quit the old app, replace it in the same location, and keep the configuration directory. This first upgrade needs the standalone installer because the installed updater runs the older code.
+
+<a name="快速开始"></a>
+
+## Quick start
+
+1. Download the installer that matches your operating system and processor.
+2. Under **Subscriptions → Add subscription**, enter a Clash Meta or Mihomo YAML subscription URL. Select the activation checkbox to use the subscription as soon as it is imported. Use **Profiles** to import a local YAML file.
+3. Select a profile and click **Start** to use your saved network mode. To switch modes, select system proxy or TUN and follow your platform's permission prompts.
+4. To route AI tool domains through a specific node, configure and enable routing separately. Test general connectivity, access to the target site, and sustained model streaming separately.
+
+<a name="当前功能"></a>
+
+## Features
+
+- **Languages.** Choose from 11 languages in Settings. Each option shows its native name. Changes apply immediately in the current window and are saved automatically.
+- **Subscriptions and profiles.** The subscription dialog keeps the current session's draft when you close it with Esc or click outside. Submitted imports continue in the background. Subscription cards show the active profile, plan usage, expiry, and configuration updates. Expand a card for usage samples and error details. Profiles support validation and rollback.
+- **Node selection.** Choose manual selection or AI proxy mode. Manual selection keeps the subscription's policy groups and rules. AI proxy ranks candidates by connection performance, rate multiplier, and latency. It shows their ranking and the current outbound node. It keeps a healthy node and selects a ranked replacement for new connections after confirming a failure. Use the numbered subscription recommendations to choose a node manually. The control shows it as applied only after Mihomo confirms the pin. Changes affect new connections that match the group.
+- **macOS menu bar.** Left- or right-click the icon-only or two-line traffic item to open the native AppKit menu. It follows the system appearance. On startup, the S icon appears when the status item is positioned, and the traffic view uses the final item size before it appears. The menu and main window share controls and status checks. Dismiss the menu by selecting a command, clicking outside, or pressing Esc. **Open main window** returns you to your previous page.
+- **Node details.** The overview shows the selected policy group's actual outbound node, chain, protocol, and latest valid latency measurement. In rule mode, the outbound depends on the matching rule. Changing a node applies to future connections.
+- **Domain routing.** Select the tool domains and outbound node, save the draft, and confirm activation separately. Serylane writes the rules to Mihomo and checks that they took effect. Routing operates at the domain level. New Codex integration is temporarily disabled.
+- **Startup and restore.** Choose to launch manually, restore in the background at login, or restore with the window visible. Serylane restores the last profile and network mode and keeps the proxy stopped if it was previously stopped. The main Start button uses the saved mode.
+- **Logs and interface.** Logs are kept for three days by default, with a configurable range of 1–90 days. Log content is capped at 256 KiB and 2,000 entries. The interface includes frosted-glass themes, hidden scrollbars, a system tray, and traffic monitoring. Long lists load in batches, and read results apply to the operation that requested them.
+- **Step-by-step diagnostics.** Checks appear as they run, with the active step marked in progress. Completed results stay visible, and individual failures let later checks continue. When the core is stopped, diagnostics skip network checks and keep the existing proxy state.
 
 <!-- product-contract:start -->
-| 源码事实 | 当前值 |
+| Source fact | Current value |
 | --- | --- |
-| 源码版本 | 0.7.50（不代表已经发行） |
-| 官网安装包 | 下载中心 |
-| 应用内更新 | GitHub 直连 → GitHub 加速代理 → 经 Serylane 本地代理访问 GitHub → 下载中心 |
-| AI 合格节点范围 | 1–10 个；单节点没有备用 |
-| 程序代理 | 暂时停用 |
-| 增强稳定灾备 | 暂时停用 |
-| 新增 Codex 接入 | 暂时停用 |
+| Source version | 0.7.50 (see Releases for published builds) |
+| Website installers | Download center |
+| In-app updates | Direct GitHub → GitHub accelerator → GitHub through the running Serylane proxy → Download center |
+| Eligible AI nodes | 1–10. A single node has no fallback. |
+| Per-app proxy | Temporarily disabled |
+| Enhanced failover | Temporarily disabled |
+| New Codex integration | Temporarily disabled |
 <!-- product-contract:end -->
 
-上表由实际源码生成并在测试中核对。更多实现事实、默认值和局限见[当前实现与业务契约](docs/当前实现与业务契约.md)。历史发布说明只记录当时版本，不替代当前文档。
+This table is generated from the source and checked by tests. The [current product contract](docs/当前实现与业务契约.md) documents implementation details, defaults, and limitations. Historical release notes describe their specific versions.
 
-## 快速开始
+<a name="tun-平台边界"></a>
 
-1. 从下载中心选择对应系统与芯片的安装包。
-2. 在「订阅 → 添加订阅」输入 Clash Meta / Mihomo YAML 地址，按需勾选「添加后选用」；本地 YAML 在「配置」导入。
-3. 选用配置，点击「启动」使用保存的网络模式。需要切换时明确选择系统代理或 TUN，按平台权限流程确认。
-4. 需要 AI 工具域名分流时，再单独配置并启用「路由」。基础联网、特定网站可达与真实模型流健康是不同状态。
+## TUN compatibility
 
-## TUN 平台边界
-
-| 平台 | 当前实际状态 |
+| Platform | Support |
 | --- | --- |
-| Windows 10/11 | 实验性，需要整个应用具有管理员权限；尚未完成真实路由、DNS、异常退出恢复的完整验收。 |
-| macOS | TUN 使用 `utun` 与特权辅助服务。请选择带 Developer ID 签名和 Apple 公证的完整安装包。覆盖升级后应用检查并恢复旧服务登记。需要后台服务许可时，在系统设置批准后返回应用继续。v0.7.44 等临时签名兼容包不满足 TUN 要求。 |
-| Linux | 当前未实现 TUN 网络接管，入口不可用。 |
+| Windows 10/11 | Experimental. Run the entire app as an administrator. Full verification of live routes, DNS, and recovery after abnormal exits is pending. |
+| macOS | Uses `utun` and a privileged helper. Choose a full installer with Developer ID signing and Apple notarization. After an in-place upgrade, Serylane checks and restores the existing helper registration. If macOS requests background-item permission, approve it in System Settings and return to the app. The compatibility signing used by builds such as v0.7.44 lacks the Developer ID required for TUN. |
+| Linux | TUN is unavailable. Use system proxy mode. |
 
-[v0.7.45 的安装、授权与验收范围](docs/发布说明-v0.7.45.md) · [三端稳定化方案](docs/TUN三端稳定化方案-2026-10-30.md)。已在 Apple 芯片上的 macOS 27.2.1 隔离虚拟机验证升级恢复、实际接管和停止后的路由恢复；Intel 的发行工件验证与运行时实测分别记录。
+[v0.7.45 installation, permissions, and verification](docs/发布说明-v0.7.45.md) · [Platform stabilization plan](docs/TUN三端稳定化方案-2026-10-30.md)
 
-## 开发与验证
+Upgrade recovery, traffic takeover, and route restoration after stopping were tested in an isolated Apple silicon VM running macOS 27.2.1. Intel installer checks and runtime testing are tracked separately.
 
-Windows 使用对应 MSVC、C++ Build Tools、Windows SDK 和 WebView2；Node.js/npm、Rust 及各平台 Tauri 依赖也需准备。
+<a name="开发与验证"></a>
+
+## Development and checks
+
+Install Node.js, npm, Rust, and the Tauri prerequisites for your platform. On Windows, install the appropriate MSVC and C++ Build Tools, Windows SDK, and WebView2.
 
 ```bash
 npm ci
@@ -74,29 +92,35 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-`core:prepare` 按当前 Rust target 下载固定版本 Mihomo 并验证 SHA-256；`core:prepare:all` 准备全部目标。应用运行前先执行 Mihomo 原生配置校验。
+`core:prepare` downloads the pinned Mihomo build for the current Rust target and verifies its SHA-256. Use `core:prepare:all` to prepare every target. Serylane runs Mihomo's native configuration check before starting the core.
 
-## 文档与发行维护
+<a name="文档与发行维护"></a>
 
-- [文档索引](docs/index.md) · [当前实现与业务契约](docs/当前实现与业务契约.md) · [代理质量验收](docs/代理质量验收.md) · [更新日志](CHANGELOG.md)
-- [当前应用图标](assets/brand/图标说明.md) · [集中项目文档](https://github.com/CMMUU/project-docs/tree/main/serylane)
-- 改动功能时同时更新当前说明、源码事实表和对应测试；执行 `node scripts/product-docs.mjs --write` 刷新事实表，`node scripts/product-docs.mjs` 验证同步。
-- 六个平台的构建、原生安装升级门禁及签名验收通过后才发布。GitHub 用于源码、构建和不可变发行产物归档，也是应用内更新路径之一；官网安装入口仍统一使用下载中心。历史标签、签名、兼容身份与附件不重写。
-- 官网从受信任 main 独立部署，不依赖旧镜像任务是否成功。发行后核对下载中心版本、文件完整性及官网六个架构入口；未归档到中心时不能报告用户交付完成。
-- 项目更新签名、macOS Developer ID、Apple 公证和系统后台服务许可分别核验。临时签名兼容包的更新签名不会补齐 TUN 服务所需的开发者身份。
+## Documentation and release maintenance
 
-## 许可证
+- [Documentation index](docs/index.md) · [Current product contract](docs/当前实现与业务契约.md) · [Proxy quality verification](docs/代理质量验收.md) · [Changelog](CHANGELOG.md)
+- [App icon](assets/brand/图标说明.md) · [Central project documentation](https://github.com/CMMUU/project-docs/tree/main/serylane)
+- When features change, update the current documentation, generated source facts, and relevant tests. Run `node scripts/product-docs.mjs --write` to refresh the facts and `node scripts/product-docs.mjs` to verify them.
+- Releases require builds for all six targets, native installation and upgrade checks, and signing verification. GitHub hosts the source and immutable release artifacts and provides one route for in-app updates. The website directs installer downloads to the download center. Preserve historical tags, signed assets, compatibility identifiers, and asset filenames.
+- The website deploys from trusted `main` independently of the legacy mirror. After a release, verify the download center's version and file integrity and all six website download routes. Delivery is complete once the release is archived in the download center and the public checks pass.
+- Verify updater signatures, macOS Developer ID signing, Apple notarization, and permission for background services separately. TUN requires a Developer ID identity even when the package carries a valid updater signature.
 
-源码使用 [GNU GPL v3（GPL-3.0-only）](LICENSE)，第三方依赖见[第三方声明](THIRD_PARTY_NOTICES.md)。每个发行按其锁文件生成许可证清单和 SBOM，并随签名产物归档。`private: true` 仅防止误发布到 npm，不限制 GPL 权利。
+<a name="许可证"></a>
 
-## Star 增长趋势
+## License
+
+The source is licensed under [GNU GPL v3 (GPL-3.0-only)](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for dependencies. Each release includes a license inventory and SBOM generated from its lockfiles and archived with the signed artifacts. The `private: true` package setting prevents accidental npm publication and leaves GPL rights intact.
+
+<a name="star-增长趋势"></a>
+
+## Star history
 
 <a href="https://www.star-history.com/?repos=CMMUU%2Fserylane&amp;type=date&amp;legend=top-left">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=CMMUU/serylane&amp;type=date&amp;theme=dark&amp;legend=top-left" />
     <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=CMMUU/serylane&amp;type=date&amp;legend=top-left" />
-    <img alt="Serylane 的 GitHub Star 增长趋势" src="https://api.star-history.com/chart?repos=CMMUU/serylane&amp;type=date&amp;legend=top-left" width="800" />
+    <img alt="GitHub star history for Serylane" src="https://api.star-history.com/chart?repos=CMMUU/serylane&amp;type=date&amp;legend=top-left" width="800" />
   </picture>
 </a>
 
-图表由 Star History 提供，可能存在缓存延迟。
+Star History provides the chart. Cached data may lag behind GitHub.
