@@ -86,7 +86,9 @@ test("installed-app binding and portable files keep independent directory and id
 
 test("README uses token-free theme-aware Star History without adding a chart scheduler", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-  assert.ok(readme.indexOf("## Star 增长趋势") > readme.indexOf("## 快速开始"));
+  const quickStart = readme.search(/^## Quick start\r?$/m);
+  const starHistory = readme.search(/^## Star history\r?$/m);
+  assert.ok(quickStart >= 0 && starHistory > quickStart, "Star history follows Quick start");
   assert.match(readme, /prefers-color-scheme: dark/);
   assert.match(readme, /https:\/\/api\.star-history\.com\/chart\?repos=CMMUU\/serylane/);
   assert.doesNotMatch(readme, /sealed_token|[?&]token=/);
