@@ -91,6 +91,7 @@ export type AppLocale = {
   preference: string;
   language: string;
   formatLocale: string;
+    selectionPending?: boolean;
 };
 
 export type AppSettings = {

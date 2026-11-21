@@ -120,6 +120,7 @@ language-heading = 인터페이스 언어
 language-label = 언어
 language-description = 선택하면 즉시 전환되고 자동으로 저장됩니다.
 language-system = 시스템 언어 사용
+language-continue = 계속
 language-save-error = 언어를 저장하지 못했습니다. 다시 시도하세요.
 update-card-title = Serylane { $version } 버전이 나왔습니다
 update-card-open = 업데이트 보기

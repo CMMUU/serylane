@@ -120,6 +120,7 @@ language-heading = Idioma da interface
 language-label = Idioma
 language-description = A alteração é aplicada imediatamente e salva automaticamente.
 language-system = Usar o idioma do sistema
+language-continue = Continuar
 language-save-error = Não foi possível salvar o idioma. Tente novamente.
 update-card-title = Serylane { $version } está disponível
 update-card-open = Ver atualização

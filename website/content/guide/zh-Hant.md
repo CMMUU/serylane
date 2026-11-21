@@ -11,6 +11,8 @@
 - macOS：M 系列選 Apple 晶片，Intel Mac 選 Intel。開啟 DMG，將 Serylane 拖至「應用程式」。需要 macOS 13 或更新版本。
 - Linux：選擇符合架構的 AppImage，授予執行權限後執行。
 
+從 v0.7.51 起，新使用者會在進入主畫面前選擇介面語言。官網的 Windows 安裝程式會在安裝過程中提供選擇。macOS、Linux 或使用 MSI 安裝的使用者會在第一次開啟時選擇。會預先選取與系統相符的語言，也可以選擇跟隨系統。升級後會沿用已儲存的語言。
+
 ## 快速開始
 <!-- anchor: quick-start -->
 

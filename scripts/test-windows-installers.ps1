@@ -74,10 +74,19 @@ using System.Text;
 public static class InstallerWindows {
     public delegate bool Callback(IntPtr handle, IntPtr parameter);
     [DllImport("user32.dll")] static extern bool EnumWindows(Callback callback, IntPtr parameter);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr window, Callback callback, IntPtr parameter);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr handle, out uint process);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr handle, StringBuilder text, int maximum);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr handle, StringBuilder name, int maximum);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr handle);
-    public sealed class Window { public string Title; public bool Visible; }
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr handle);
+    [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr handle, int id);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr handle, int index);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wparam, StringBuilder text);
+    [DllImport("kernel32.dll", ExactSpelling=true)] static extern bool GetUserPreferredUILanguages(uint flags, out uint count, IntPtr buffer, ref uint size);
+    public sealed class Window { public string Title; public bool Visible; public IntPtr Handle; }
     public static Window[] ForProcess(int process) {
         var found = new List<Window>();
         EnumWindows((handle, parameter) => {
@@ -85,11 +94,71 @@ public static class InstallerWindows {
             if (owner == process) {
                 var title = new StringBuilder(512);
                 GetWindowText(handle, title, title.Capacity);
-                found.Add(new Window { Title=title.ToString(), Visible=IsWindowVisible(handle) });
+                found.Add(new Window { Title=title.ToString(), Visible=IsWindowVisible(handle), Handle=handle });
             }
             return true;
         }, IntPtr.Zero);
         return found.ToArray();
+    }
+    public static string[] PreferredLanguages() {
+        uint count, size = 0;
+        if (!GetUserPreferredUILanguages(8, out count, IntPtr.Zero, ref size)) return new string[0];
+        IntPtr buffer = Marshal.AllocHGlobal(checked((int)size * 2));
+        try {
+            if (!GetUserPreferredUILanguages(8, out count, buffer, ref size)) return new string[0];
+            return Marshal.PtrToStringUni(buffer, (int)size).Split(new char[] {'\0'}, StringSplitOptions.RemoveEmptyEntries);
+        } finally {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+    public static IntPtr LanguageList(IntPtr window) {
+        IntPtr result = IntPtr.Zero;
+        EnumChildWindows(window, (handle, unused) => {
+            var name = new StringBuilder(32);
+            GetClassName(handle, name, name.Capacity);
+            if (IsWindowVisible(handle) && name.ToString() == "ComboBox" &&
+                SendMessage(handle, 0x146, IntPtr.Zero, IntPtr.Zero).ToInt32() == 12) {
+                result = handle;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
+    public static string LanguageLabel(IntPtr list, int index) {
+        var label = new StringBuilder(128);
+        SendMessage(list, 0x148, (IntPtr)index, label); // CB_GETLBTEXT.
+        return label.ToString();
+    }
+    public static int SelectedLanguage(IntPtr list) {
+        return SendMessage(list, 0x147, IntPtr.Zero, IntPtr.Zero).ToInt32();
+    }
+    public static void SelectLanguage(IntPtr list, int index) {
+        SendMessage(list, 0x14e, (IntPtr)index, IntPtr.Zero);
+    }
+    public static bool UncheckRunApplication(IntPtr window) {
+        bool found = false;
+        EnumChildWindows(window, (handle, unused) => {
+            var name = new StringBuilder(32);
+            GetClassName(handle, name, name.Capacity);
+            // The native finish page's Run checkbox includes the product name.
+            if (IsWindowVisible(handle) && name.ToString() == "Button" && (GetWindowLong(handle, -16) & 0xf) == 3) {
+                var text = new StringBuilder(256);
+                SendMessage(handle, 0xd, (IntPtr)text.Capacity, text);
+                if (text.ToString().Contains("Serylane")) {
+                    SendMessage(handle, 0xf1, IntPtr.Zero, IntPtr.Zero); // BM_SETCHECK.
+                    found = true;
+                    return false;
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+    public static bool PressButton(IntPtr window, int control) {
+        IntPtr button = GetDlgItem(window, control);
+        return button != IntPtr.Zero && IsWindowEnabled(button)
+            && PostMessage(window, 0x111, (IntPtr)control, button); // WM_COMMAND.
     }
 }
 '@
@@ -122,6 +191,95 @@ function Uninstall-Package([string]$file, [string]$directory) {
     }
     if (Test-Path -LiteralPath (Join-Path $resolved 'serylane.exe')) { throw 'Uninstall left the main executable behind.' }
     Start-Sleep -Seconds 1
+}
+function Read-InitialLanguage([string]$executable, [string]$preference, [bool]$pending) {
+    $settingsPath = Join-Path $dataRoot 'settings.json'
+    $handoff = Join-Path $dataRoot 'install-language'
+    $process = Start-Process -FilePath $executable -PassThru
+    try {
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
+        do {
+            Start-Sleep -Milliseconds 250
+            if ($process.HasExited) { throw 'The fresh application exited during startup.' }
+            $ready = (Test-Path -LiteralPath $settingsPath) -and !(Test-Path -LiteralPath $handoff)
+        } until ($ready -or [DateTime]::UtcNow -ge $deadline)
+        if (!$ready) { throw 'The packaged app did not finish initializing the language.' }
+        $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+        if ($settings.locale -ne $preference -or $settings.languageSelectionPending -ne $pending) {
+            throw 'The packaged app did not initialize the expected first-run language.'
+        }
+    } finally {
+        if (!$process.HasExited) { Stop-Process -Id $process.Id -Force; $process.WaitForExit() }
+    }
+}
+function Test-InteractiveLanguage([string]$file, [string]$directory, [bool]$cancel) {
+    $handoff = Join-Path $dataRoot 'install-language'
+    $settings = Join-Path $dataRoot 'settings.json'
+    $languageManifest = Get-Content -LiteralPath (Join-Path $repo 'locales/manifest.json') -Raw | ConvertFrom-Json
+    $choices = @($languageManifest | ForEach-Object { $_.id })
+    $default = 'en'
+    foreach ($language in [InstallerWindows]::PreferredLanguages()) {
+        $parts = $language.Split('-')
+        $id = $parts[0]
+        if ($id -eq 'zh') {
+            $id = if ($parts.Count -gt 1 -and $parts[1] -in @('Hant','TW','HK','MO')) { 'zh-Hant' } else { 'zh-Hans' }
+        }
+        if ($id -eq 'pt') { $id = 'pt-BR' }
+        if ($id -in $choices) { $default = $id; break }
+    }
+    $process = Start-Process -FilePath $file -ArgumentList "/D=$directory" -PassThru
+    $seen = $false
+    $finished = $false
+    try {
+        $deadline = [DateTime]::UtcNow.AddSeconds(140)
+        while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+            foreach ($window in [InstallerWindows]::ForProcess($process.Id)) {
+                if (!$window.Visible) { continue }
+                $list = [InstallerWindows]::LanguageList($window.Handle)
+                if ($list -ne [IntPtr]::Zero -and !$seen) {
+                    for ($index = 0; $index -lt $choices.Count; $index++) {
+                        if ([InstallerWindows]::LanguageLabel($list, $index) -cne $languageManifest[$index].name) {
+                            throw "The native setup language label differs at index $index."
+                        }
+                    }
+                    if ([string]::IsNullOrWhiteSpace([InstallerWindows]::LanguageLabel($list, 11))) {
+                        throw 'The native setup is missing the follow-system choice.'
+                    }
+                    $selected = [InstallerWindows]::SelectedLanguage($list)
+                    if ($selected -lt 0 -or $selected -ge $choices.Count -or $choices[$selected] -ne $default) {
+                        throw "The native setup did not preselect the system match ($default)."
+                    }
+                    $seen = $true
+                    [InstallerWindows]::SelectLanguage($list, [array]::IndexOf($choices, 'ja'))
+                    if ($cancel) { [void][InstallerWindows]::PressButton($window.Handle, 2); continue }
+                }
+                if ($seen -and $cancel) {
+                    [void][InstallerWindows]::PressButton($window.Handle, 6)
+                    continue
+                }
+                if ([InstallerWindows]::UncheckRunApplication($window.Handle)) { $finished = $true }
+                [void][InstallerWindows]::PressButton($window.Handle, 1)
+            }
+            Start-Sleep -Milliseconds 400
+        }
+        if (!$process.HasExited -or !$seen) { throw 'The interactive installer did not reach the language page and exit.' }
+        if ($cancel) {
+            if ((Test-Path -LiteralPath $handoff) -or (Test-Path -LiteralPath $settings) -or (Test-Path -LiteralPath (Join-Path $directory 'serylane.exe'))) {
+                throw 'Cancel left an install language or application files.'
+            }
+        } else {
+            if (!$finished -or $process.ExitCode -ne 0 -or (Test-Path -LiteralPath $settings)) {
+                throw 'The interactive install did not finish with automatic launch unchecked.'
+            }
+            if ((Get-Content -LiteralPath $handoff -Raw) -ne 'ja') { throw 'Setup lost the selected language before launch.' }
+            Read-InitialLanguage (Join-Path $directory 'serylane.exe') 'ja' $false
+            Uninstall-Package $file $directory
+            Remove-Item -LiteralPath $dataRoot -Recurse -Force
+        }
+        Write-Host "PASS: $Architecture NSIS native language options, default and cancellation=$cancel."
+    } finally {
+        if (!$process.HasExited) { Stop-Process -Id $process.Id -Force }
+    }
 }
 function Write-Fixture([bool]$login, [bool]$legacySettings) {
     New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
@@ -267,6 +425,26 @@ foreach ($kind in @('nsis','msi')) {
     }
     $current = Join-Path $repo "src-tauri/target/release/bundle/$kind/Serylane_${version}_$suffix"
     if (!(Test-Path -LiteralPath $current)) { throw 'Expected signed build installer is missing.' }
+    if ($kind -eq 'nsis') {
+        Test-InteractiveLanguage $current (Join-Path $testRoot 'language-cancel') $true
+        Test-InteractiveLanguage $current (Join-Path $testRoot 'language-interactive') $false
+        Reset-FixtureInstallLocations
+        $directory = Join-Path $testRoot 'language-passive'
+        Run-Installer $current "/P /D=$directory"
+        if (Test-Path -LiteralPath (Join-Path $dataRoot 'install-language')) {
+            throw 'The passive installer persisted a language selection.'
+        }
+        Uninstall-Package $current $directory
+        Write-Host "PASS: $Architecture NSIS passive installation completed without choosing a language."
+    } else {
+        Remove-Item -LiteralPath $dataRoot -Recurse -Force
+        Reset-FixtureInstallLocations
+        $directory = Join-Path $testRoot 'language-msi'
+        Install-Package $current $directory
+        Read-InitialLanguage (Join-Path $directory 'serylane.exe') 'system' $true
+        Uninstall-Package $current $directory
+        Write-Host "PASS: $Architecture MSI fresh profile defers language selection to the application."
+    }
     $recentPackages = @{}
     foreach ($recent in $recentVersions) {
         $recentBase = "https://github.com/CMMUU/serylane/releases/download/v$recent"

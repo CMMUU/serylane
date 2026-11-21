@@ -11,6 +11,8 @@ Obtenha a versão estável verificada no [site oficial](https://serylane.cmmuu.c
 - macOS: use Chip da Apple para a série M ou Intel para um Mac Intel. Abra o DMG, arraste o app para Aplicativos e use macOS 13 ou posterior.
 - Linux: escolha o AppImage da sua arquitetura, torne-o executável e abra-o.
 
+A partir da v0.7.51, novos usuários escolhem o idioma da interface antes de entrar no Serylane. O instalador do Windows disponível no site oferece a escolha durante a instalação. No macOS, no Linux e nas instalações via MSI, a escolha aparece na primeira abertura. O idioma compatível com o sistema vem pré-selecionado e também é possível seguir o idioma do sistema. As atualizações mantêm o idioma salvo.
+
 ## Primeiros passos
 <!-- anchor: quick-start -->
 

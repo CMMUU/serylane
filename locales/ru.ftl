@@ -120,6 +120,7 @@ language-heading = Язык интерфейса
 language-label = Язык
 language-description = Язык меняется сразу и сохраняется автоматически.
 language-system = Язык системы
+language-continue = Продолжить
 language-save-error = Не удалось сохранить язык. Повторите попытку.
 update-card-title = Доступна Serylane { $version }
 update-card-open = Открыть обновление

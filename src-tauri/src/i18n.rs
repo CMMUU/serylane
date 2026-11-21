@@ -30,6 +30,7 @@ pub(crate) struct Locale {
     pub preference: &'static str,
     pub language: &'static str,
     pub format_locale: String,
+    pub selection_pending: bool,
 }
 
 static ACTIVE: LazyLock<RwLock<Locale>> = LazyLock::new(|| RwLock::new(resolve(LEGACY, [])));
@@ -90,6 +91,7 @@ fn resolve<'a>(preference: &str, system: impl IntoIterator<Item = &'a str>) -> L
         },
         language: found.id,
         format_locale,
+        selection_pending: false,
     }
 }
 

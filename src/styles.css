@@ -2078,7 +2078,26 @@ td small { color: var(--muted); }
 .ai-health-results li strong { white-space: nowrap; }
 
 
-#app[hidden] { display: none; }
+.language-setup {
+  display: grid;
+  place-items: center;
+  min-block-size: 100vh;
+  padding: 24px;
+}
+.language-setup form {
+  display: grid;
+  gap: 16px;
+  width: min(100%, 360px);
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel-solid);
+}
+.language-setup h1 { margin: 0; font-size: 22px; }
+.language-setup select { padding-inline-start: 12px; }
+.language-setup [role="alert"] { color: var(--danger); }
+.language-setup .button { justify-self: end; }
+#app[hidden], .language-setup[hidden] { display: none; }
 #settings-language { max-inline-size: min(100%, 280px); }
 [dir="rtl"] input[type="url"],
 [dir="rtl"] input[type="number"],

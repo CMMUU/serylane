@@ -9,7 +9,7 @@ use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -17,6 +17,7 @@ use uuid::Uuid;
 // Quota observations may finish outside the configuration permit. Coordinate
 // their final write with deletion so a late response cannot recreate a directory.
 static OBSERVATION_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const INSTALL_LANGUAGE_FILE: &str = "install-language";
 #[derive(Serialize, Deserialize)]
 struct ProfileDeletion {
     profile_id: Uuid,
@@ -58,7 +59,18 @@ impl AppStorage {
         let path = self.root.join("settings.json");
         if !path.exists() {
             let mut settings = AppSettings::default();
+            let handoff = self.root.join(INSTALL_LANGUAGE_FILE);
+            let mut preference = String::new();
+            let has_install_language = fs::File::open(&handoff)
+                .and_then(|file| file.take(32).read_to_string(&mut preference))
+                .is_ok()
+                && crate::i18n::valid_preference(&preference);
+            if has_install_language {
+                settings.locale = preference;
+            }
+            settings.language_selection_pending = !has_install_language;
             self.save_settings(&settings)?;
+            let _ = fs::remove_file(handoff);
             settings.user_rules = self.user_rules()?.rules;
             settings.domain_routing = crate::domain_routing::Document::read(self)?;
             return Ok(settings);
@@ -79,8 +91,9 @@ impl AppStorage {
 
     pub(crate) fn save_locale_preference(&self, locale: String) -> AppResult<AppSettings> {
         let mut settings = self.settings()?;
-        if settings.locale != locale {
+        if settings.locale != locale || settings.language_selection_pending {
             settings.locale = locale;
+            settings.language_selection_pending = false;
             self.save_settings(&settings)?;
         }
         Ok(settings)
@@ -840,12 +853,76 @@ fn secure_existing_tree(path: &Path) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_new_profile_prompts_until_the_system_preference_is_confirmed() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = AppStorage::from_root(directory.path().to_path_buf()).unwrap();
+        for _ in 0..2 {
+            let settings = storage.settings().unwrap();
+            assert_eq!(settings.locale, "system");
+            assert!(settings.language_selection_pending);
+        }
+        let saved = storage.save_locale_preference("system".to_owned()).unwrap();
+        assert!(!saved.language_selection_pending);
+        assert!(!storage.settings().unwrap().language_selection_pending);
+    }
+
+    #[test]
+    fn an_installer_choice_is_used_only_when_creating_user_settings() {
+        for preference in ["ja", "system"] {
+            let directory = tempfile::tempdir().unwrap();
+            let storage = AppStorage::from_root(directory.path().to_path_buf()).unwrap();
+            let handoff = directory.path().join(super::INSTALL_LANGUAGE_FILE);
+            fs::write(&handoff, preference).unwrap();
+            let settings = storage.settings().unwrap();
+            assert_eq!(settings.locale, preference);
+            assert!(!settings.language_selection_pending);
+            assert!(!handoff.exists());
+
+            fs::write(&handoff, "ar").unwrap();
+            assert_eq!(storage.settings().unwrap().locale, preference);
+        }
+    }
+
+    #[test]
+    fn an_invalid_install_language_leaves_first_run_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = AppStorage::from_root(directory.path().to_path_buf()).unwrap();
+        let handoff = directory.path().join(super::INSTALL_LANGUAGE_FILE);
+        fs::write(&handoff, "invalid").unwrap();
+        let settings = storage.settings().unwrap();
+        assert_eq!(settings.locale, "system");
+        assert!(settings.language_selection_pending);
+        assert!(!handoff.exists());
+    }
+
+    #[test]
+    fn existing_settings_without_the_new_field_do_not_show_the_prompt() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = AppStorage::from_root(directory.path().to_path_buf()).unwrap();
+        let mut legacy = serde_json::to_value(crate::models::AppSettings::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("languageSelectionPending");
+        legacy.as_object_mut().unwrap().remove("locale");
+        fs::write(
+            directory.path().join("settings.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let settings = storage.settings().unwrap();
+        assert_eq!(settings.locale, "zh-CN");
+        assert!(!settings.language_selection_pending);
+    }
+
+    #[test]
     fn changing_language_persists_only_locale_in_the_settings_document() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().to_path_buf();
         let storage = super::AppStorage::from_root(root.clone()).unwrap();
         let mut settings = storage.settings().unwrap();
         settings.locale = "zh-CN".to_owned();
+        settings.language_selection_pending = false;
         settings.mixed_port = 18188;
         settings.theme = "dark".to_owned();
         settings.controller_secret = "fixture-secret".to_owned();

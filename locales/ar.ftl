@@ -120,6 +120,7 @@ language-heading = لغة الواجهة
 language-label = اللغة
 language-description = يُطبّق التغيير فورًا ويُحفظ تلقائيًا.
 language-system = اتباع لغة النظام
+language-continue = متابعة
 language-save-error = تعذّر حفظ اللغة. حاول مرة أخرى.
 update-card-title = يتوفر Serylane { $version }
 update-card-open = عرض التحديث

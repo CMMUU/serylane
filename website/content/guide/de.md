@@ -11,6 +11,8 @@ Lade die geprüfte stabile Version von der [Website](https://serylane.cmmuu.com/
 - macOS: Apple-Chip für die M-Serie, Intel für Intel-Macs. Ziehe die App aus dem DMG in Programme. Erforderlich ist macOS 13 oder neuer.
 - Linux: Wähle das passende AppImage, mache es ausführbar und starte es.
 
+Ab v0.7.51 wählen neue Nutzer die Oberflächensprache vor dem Aufrufen der Hauptseite. Das Windows-Installationsprogramm von der Website fragt während der Installation. Unter macOS, Linux und nach einer MSI-Installation erscheint die Auswahl beim ersten Start. Die passende Systemsprache ist vorausgewählt und die Option zum Folgen der Systemsprache ist ebenfalls verfügbar. Updates übernehmen die gespeicherte Sprache.
+
 ## Schnellstart
 <!-- anchor: quick-start -->
 

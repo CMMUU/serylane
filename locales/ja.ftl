@@ -120,6 +120,7 @@ language-heading = 表示言語
 language-label = 言語
 language-description = 選択するとすぐに切り替わり、自動的に保存されます。
 language-system = システムに従う
+language-continue = 続ける
 language-save-error = 言語を保存できませんでした。もう一度お試しください。
 update-card-title = Serylane { $version } が利用可能です
 update-card-open = アップデートを確認
