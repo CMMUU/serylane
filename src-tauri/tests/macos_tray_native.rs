@@ -46,6 +46,7 @@ fn main() {
         return;
     }
     app.finishLaunching();
+    check_startup_position();
     let bar = NSStatusBar::systemStatusBar();
     let item = bar.statusItemWithLength(macos_layout::item_width());
     let button = item.button(mtm).expect("disposable status button");
@@ -315,6 +316,7 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
         mtm,
         image_from_rgba(macos_layout::brand_icon()),
         true,
+        1.0,
         move |event| match event {
             Event::Command(command) => recorded.lock().unwrap().push(command),
             Event::Visible(visible) => visible_events.lock().unwrap().push(visible),
@@ -326,6 +328,7 @@ fn check_menu(mtm: objc2::MainThreadMarker) {
         mtm,
         image_from_rgba(macos_layout::brand_icon()),
         true,
+        1.0,
         |_| {}
     )
     .is_err());
@@ -560,7 +563,7 @@ fn real_space_host(
         source.width(),
         source.height(),
     ));
-    macos_menu_panel::install(mtm, brand, true, move |event| {
+    macos_menu_panel::install(mtm, brand, true, 1.0, move |event| {
         let value = match event {
             macos_menu_panel::Event::Visible(true) => "Observe".into(),
             macos_menu_panel::Event::Command(command) => format!("{:?}", command.action),
@@ -686,6 +689,40 @@ fn image_from_rgba(rgba: &tauri::image::Image<'_>) -> objc2::rc::Retained<objc2_
 #[cfg(not(target_os = "macos"))]
 fn main() {
     println!("native macOS tray integration is not applicable on this platform");
+}
+
+#[cfg(target_os = "macos")]
+fn check_startup_position() {
+    use macos_menu_panel::{FirstAppearance, StartupPosition};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let at = |ms| start + Duration::from_millis(ms);
+    let rect = |y, height| {
+        Some(NSRect::new(
+            NSPoint::new(575.0, y),
+            NSSize::new(64.0, height),
+        ))
+    };
+    let mut pending = StartupPosition::new(start);
+    assert_eq!(pending.observe(rect(905.0, 0.0), at(40)), None);
+    assert_eq!(pending.observe(rect(875.0, 30.0), at(75)), None);
+    assert_eq!(pending.observe(rect(890.0, 30.0), at(95)), None);
+    assert_eq!(pending.observe(rect(890.0, 30.0), at(144)), None);
+    assert_eq!(
+        pending.observe(rect(890.0, 30.0), at(145)),
+        Some(FirstAppearance::Positioned)
+    );
+
+    let mut pending = StartupPosition::new(start);
+    assert_eq!(pending.observe(rect(890.0, 30.0), at(245)), None);
+    assert_eq!(pending.observe(None, at(280)), None);
+    assert_eq!(pending.observe(rect(890.0, 30.0), at(299)), None);
+    assert_eq!(
+        pending.observe(None, at(300)),
+        Some(FirstAppearance::TimedOut)
+    );
 }
 
 #[cfg(target_os = "macos")]

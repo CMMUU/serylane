@@ -3,6 +3,14 @@
 
 use crate::i18n;
 use block2::RcBlock;
+use core_foundation::{
+    base::TCFType,
+    date::CFAbsoluteTimeGetCurrent,
+    runloop::{
+        kCFRunLoopCommonModes, CFRunLoop, CFRunLoopTimer, CFRunLoopTimerInvalidate,
+        CFRunLoopTimerRef,
+    },
+};
 use objc2::{
     define_class, msg_send,
     rc::Retained,
@@ -14,14 +22,16 @@ use objc2_app_kit::{
     NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem, NSTextField,
     NSUserInterfaceLayoutDirection, NSVariableStatusItemLength,
 };
-use objc2_foundation::{NSOperationQueue, NSString};
+use objc2_foundation::{NSOperationQueue, NSRect, NSString};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::{Cell, RefCell},
+    ffi::c_void,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -427,11 +437,73 @@ fn refresh_traffic(target: &Target) {
     }
 }
 
+const POSITION_STABLE_FOR: Duration = Duration::from_millis(50);
+const FIRST_APPEARANCE_BUDGET: Duration = Duration::from_millis(300);
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FirstAppearance {
+    Positioned,
+    TimedOut,
+}
+
+pub(super) struct StartupPosition {
+    started: Instant,
+    position: Option<(NSRect, Instant)>,
+}
+
+impl StartupPosition {
+    pub(super) fn new(started: Instant) -> Self {
+        Self {
+            started,
+            position: None,
+        }
+    }
+
+    pub(super) fn observe(
+        &mut self,
+        frame: Option<NSRect>,
+        now: Instant,
+    ) -> Option<FirstAppearance> {
+        // A new status button already has local bounds while its hosted window
+        // can still have zero height. Only measure the hosted window's frame.
+        if let Some(frame) = frame.filter(|frame| frame.size.width > 0.0 && frame.size.height > 0.0)
+        {
+            match self.position {
+                Some((previous, since)) if previous == frame => {
+                    if now.duration_since(since) >= POSITION_STABLE_FOR {
+                        return Some(FirstAppearance::Positioned);
+                    }
+                }
+                _ => self.position = Some((frame, now)),
+            }
+        } else {
+            self.position = None;
+        }
+        (now.duration_since(self.started) >= FIRST_APPEARANCE_BUDGET)
+            .then_some(FirstAppearance::TimedOut)
+    }
+}
+
+struct PendingAppearance {
+    position: StartupPosition,
+    timer: CFRunLoopTimer,
+    traffic: Arc<Mutex<Option<Traffic>>>,
+    paint_traffic: fn(MainThreadMarker, Traffic),
+}
+
+impl Drop for PendingAppearance {
+    fn drop(&mut self) {
+        // SAFETY: the retained timer belongs to this main-thread status item.
+        unsafe { CFRunLoopTimerInvalidate(self.timer.as_concrete_TypeRef()) };
+    }
+}
+
 struct NativeStatus {
     bar: Retained<NSStatusBar>,
     item: Retained<NSStatusItem>,
     brand: Retained<NSImage>,
     target: Retained<Target>,
+    pending_appearance: Option<PendingAppearance>,
 }
 
 thread_local! {
@@ -442,6 +514,7 @@ pub(super) fn install(
     mtm: MainThreadMarker,
     brand: Retained<NSImage>,
     traffic_enabled: bool,
+    initial_opacity: f64,
     on_event: impl Fn(Event) + Send + Sync + 'static,
 ) -> Result<(), &'static str> {
     if STATUS.with_borrow(Option::is_some) {
@@ -453,6 +526,7 @@ pub(super) fn install(
         bar.removeStatusItem(&item);
         return Err("菜单栏按钮不可用");
     };
+    button.setAlphaValue(initial_opacity);
     let state = MenuState {
         menu: NSMenu::new(mtm),
         route_menu: NSMenu::new(mtm),
@@ -486,9 +560,66 @@ pub(super) fn install(
             item,
             brand,
             target,
+            pending_appearance: None,
         })
     });
     Ok(())
+}
+
+fn wait_for_initial_position(
+    _: MainThreadMarker,
+    traffic: Arc<Mutex<Option<Traffic>>>,
+    paint_traffic: fn(MainThreadMarker, Traffic),
+) {
+    STATUS.with_borrow_mut(|owned| {
+        let Some(status) = owned.as_mut() else {
+            return;
+        };
+        // SAFETY: reading the clock and the main run-loop mode is thread-safe.
+        let timer = CFRunLoopTimer::new(
+            unsafe { CFAbsoluteTimeGetCurrent() },
+            1.0 / 120.0,
+            0,
+            0,
+            check_initial_position,
+            std::ptr::null_mut(),
+        );
+        CFRunLoop::get_main().add_timer(&timer, unsafe { kCFRunLoopCommonModes });
+        status.pending_appearance = Some(PendingAppearance {
+            position: StartupPosition::new(Instant::now()),
+            timer,
+            traffic,
+            paint_traffic,
+        });
+    });
+}
+
+extern "C" fn check_initial_position(_: CFRunLoopTimerRef, _: *mut c_void) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let reveal = STATUS.with_borrow_mut(|owned| {
+        let status = owned.as_mut()?;
+        let button = status.item.button(mtm)?;
+        let pending = status.pending_appearance.as_mut()?;
+        let frame = button.window().map(|window| window.frame());
+        let appearance = pending.position.observe(frame, Instant::now())?;
+        Some((button, appearance, status.pending_appearance.take()?))
+    });
+    if let Some((button, appearance, pending)) = reveal {
+        let traffic = *pending.traffic.lock().expect("status menu traffic");
+        let paint_traffic = pending.paint_traffic;
+        drop(pending);
+        // The hosted button now has its final geometry. Recompute the two-line
+        // baseline before revealing, even if the traffic rates haven't changed.
+        if let Some(traffic) = traffic {
+            paint_traffic(mtm, traffic);
+        }
+        button.setAlphaValue(1.0);
+        if appearance == FirstAppearance::TimedOut {
+            eprintln!("macOS status item shown after the startup positioning deadline");
+        }
+    }
 }
 
 pub(super) fn refresh_locale(marker: MainThreadMarker) {
@@ -576,8 +707,8 @@ pub(super) fn uninstall(_: MainThreadMarker) {
 // Dock identity, and transfers verified state over the child's private pipes.
 mod process {
     use super::{
-        i18n, install, reject_queued, update_controls, Controls, Event, MainThreadMarker,
-        NSOperationQueue, RcBlock, Traffic, Uuid,
+        i18n, install, reject_queued, update_controls, wait_for_initial_position, Controls, Event,
+        MainThreadMarker, NSOperationQueue, RcBlock, Traffic, Uuid,
     };
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSImage};
     use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -856,6 +987,7 @@ mod process {
             mtm,
             brand().map_err(io::Error::other)?,
             initial.traffic.enabled,
+            0.0,
             |event| {
                 if send(&mut io::stdout().lock(), &event).is_err() {
                     std::process::exit(0);
@@ -865,12 +997,13 @@ mod process {
         .map_err(io::Error::other)?;
         let mut traffic = None;
         apply_snapshot(mtm, initial, &mut traffic, paint_traffic);
+        let traffic = Arc::new(Mutex::new(traffic));
+        wait_for_initial_position(mtm, Arc::clone(&traffic), paint_traffic);
         send(&mut io::stdout().lock(), &Event::Ready)?;
 
         // Keep only the latest frame while AppKit is in menu tracking. A
         // disconnected parent must dismiss the UI even in a nested run loop.
         let pending = Arc::new(Mutex::new(None::<Snapshot>));
-        let traffic = Arc::new(Mutex::new(traffic));
         thread::spawn(move || {
             let mut input = io::stdin().lock();
             while let Ok(Some(mut next)) = receive::<Snapshot>(&mut input) {
