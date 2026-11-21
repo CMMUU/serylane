@@ -1,7 +1,7 @@
 {
   "name": "serylane",
   "private": true,
-  "version": "0.7.49",
+  "version": "0.7.50",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
