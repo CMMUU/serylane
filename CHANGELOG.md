@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.50 - 2026-11-21
+
+- Wait for the macOS status item to settle into position before showing its icon at startup.
+- Redraw both traffic rows in the settled AppKit button before revealing them.
+
 ## 0.7.49 - 2026-11-20
 
 - Hot-switch between System Proxy and TUN on macOS after the approved helper prepares a TUN interface. Keep the same ordinary-user core and local ports through both directions.
